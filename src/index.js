@@ -1,11 +1,8 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
-const fs = require('fs');
 const path = require('path');
-const util = require('util');
-const ncp = require('ncp').ncp; // For copying directories
-const stat = util.promisify(fs.stat);
-const copy = util.promisify(ncp);
+const fs = require('fs-extra');  // Using fs-extra for file system operations
 
+// Function to create the main application window
 function createWindow() {
     const mainWindow = new BrowserWindow({
         width: 800,
@@ -20,6 +17,7 @@ function createWindow() {
 
     mainWindow.loadFile(path.join(__dirname, 'index.html'));
 
+    // Handle folder selection dialog
     ipcMain.handle('open-dialog', async (event, id) => {
         const result = await dialog.showOpenDialog(mainWindow, {
             properties: ['openDirectory']
@@ -28,58 +26,52 @@ function createWindow() {
         return { id, path: result.filePaths[0] };
     });
 
-    ipcMain.handle('sync-folders', async (event, folder1, folder2) => {
+    // Handle folder synchronization
+    ipcMain.handle('sync-folders', async (event, { folder1, folder2 }) => {
         try {
-            await syncFolders(folder1, folder2);
-            return { status: 'success', message: 'Folders synced successfully!' };
+            if (!folder1 || !folder2) {
+                throw new Error('Both folder paths must be provided.');
+            }
+            await syncFolders(folder1, folder2);  // Call the sync function
+            return { success: true };
         } catch (error) {
             console.error('Sync error:', error);
-            return { status: 'error', message: 'Failed to sync folders: ' + error.message };
+            return { success: false, error: error.message };
         }
     });
 }
 
-async function syncFolders(src, dest) {
-    async function copyNewerFiles(srcDir, destDir) {
-        const srcFiles = await fs.promises.readdir(srcDir);
-        for (const file of srcFiles) {
-            const srcFile = path.join(srcDir, file);
-            const destFile = path.join(destDir, file);
-            try {
-                const srcStat = await stat(srcFile);
-                try {
-                    const destStat = await stat(destFile);
-                    if (srcStat.mtime > destStat.mtime) {
-                        if (srcStat.isDirectory()) {
-                            await copy(srcFile, destFile, { filter: () => true });
-                        } else {
-                            await fs.promises.copyFile(srcFile, destFile);
-                        }
-                    }
-                } catch (err) {
-                    // File does not exist in destination, copy it
-                    if (srcStat.isDirectory()) {
-                        await fs.promises.mkdir(destFile, { recursive: true });
-                        await copy(srcFile, destFile, { filter: () => true });
-                    } else {
-                        await fs.promises.copyFile(srcFile, destFile);
-                    }
-                }
-            } catch (err) {
-                // File does not exist in destination, copy it
-                if (srcStat.isDirectory()) {
-                    await fs.promises.mkdir(destFile, { recursive: true });
-                    await copy(srcFile, destFile, { filter: () => true });
-                } else {
-                    await fs.promises.copyFile(srcFile, destFile);
-                }
+// Function to sync folders, including subdirectories and newer files
+async function syncFolders(srcDir, destDir) {
+    // Validate folder paths
+    if (typeof srcDir !== 'string' || typeof destDir !== 'string') {
+        throw new Error('Invalid folder paths.');
+    }
+
+    const files = await fs.readdir(srcDir);  // Read source directory
+
+    for (const file of files) {
+        const srcPath = path.join(srcDir, file);
+        const destPath = path.join(destDir, file);
+
+        const stats = await fs.stat(srcPath);  // Get file stats
+
+        if (stats.isDirectory()) {
+            // Ensure the destination directory exists
+            await fs.ensureDir(destPath);
+            // Recursively sync subdirectories
+            await syncFolders(srcPath, destPath);
+        } else {
+            // Copy files if they are newer or don't exist in the destination
+            if (!await fs.pathExists(destPath) || (await fs.stat(srcPath)).mtime > (await fs.stat(destPath)).mtime) {
+                console.log(`Copying ${srcPath} to ${destPath}`);
+                await fs.copyFile(srcPath, destPath);
             }
         }
     }
-
-    await copyNewerFiles(src, dest);
 }
 
+// App lifecycle management
 app.whenReady().then(() => {
     createWindow();
     app.on('activate', () => {
@@ -89,6 +81,7 @@ app.whenReady().then(() => {
     });
 });
 
+// Quit the app when all windows are closed, except on macOS
 app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
         app.quit();

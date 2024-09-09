@@ -62,30 +62,27 @@
             });
         });
 
-        // Handle form submission for sync
-        document.getElementById('syncFoldersForm').addEventListener('submit', (e) => {
-            e.preventDefault(); // Prevent form from reloading the page
+        document.getElementById('syncFoldersForm').addEventListener('submit', (event) => {
+            event.preventDefault();  // Prevent form from submitting traditionally
             const folder1 = document.getElementById('folder1').value;
             const folder2 = document.getElementById('folder2').value;
 
-            if (!folder1 || !folder2) {
-                alert('Please select both folders before starting the sync.');
-                return;
+            // Check if both folders are selected
+            if (folder1 && folder2) {
+                window.electron.ipcRenderer.invoke('sync-folders', { folder1, folder2 })
+                    .then(response => {
+                        if (response.success) {
+                            alert('Sync completed successfully!');
+                        } else {
+                            alert('Error during sync: ' + response.error);
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Sync failed:', error);
+                    });
+            } else {
+                alert('Please select both folders.');
             }
-
-            // Invoke sync-folders process
-            window.electron.ipcRenderer.invoke('sync-folders', folder1, folder2)
-                .then(response => {
-                    if (response.status === 'success') {
-                        alert(response.message);
-                    } else {
-                        alert('Error: ' + response.message);
-                    }
-                })
-                .catch(error => {
-                    console.error('Failed to sync folders:', error);
-                    alert('An error occurred during folder sync.');
-                });
         });
     </script>
 </body>

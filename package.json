@@ -67,6 +67,7 @@
   "description": "myBackup",
   "dependencies": {
     "bootstrap": "^5.3.3",
+    "fs-extra": "^11.2.0",
     "ncp": "^2.0.0"
   }
 }

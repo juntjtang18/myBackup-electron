@@ -66,6 +66,7 @@
   "homepage": "https://github.com/juntjtang18/myBackup-electron#readme",
   "description": "myBackup",
   "dependencies": {
-    "bootstrap": "^5.3.3"
+    "bootstrap": "^5.3.3",
+    "ncp": "^2.0.0"
   }
 }

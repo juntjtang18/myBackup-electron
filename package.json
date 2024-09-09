@@ -1,0 +1,71 @@
+{
+  "devDependencies": {
+    "@babel/core": "^7.25.2",
+    "@babel/preset-env": "^7.25.4",
+    "@babel/preset-react": "^7.24.7",
+    "babel-jest": "^29.7.0",
+    "electron": "^32.0.2",
+    "electron-builder": "^25.0.5",
+    "jest": "^29.7.0"
+  },
+  "name": "mybackup-electron",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "test": "jest"
+  },
+  "build": {
+    "appId": "com.example.myBackup",
+    "productName": "MyBackup",
+    "files": [
+      "src/**/*",
+      "dist/",
+      "node_modules/",
+      "package.json",
+      "bootstrap-5.3.3-dist/**/*"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/juntjtang18/myBackup-electron.git"
+  },
+  "keywords": [
+    "electron",
+    "backup",
+    "file-sync",
+    "data-management"
+  ],
+  "author": "James Jun Tang",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/juntjtang18/myBackup-electron/issues"
+  },
+  "homepage": "https://github.com/juntjtang18/myBackup-electron#readme",
+  "description": "myBackup",
+  "dependencies": {
+    "bootstrap": "^5.3.3"
+  }
+}

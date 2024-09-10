@@ -1,6 +1,14 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
-const fs = require('fs-extra');  // Using fs-extra for file system operations
+const fs = require('fs');  // Using the native fs module
+const util = require('util');
+
+// Promisify necessary fs methods for async/await usage
+const readdir = util.promisify(fs.readdir);
+const stat = util.promisify(fs.stat);
+const copyFile = util.promisify(fs.copyFile);
+const mkdir = util.promisify(fs.mkdir);
+const access = util.promisify(fs.access);
 
 // Function to create the main application window
 function createWindow() {
@@ -48,24 +56,45 @@ async function syncFolders(srcDir, destDir) {
         throw new Error('Invalid folder paths.');
     }
 
-    const files = await fs.readdir(srcDir);  // Read source directory
+    const files = await readdir(srcDir);  // Read source directory
 
     for (const file of files) {
         const srcPath = path.join(srcDir, file);
         const destPath = path.join(destDir, file);
 
-        const stats = await fs.stat(srcPath);  // Get file stats
+        const stats = await stat(srcPath);  // Get file stats
 
         if (stats.isDirectory()) {
             // Ensure the destination directory exists
-            await fs.ensureDir(destPath);
+            try {
+                await access(destPath);
+            } catch {
+                await mkdir(destPath, { recursive: true });
+            }
             // Recursively sync subdirectories
             await syncFolders(srcPath, destPath);
+        } else if (path.extname(srcPath) === '.asar') {
+            // Handle .asar files
+            console.log(`Copying .asar file: ${srcPath} to ${destPath}`);
+            try {
+                await copyFile(srcPath, destPath);
+            } catch (error) {
+                console.error(`Error copying .asar file from ${srcPath} to ${destPath}:`, error);
+            }
         } else {
-            // Copy files if they are newer or don't exist in the destination
-            if (!await fs.pathExists(destPath) || (await fs.stat(srcPath)).mtime > (await fs.stat(destPath)).mtime) {
-                console.log(`Copying ${srcPath} to ${destPath}`);
-                await fs.copyFile(srcPath, destPath);
+            // Copy regular files if they are newer or don't exist in the destination
+            try {
+                await access(destPath);
+                const srcStat = await stat(srcPath);
+                const destStat = await stat(destPath);
+
+                if (srcStat.mtime > destStat.mtime) {
+                    console.log(`Copying file: ${srcPath} to ${destPath}`);
+                    await copyFile(srcPath, destPath);
+                }
+            } catch {
+                console.log(`Copying file: ${srcPath} to ${destPath}`);
+                await copyFile(srcPath, destPath);
             }
         }
     }

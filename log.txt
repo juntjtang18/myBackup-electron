@@ -1,9 +1,0 @@
-
-> mybackup-electron@1.0.0 start
-> electron .
-
-
-Starting sync from D:\test-source to D:\test-destination
-Preparing to copy .asar file: D:\test-source\test-file.asar to D:\test-destination\test-file.asar
-Attempting to copy file from D:\test-source\test-file.asar to D:\test-destination\test-file.asar
-Successfully copied .asar file: D:\test-source\test-file.asar to D:\test-destination\test-file.asar

@@ -1,3 +1,5 @@
 dist/
 node_modules/
 bootstrap-5.3.3-dist/
+log.txt
+src/index.js.bak

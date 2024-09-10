@@ -1,16 +1,8 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
-const fs = require('fs');  // Using the native fs module
-const util = require('util');
+const fs = require('fs-extra');
 
-// Promisify necessary fs methods for async/await usage
-const readdir = util.promisify(fs.readdir);
-const stat = util.promisify(fs.stat);
-const copyFile = util.promisify(fs.copyFile);
-const mkdir = util.promisify(fs.mkdir);
-const access = util.promisify(fs.access);
-
-// Disable asar support to handle .asar files correctly
+// Disable .asar support
 process.noAsar = true;
 
 // Function to create the main application window
@@ -21,14 +13,13 @@ function createWindow() {
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true,
-            enableRemoteModule: false,
-            nodeIntegration: false
+            enableRemoteModule: true,
+            nodeIntegration: true
         }
     });
 
     mainWindow.loadFile(path.join(__dirname, 'index.html'));
 
-    // Handle folder selection dialog
     ipcMain.handle('open-dialog', async (event, id) => {
         const result = await dialog.showOpenDialog(mainWindow, {
             properties: ['openDirectory']
@@ -37,13 +28,12 @@ function createWindow() {
         return { id, path: result.filePaths[0] };
     });
 
-    // Handle folder synchronization
     ipcMain.handle('sync-folders', async (event, { folder1, folder2 }) => {
         try {
             if (!folder1 || !folder2) {
                 throw new Error('Both folder paths must be provided.');
             }
-            await syncFolders(folder1, folder2);  // Call the sync function
+            await syncFolders(folder1, folder2);
             return { success: true };
         } catch (error) {
             console.error('Sync error:', error);
@@ -52,58 +42,47 @@ function createWindow() {
     });
 }
 
-// Function to sync folders, including subdirectories and newer files
 async function syncFolders(srcDir, destDir) {
     // Validate folder paths
     if (typeof srcDir !== 'string' || typeof destDir !== 'string') {
         throw new Error('Invalid folder paths.');
     }
 
-    const files = await readdir(srcDir);  // Read source directory
+    console.log(`Starting sync from ${srcDir} to ${destDir}`);
+    
+    const files = await fs.readdir(srcDir);
 
     for (const file of files) {
         const srcPath = path.join(srcDir, file);
         const destPath = path.join(destDir, file);
 
-        const stats = await stat(srcPath);  // Get file stats
+        try {
+            const stats = await fs.stat(srcPath);
 
-        if (stats.isDirectory()) {
-            // Ensure the destination directory exists
-            try {
-                await access(destPath);
-            } catch {
-                await mkdir(destPath, { recursive: true });
-            }
-            // Recursively sync subdirectories
-            await syncFolders(srcPath, destPath);
-        } else if (path.extname(srcPath) === '.asar') {
-            // Handle .asar files
-            console.log(`Copying .asar file: ${srcPath} to ${destPath}`);
-            try {
-                await copyFile(srcPath, destPath);
-            } catch (error) {
-                console.error(`Error copying .asar file from ${srcPath} to ${destPath}:`, error);
-            }
-        } else {
-            // Copy regular files if they are newer or don't exist in the destination
-            try {
-                await access(destPath);
-                const srcStat = await stat(srcPath);
-                const destStat = await stat(destPath);
+            if (path.extname(srcPath) === '.asar') {
+                console.log(`Preparing to copy .asar file: ${srcPath} to ${destPath}`);
+                
+                await fs.ensureDir(path.dirname(destPath));
 
-                if (srcStat.mtime > destStat.mtime) {
+                console.log(`Attempting to copy file from ${srcPath} to ${destPath}`);
+                await fs.copyFile(srcPath, destPath);
+                console.log(`Successfully copied .asar file: ${srcPath} to ${destPath}`);
+            } else if (stats.isDirectory()) {
+                await fs.ensureDir(destPath);
+                await syncFolders(srcPath, destPath);
+            } else {
+                const destExists = await fs.pathExists(destPath);
+                if (!destExists || stats.mtime > (await fs.stat(destPath)).mtime) {
                     console.log(`Copying file: ${srcPath} to ${destPath}`);
-                    await copyFile(srcPath, destPath);
+                    await fs.copyFile(srcPath, destPath);
                 }
-            } catch {
-                console.log(`Copying file: ${srcPath} to ${destPath}`);
-                await copyFile(srcPath, destPath);
             }
+        } catch (error) {
+            console.error(`Error processing file ${srcPath}:`, error);
         }
     }
 }
 
-// App lifecycle management
 app.whenReady().then(() => {
     createWindow();
     app.on('activate', () => {
@@ -113,7 +92,6 @@ app.whenReady().then(() => {
     });
 });
 
-// Quit the app when all windows are closed, except on macOS
 app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
         app.quit();

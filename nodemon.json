@@ -1,0 +1,5 @@
+{
+    "watch": ["src", "index.js", "sync-folders.html"],
+    "ext": "js,html"
+  }
+  

@@ -33,7 +33,7 @@ function createWindow() {
             if (!folder1 || !folder2) {
                 throw new Error('Both folder paths must be provided.');
             }
-            await syncFolders(folder1, folder2);
+            await syncFolders(folder1, folder2, event);
             return { success: true };
         } catch (error) {
             console.error('Sync error:', error);
@@ -42,15 +42,10 @@ function createWindow() {
     });
 }
 
-async function syncFolders(srcDir, destDir) {
-    // Validate folder paths
-    if (typeof srcDir !== 'string' || typeof destDir !== 'string') {
-        throw new Error('Invalid folder paths.');
-    }
-
-    console.log(`Starting sync from ${srcDir} to ${destDir}`);
-    
+async function syncFolders(srcDir, destDir, event) {
     const files = await fs.readdir(srcDir);
+    const totalFiles = files.length;
+    let processedFiles = 0;
 
     for (const file of files) {
         const srcPath = path.join(srcDir, file);
@@ -60,23 +55,31 @@ async function syncFolders(srcDir, destDir) {
             const stats = await fs.stat(srcPath);
 
             if (path.extname(srcPath) === '.asar') {
-                console.log(`Preparing to copy .asar file: ${srcPath} to ${destPath}`);
-                
                 await fs.ensureDir(path.dirname(destPath));
-
-                console.log(`Attempting to copy file from ${srcPath} to ${destPath}`);
                 await fs.copyFile(srcPath, destPath);
-                console.log(`Successfully copied .asar file: ${srcPath} to ${destPath}`);
             } else if (stats.isDirectory()) {
                 await fs.ensureDir(destPath);
-                await syncFolders(srcPath, destPath);
+                await syncFolders(srcPath, destPath, event); // Recursively sync sub-folders
             } else {
                 const destExists = await fs.pathExists(destPath);
                 if (!destExists || stats.mtime > (await fs.stat(destPath)).mtime) {
-                    console.log(`Copying file: ${srcPath} to ${destPath}`);
                     await fs.copyFile(srcPath, destPath);
                 }
             }
+
+            processedFiles++;
+            const progress = Math.round((processedFiles / totalFiles) * 100);
+            // Log the progress before sending
+            console.log(`Sending progress: ${progress}%`);
+
+            // Send progress to renderer
+            const window = BrowserWindow.getAllWindows()[0];
+            if (window) {
+                window.webContents.send('sync-progress', progress);
+            } else {
+                console.log('No active window to send progress.');
+            }
+
         } catch (error) {
             console.error(`Error processing file ${srcPath}:`, error);
         }

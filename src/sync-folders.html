@@ -21,6 +21,10 @@
         .btn-primary, .btn-success {
             margin-top: 1rem;
         }
+        .progress {
+            margin-top: 1rem;
+            display: none; /* Initially hidden */
+        }
     </style>
 </head>
 <body>
@@ -43,6 +47,11 @@
             </div>
             <button type="submit" class="btn btn-success">Begin Sync</button>
         </form>
+
+        <!-- Progress bar -->
+        <div class="progress">
+            <div class="progress-bar" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+        </div>
     </div>
 
     <script>
@@ -69,6 +78,11 @@
 
             // Check if both folders are selected
             if (folder1 && folder2) {
+                // Show the progress bar
+                const progressBar = document.querySelector('.progress');
+                const progressBarValue = document.querySelector('.progress-bar');
+                progressBar.style.display = 'block';
+
                 window.electron.ipcRenderer.invoke('sync-folders', { folder1, folder2 })
                     .then(response => {
                         if (response.success) {
@@ -76,10 +90,19 @@
                         } else {
                             alert('Error during sync: ' + response.error);
                         }
+                        // Hide the progress bar after completion
+                        progressBar.style.display = 'none';
                     })
                     .catch(error => {
                         console.error('Sync failed:', error);
                     });
+
+                // Listen for progress updates
+                window.electron.ipcRenderer.on('sync-progress', (event, progress) => {
+                    progressBarValue.style.width = progress + '%';
+                    progressBarValue.textContent = progress + '%';
+                    progressBarValue.setAttribute('aria-valuenow', progress);
+                });
             } else {
                 alert('Please select both folders.');
             }

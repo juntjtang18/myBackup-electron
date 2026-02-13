@@ -41,50 +41,72 @@ function createWindow() {
         }
     });
 }
-
-async function syncFolders(srcDir, destDir, event) {
-    const files = await fs.readdir(srcDir);
-    const totalFiles = files.length;
-    let processedFiles = 0;
+async function countTotalFiles(dir) {
+    let totalFiles = 0;
+    const files = await fs.readdir(dir);
 
     for (const file of files) {
-        const srcPath = path.join(srcDir, file);
-        const destPath = path.join(destDir, file);
+        const filePath = path.join(dir, file);
+        const stats = await fs.stat(filePath);
 
-        try {
-            const stats = await fs.stat(srcPath);
-
-            if (path.extname(srcPath) === '.asar') {
-                await fs.ensureDir(path.dirname(destPath));
-                await fs.copyFile(srcPath, destPath);
-            } else if (stats.isDirectory()) {
-                await fs.ensureDir(destPath);
-                await syncFolders(srcPath, destPath, event); // Recursively sync sub-folders
-            } else {
-                const destExists = await fs.pathExists(destPath);
-                if (!destExists || stats.mtime > (await fs.stat(destPath)).mtime) {
-                    await fs.copyFile(srcPath, destPath);
-                }
-            }
-
-            processedFiles++;
-            const progress = Math.round((processedFiles / totalFiles) * 100);
-            // Log the progress before sending
-            console.log(`Sending progress: ${progress}%`);
-
-            // Send progress to renderer
-            const window = BrowserWindow.getAllWindows()[0];
-            if (window) {
-                window.webContents.send('sync-progress', progress);
-            } else {
-                console.log('No active window to send progress.');
-            }
-
-        } catch (error) {
-            console.error(`Error processing file ${srcPath}:`, error);
+        if (stats.isDirectory()) {
+            totalFiles += await countTotalFiles(filePath);  // Recursively count files in subdirectories
+        } else {
+            totalFiles++;  // Only increment for files, not directories
         }
     }
+
+    return totalFiles;
 }
+
+
+async function syncFolders(srcDir, destDir, event) {
+    const totalFiles = await countTotalFiles(srcDir);  // Calculate total number of files in source directory
+    let processedFiles = 0;
+
+    async function syncDirectory(src, dest) {
+        const files = await fs.readdir(src);
+
+        for (const file of files) {
+            const srcPath = path.join(src, file);
+            const destPath = path.join(dest, file);
+
+            try {
+                const stats = await fs.stat(srcPath);
+
+                if (stats.isDirectory()) {
+                    await fs.ensureDir(destPath);
+                    await syncDirectory(srcPath, destPath);  // Recursively sync sub-folders
+                } else {
+                    const destExists = await fs.pathExists(destPath);
+                    if (!destExists || stats.mtime > (await fs.stat(destPath)).mtime) {
+                        await fs.copyFile(srcPath, destPath);
+                    }
+                    processedFiles++;  // Increment processedFiles only when a file is copied
+                }
+
+                const progress = Math.round((processedFiles / totalFiles) * 100);
+                
+                // Log the progress before sending
+                //console.log(`Processed ${processedFiles} out of ${totalFiles} files. Progress: ${progress}%`);
+
+                // Send progress to renderer
+                const window = BrowserWindow.getAllWindows()[0];
+                if (window) {
+                    window.webContents.send('sync-progress', progress);
+                } else {
+                    console.log('No active window to send progress.');
+                }
+
+            } catch (error) {
+                console.error(`Error processing file ${srcPath}:`, error);
+            }
+        }
+    }
+
+    await syncDirectory(srcDir, destDir);
+}
+
 
 app.whenReady().then(() => {
     createWindow();

@@ -23,7 +23,6 @@
         }
         .progress {
             margin-top: 1rem;
-            display: none; /* Initially hidden */
         }
     </style>
 </head>
@@ -48,13 +47,14 @@
             <button type="submit" class="btn btn-success">Begin Sync</button>
         </form>
 
-        <!-- Progress bar -->
+        <!-- Progress bar for syncing folders -->
         <div class="progress">
-            <div class="progress-bar" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+            <div id="Sync-ProgressBar" class="progress-bar" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
         </div>
     </div>
 
     <script>
+        // Event listeners for selecting folders
         document.getElementById('selectFolder1').addEventListener('click', () => {
             window.electron.ipcRenderer.invoke('open-dialog', 'folder1').then(({ id, path }) => {
                 document.getElementById(id).value = path;
@@ -71,26 +71,24 @@
             });
         });
 
+        // Event listener for sync form submission
         document.getElementById('syncFoldersForm').addEventListener('submit', (event) => {
             event.preventDefault();  // Prevent form from submitting traditionally
             const folder1 = document.getElementById('folder1').value;
             const folder2 = document.getElementById('folder2').value;
 
-            // Check if both folders are selected
             if (folder1 && folder2) {
-                // Show the progress bar
-                const progressBar = document.querySelector('.progress');
-                const progressBarValue = document.querySelector('.progress-bar');
+                const progressBar = document.getElementById('Sync-ProgressBar');
                 progressBar.style.display = 'block';
 
                 window.electron.ipcRenderer.invoke('sync-folders', { folder1, folder2 })
                     .then(response => {
                         if (response.success) {
+                            progressBar.setAttribute('aria-valuenow', 100);
                             alert('Sync completed successfully!');
                         } else {
                             alert('Error during sync: ' + response.error);
                         }
-                        // Hide the progress bar after completion
                         progressBar.style.display = 'none';
                     })
                     .catch(error => {
@@ -99,14 +97,16 @@
 
                 // Listen for progress updates
                 window.electron.ipcRenderer.on('sync-progress', (event, progress) => {
-                    progressBarValue.style.width = progress + '%';
-                    progressBarValue.textContent = progress + '%';
-                    progressBarValue.setAttribute('aria-valuenow', progress);
+                    console.log(`Progress received: ${progress}%` );
+                    progressBar.style.width = progress + '%';
+                    progressBar.textContent = progress + '%';
+                    progressBar.setAttribute('aria-valuenow', progress);
                 });
             } else {
                 alert('Please select both folders.');
             }
         });
+
     </script>
 </body>
 </html>

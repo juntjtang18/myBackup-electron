@@ -110,6 +110,7 @@ function createHashRecord(input, now = new Date()) {
     fileHash: input.fileHash,
     size: input.size,
     logicalPath: toPosixPath(input.logicalPath || ''),
+    aliases: Array.from(new Set((input.aliases || []).map((entry) => toPosixPath(entry)).filter(Boolean))).sort(),
     kind: input.kind || 'file',
     content: createFileContentRef(input.content),
     origins: (input.origins || []).map((origin) => ({
@@ -222,6 +223,7 @@ function validateHashRecord(record) {
   if (record.logicalPath !== '') {
     assertNonEmptyString(record.logicalPath, 'logicalPath');
   }
+  assertArray(record.aliases, 'aliases');
   assertArray(record.origins, 'origins');
   createFileContentRef(record.content);
   return record;

@@ -48,6 +48,8 @@ const {
   startNewGeneration,
   updateFolderStatus
 } = require('../src/core/scanManager');
+const { hashFile } = require('../src/core/hashService');
+const { lookupHashRecord, registerHashRecord } = require('../src/core/hashIndex');
 
 describe('metadata foundation', () => {
   let tempRootPath;
@@ -59,6 +61,11 @@ describe('metadata foundation', () => {
   afterEach(() => {
     fs.removeSync(tempRootPath);
   });
+
+  function writeFixture(filePath, content) {
+    fs.ensureDirSync(path.dirname(filePath));
+    fs.writeFileSync(filePath, content);
+  }
 
   test('creates stable ids for machine, source, scan, and folder', () => {
     expect(createMachineId('James-MacBook', 'fixed-seed')).toBe('james-macbook-09167cea');
@@ -510,5 +517,119 @@ describe('metadata foundation', () => {
     expect(completed.status).toBe('completed');
     expect(completed.completedAt).toBe('2026-06-05T11:20:00.000Z');
     expect(await getResumeState(tempRootPath, machine.machineId, source.sourceId)).toBeNull();
+  });
+
+  test('hashes a file and creates the first hash index record', async () => {
+    const sourceFile = path.join(tempRootPath, 'fixtures', 'note.txt');
+    writeFixture(sourceFile, 'personal backup note');
+
+    const fileHash = await hashFile(sourceFile);
+    expect(fileHash).toBe('efda538a0f26b10a4903d6de78e755c2b324826b133f3200f2ef61c054035b7e');
+
+    const created = await registerHashRecord(tempRootPath, {
+      fileHash,
+      size: 20,
+      logicalPath: 'Backups/Machines/machine-a/documents-a82f91c4/note.txt',
+      kind: 'file',
+      content: {
+        type: 'plain',
+        path: 'Backups/Machines/machine-a/documents-a82f91c4/note.txt'
+      },
+      origin: {
+        machineId: 'machine-a',
+        sourceId: 'documents-a82f91c4',
+        sourceRelativePath: 'note.txt'
+      }
+    }, new Date('2026-06-06T08:00:00Z'));
+
+    expect(created.status).toBe('created');
+    expect(created.record.logicalPath).toBe('Backups/Machines/machine-a/documents-a82f91c4/note.txt');
+    expect(created.record.aliases).toEqual([]);
+    expect(created.record.origins).toHaveLength(1);
+
+    const loaded = await lookupHashRecord(tempRootPath, fileHash);
+    expect(loaded).toEqual(created.record);
+  });
+
+  test('updates hash records by adding origins and logical-path aliases without duplicates', async () => {
+    const fileHash = 'd'.repeat(64);
+
+    await registerHashRecord(tempRootPath, {
+      fileHash,
+      size: 42,
+      logicalPath: 'Backups/Merged/documents/report.txt',
+      kind: 'file',
+      content: {
+        type: 'plain',
+        path: 'Backups/Merged/documents/report.txt'
+      },
+      origin: {
+        machineId: 'machine-a',
+        sourceId: 'documents-a82f91c4',
+        sourceRelativePath: 'report.txt'
+      }
+    }, new Date('2026-06-06T09:00:00Z'));
+
+    const secondOrigin = await registerHashRecord(tempRootPath, {
+      fileHash,
+      size: 42,
+      logicalPath: 'Backups/Merged/documents/report.txt',
+      kind: 'file',
+      content: {
+        type: 'plain',
+        path: 'Backups/Merged/documents/report.txt'
+      },
+      origin: {
+        machineId: 'machine-b',
+        sourceId: 'documents-b91d20ff',
+        sourceRelativePath: 'report.txt'
+      }
+    }, new Date('2026-06-06T09:05:00Z'));
+
+    expect(secondOrigin.status).toBe('updated');
+    expect(secondOrigin.originStatus).toBe('origin-added');
+    expect(secondOrigin.pathStatus).toBe('existing-path');
+    expect(secondOrigin.record.origins).toHaveLength(2);
+
+    const alias = await registerHashRecord(tempRootPath, {
+      fileHash,
+      size: 42,
+      logicalPath: 'Backups/Machines/machine-b/documents-b91d20ff/report.txt',
+      kind: 'file',
+      content: {
+        type: 'plain',
+        path: 'Backups/Merged/documents/report.txt'
+      },
+      origin: {
+        machineId: 'machine-b',
+        sourceId: 'documents-b91d20ff',
+        sourceRelativePath: 'report.txt'
+      }
+    }, new Date('2026-06-06T09:10:00Z'));
+
+    expect(alias.status).toBe('updated');
+    expect(alias.pathStatus).toBe('alias-added');
+    expect(alias.originStatus).toBe('existing-origin');
+    expect(alias.record.aliases).toEqual(['Backups/Machines/machine-b/documents-b91d20ff/report.txt']);
+
+    const unchanged = await registerHashRecord(tempRootPath, {
+      fileHash,
+      size: 42,
+      logicalPath: 'Backups/Machines/machine-b/documents-b91d20ff/report.txt',
+      kind: 'file',
+      content: {
+        type: 'plain',
+        path: 'Backups/Merged/documents/report.txt'
+      },
+      origin: {
+        machineId: 'machine-b',
+        sourceId: 'documents-b91d20ff',
+        sourceRelativePath: 'report.txt'
+      }
+    }, new Date('2026-06-06T09:15:00Z'));
+
+    expect(unchanged.status).toBe('unchanged');
+    expect(unchanged.record.origins).toHaveLength(2);
+    expect(unchanged.record.aliases).toHaveLength(1);
   });
 });

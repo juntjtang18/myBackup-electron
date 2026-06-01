@@ -57,6 +57,7 @@ const {
   verifyStoredPlainFile,
   writePlainFile
 } = require('../src/core/plainFileStorage');
+const { backupSource } = require('../src/core/backupCoordinator');
 
 describe('metadata foundation', () => {
   let tempRootPath;
@@ -697,5 +698,124 @@ describe('metadata foundation', () => {
     expect(await fs.pathExists(danglingWrite.tempPath)).toBe(true);
     expect(await cleanupTempFiles(tempRootPath)).toBe(1);
     expect(await fs.pathExists(danglingWrite.tempPath)).toBe(false);
+  });
+
+  test('backs up one source end-to-end and completes its scan generation', async () => {
+    const sourceRoot = path.join(tempRootPath, 'source-a');
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha');
+    writeFixture(path.join(sourceRoot, 'docs', 'b.txt'), 'beta');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'coord-host',
+      seed: 'coord-seed',
+      now: new Date('2026-06-07T08:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-07T08:05:00Z'));
+
+    const summary = await backupSource(
+      tempRootPath,
+      machine.machineId,
+      source.sourceId,
+      { now: new Date('2026-06-07T08:10:00Z'), forceNewScan: true }
+    );
+
+    expect(summary.foldersProcessed).toBe(2);
+    expect(summary.filesProcessed).toBe(2);
+    expect(summary.filesCopied).toBe(2);
+    expect(summary.filesIndexed).toBe(0);
+
+    const targetFile = path.join(
+      tempRootPath,
+      'Backups',
+      'Machines',
+      machine.machineId,
+      source.sourceId,
+      'docs',
+      'a.txt'
+    );
+    expect(await fs.readFile(targetFile, 'utf8')).toBe('alpha');
+
+    const scanState = await loadScanState(tempRootPath, machine.machineId, source.sourceId);
+    expect(scanState.status).toBe('completed');
+    expect(scanState.activeGeneration).toBe(summary.scanId);
+
+    const updatedSource = await loadSource(tempRootPath, machine.machineId, source.sourceId);
+    expect(updatedSource.lastCompletedScan).toBe(summary.scanId);
+    expect(updatedSource.lastCompletedAt).toBe('2026-06-07T08:10:00.000Z');
+  });
+
+  test('reuses same-content files and resolves merged-path conflicts end-to-end', async () => {
+    const sourceRootA = path.join(tempRootPath, 'merge-a');
+    const sourceRootB = path.join(tempRootPath, 'merge-b');
+
+    writeFixture(path.join(sourceRootA, 'shared.txt'), 'same-content');
+    writeFixture(path.join(sourceRootA, 'conflict.txt'), 'content-a');
+    writeFixture(path.join(sourceRootB, 'shared.txt'), 'same-content');
+    writeFixture(path.join(sourceRootB, 'conflict.txt'), 'content-b');
+
+    const machineA = await ensureMachine(tempRootPath, {
+      hostname: 'merge-a-host',
+      seed: 'merge-a-seed',
+      now: new Date('2026-06-07T09:00:00Z')
+    });
+    const sourceA = await registerSource(tempRootPath, {
+      machineId: machineA.machineId,
+      sourcePath: sourceRootA,
+      mergeEnabled: true,
+      mergeKey: 'shared-docs',
+      organizeMedia: false
+    }, new Date('2026-06-07T09:05:00Z'));
+
+    await backupSource(tempRootPath, machineA.machineId, sourceA.sourceId, {
+      now: new Date('2026-06-07T09:10:00Z'),
+      forceNewScan: true
+    });
+
+    const machineB = await ensureMachine(tempRootPath, {
+      machineId: 'machine-b',
+      hostname: 'merge-b-host',
+      seed: 'merge-b-seed',
+      now: new Date('2026-06-07T09:20:00Z')
+    });
+    const sourceB = await registerSource(tempRootPath, {
+      machineId: machineB.machineId,
+      sourcePath: sourceRootB,
+      mergeEnabled: true,
+      mergeKey: 'shared-docs',
+      organizeMedia: false
+    }, new Date('2026-06-07T09:25:00Z'));
+
+    const summaryB = await backupSource(tempRootPath, machineB.machineId, sourceB.sourceId, {
+      now: new Date('2026-06-07T09:30:00Z'),
+      forceNewScan: true
+    });
+
+    expect(summaryB.filesProcessed).toBe(2);
+    expect(summaryB.filesCopied).toBe(1);
+    expect(summaryB.filesIndexed).toBe(1);
+    expect(summaryB.conflicts).toBe(1);
+
+    const sharedLogicalPath = 'Backups/Merged/shared-docs/shared.txt';
+    const sharedHash = await hashFile(path.join(sourceRootA, 'shared.txt'));
+    const sharedRecord = await lookupHashRecord(tempRootPath, sharedHash);
+    expect(sharedRecord.logicalPath).toBe(sharedLogicalPath);
+    expect(sharedRecord.origins).toHaveLength(2);
+
+    const baseConflictPath = path.join(tempRootPath, 'Backups', 'Merged', 'shared-docs', 'conflict.txt');
+    const suffixedConflictPath = path.join(
+      tempRootPath,
+      'Backups',
+      'Merged',
+      'shared-docs',
+      `conflict [${machineB.machineId}-${sourceB.sourceId}].txt`
+    );
+
+    expect(await fs.readFile(baseConflictPath, 'utf8')).toBe('content-a');
+    expect(await fs.readFile(suffixedConflictPath, 'utf8')).toBe('content-b');
   });
 });

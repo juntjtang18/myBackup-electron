@@ -36,6 +36,9 @@ const {
   saveScanState,
   saveSource
 } = require('../src/core/metadataStore');
+const { ensureMachine, updateMachine } = require('../src/core/machineRegistry');
+const { registerSource, updateSourceScanState } = require('../src/core/sourceRegistry');
+const { buildConflictPath, classifyMedia, planLogicalTarget } = require('../src/core/pathPlanner');
 
 describe('metadata foundation', () => {
   let tempRootPath;
@@ -178,5 +181,142 @@ describe('metadata foundation', () => {
     expect(machineBackupRoot('machine-a', 'source-a')).toBe('Backups/Machines/machine-a/source-a');
     expect(mergedBackupRoot('documents')).toBe('Backups/Merged/documents');
     expect(tempRoot('/target')).toBe(path.join('/target', '.mybackup', 'tmp'));
+  });
+
+  test('bootstraps and reuses the local machine identity', async () => {
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'James-MacBook',
+      displayName: 'James Laptop',
+      platform: 'darwin',
+      seed: 'machine-seed',
+      now: new Date('2026-06-02T09:00:00Z')
+    });
+
+    const loadedConfig = await loadAppConfig(tempRootPath);
+    expect(loadedConfig.machineId).toBe(machine.machineId);
+    expect(machine.machineId).toBe('james-macbook-ffc2a3ac');
+
+    const reused = await ensureMachine(tempRootPath, {
+      hostname: 'Different-Hostname',
+      displayName: 'Should Not Replace',
+      now: new Date('2026-06-03T09:00:00Z')
+    });
+
+    expect(reused).toEqual(machine);
+
+    const updated = await updateMachine(tempRootPath, {
+      machineId: machine.machineId,
+      displayName: 'James Main Laptop'
+    }, new Date('2026-06-04T09:00:00Z'));
+
+    expect(updated.displayName).toBe('James Main Laptop');
+    expect(updated.hostname).toBe('James-MacBook');
+  });
+
+  test('registers and updates source records while preserving scan state', async () => {
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'backup-host',
+      displayName: 'Backup Host',
+      platform: 'darwin',
+      seed: 'seed-a',
+      now: new Date('2026-06-02T09:00:00Z')
+    });
+
+    const first = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: '/Users/James/Documents',
+      organizeMedia: false,
+      mergeEnabled: false
+    }, new Date('2026-06-02T09:10:00Z'));
+
+    const scanned = await updateSourceScanState(tempRootPath, machine.machineId, first.sourceId, {
+      lastCompletedScan: '20260602-100000',
+      lastCompletedAt: '2026-06-02T10:00:00Z'
+    }, new Date('2026-06-02T10:00:00Z'));
+
+    const updated = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: '/Users/James/Documents',
+      organizeMedia: true,
+      mergeEnabled: true,
+      mergeKey: 'Docs Shared'
+    }, new Date('2026-06-03T09:10:00Z'));
+
+    expect(updated.sourceId).toBe(first.sourceId);
+    expect(updated.createdAt).toBe(first.createdAt);
+    expect(updated.mergeEnabled).toBe(true);
+    expect(updated.mergeKey).toBe('docs-shared');
+    expect(updated.targetSubdir).toBe('Backups/Merged/docs-shared');
+    expect(updated.lastCompletedScan).toBe(scanned.lastCompletedScan);
+    expect(updated.lastCompletedAt).toBe(scanned.lastCompletedAt);
+  });
+
+  test('plans machine-separated, merged, and media logical target paths', async () => {
+    const separatedSource = createSourceRecord({
+      machineId: 'machine-a',
+      sourcePath: '/Users/James/Documents',
+      mergeEnabled: false,
+      organizeMedia: false
+    });
+
+    const mergedSource = createSourceRecord({
+      machineId: 'machine-b',
+      sourcePath: '/Users/James/Documents',
+      mergeEnabled: true,
+      mergeKey: 'documents',
+      organizeMedia: false
+    });
+
+    const mediaSeparatedSource = createSourceRecord({
+      machineId: 'machine-a',
+      sourcePath: '/Users/James/Pictures',
+      mergeEnabled: false,
+      organizeMedia: true
+    });
+
+    const mediaMergedSource = createSourceRecord({
+      machineId: 'machine-b',
+      sourcePath: '/Users/James/Pictures',
+      mergeEnabled: true,
+      mergeKey: 'photos',
+      organizeMedia: true
+    });
+
+    expect(classifyMedia('IMG_0001.HEIC')).toBe('image');
+    expect(classifyMedia('clip.MOV')).toBe('video');
+    expect(classifyMedia('todo.txt')).toBe('file');
+
+    expect(planLogicalTarget({
+      machineId: 'machine-a',
+      source: separatedSource,
+      sourceRelativePath: 'taxes/2024.pdf',
+      kind: 'file'
+    })).toBe(`Backups/Machines/machine-a/${separatedSource.sourceId}/taxes/2024.pdf`);
+
+    expect(planLogicalTarget({
+      machineId: 'machine-b',
+      source: mergedSource,
+      sourceRelativePath: 'taxes/2024.pdf',
+      kind: 'file'
+    })).toBe('Backups/Merged/documents/taxes/2024.pdf');
+
+    expect(planLogicalTarget({
+      machineId: 'machine-a',
+      source: mediaSeparatedSource,
+      sourceRelativePath: 'albums/IMG_001.HEIC',
+      kind: 'image',
+      timestamp: new Date('2026-05-18T12:00:00Z')
+    })).toBe(`Images/2026/2026-05-18/machine-a/${mediaSeparatedSource.sourceId}/IMG_001.HEIC`);
+
+    expect(planLogicalTarget({
+      machineId: 'machine-b',
+      source: mediaMergedSource,
+      sourceRelativePath: 'albums/IMG_001.HEIC',
+      kind: 'image',
+      timestamp: new Date('2026-05-18T12:00:00Z')
+    })).toBe('Images/2026/2026-05-18/photos/IMG_001.HEIC');
+
+    expect(buildConflictPath('Backups/Merged/documents/taxes/2024.pdf', 'machine-b', 'documents-abc12345'))
+      .toBe('Backups/Merged/documents/taxes/2024 [machine-b-documents-abc12345].pdf');
   });
 });

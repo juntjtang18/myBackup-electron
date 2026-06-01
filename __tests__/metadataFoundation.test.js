@@ -39,6 +39,15 @@ const {
 const { ensureMachine, updateMachine } = require('../src/core/machineRegistry');
 const { registerSource, updateSourceScanState } = require('../src/core/sourceRegistry');
 const { buildConflictPath, classifyMedia, planLogicalTarget } = require('../src/core/pathPlanner');
+const { findCheckpointByRelativePath, listFolderCheckpoints } = require('../src/core/scanCheckpointStore');
+const {
+  ensureScanState,
+  getResumeState,
+  markGenerationCompleted,
+  saveDiscoveredFolders,
+  startNewGeneration,
+  updateFolderStatus
+} = require('../src/core/scanManager');
 
 describe('metadata foundation', () => {
   let tempRootPath;
@@ -318,5 +327,188 @@ describe('metadata foundation', () => {
 
     expect(buildConflictPath('Backups/Merged/documents/taxes/2024.pdf', 'machine-b', 'documents-abc12345'))
       .toBe('Backups/Merged/documents/taxes/2024 [machine-b-documents-abc12345].pdf');
+  });
+
+  test('starts a new scan generation with a root folder checkpoint', async () => {
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'scan-host',
+      seed: 'scan-seed',
+      now: new Date('2026-06-05T08:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: '/Users/James/Documents',
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-05T08:05:00Z'));
+
+    const scanState = await startNewGeneration(
+      tempRootPath,
+      machine.machineId,
+      source.sourceId,
+      { now: new Date('2026-06-05T08:10:00Z'), scanId: '20260605-081000' }
+    );
+
+    expect(scanState.activeGeneration).toBe('20260605-081000');
+    expect(scanState.status).toBe('running');
+
+    const checkpoints = await listFolderCheckpoints(
+      tempRootPath,
+      machine.machineId,
+      source.sourceId,
+      scanState.activeGeneration
+    );
+
+    expect(checkpoints).toHaveLength(1);
+    expect(checkpoints[0].relativePath).toBe('.');
+    expect(checkpoints[0].status).toBe('pending');
+  });
+
+  test('resumes incomplete scan state and resets with a forced new generation', async () => {
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'resume-host',
+      seed: 'resume-seed',
+      now: new Date('2026-06-05T09:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: '/Users/James/Documents',
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-05T09:05:00Z'));
+
+    const first = await ensureScanState(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-05T09:10:00Z'),
+      scanId: '20260605-091000'
+    });
+
+    const resumed = await ensureScanState(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-05T09:20:00Z')
+    });
+
+    expect(resumed.scanState.activeGeneration).toBe(first.scanState.activeGeneration);
+
+    const forced = await ensureScanState(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-05T09:30:00Z'),
+      scanId: '20260605-093000',
+      forceNew: true
+    });
+
+    expect(forced.scanState.activeGeneration).toBe('20260605-093000');
+    expect(forced.scanState.activeGeneration).not.toBe(first.scanState.activeGeneration);
+  });
+
+  test('tracks discovered child folders and folder status transitions', async () => {
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'folder-host',
+      seed: 'folder-seed',
+      now: new Date('2026-06-05T10:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: '/Users/James/Documents',
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-05T10:05:00Z'));
+
+    const scan = await startNewGeneration(
+      tempRootPath,
+      machine.machineId,
+      source.sourceId,
+      { now: new Date('2026-06-05T10:10:00Z'), scanId: '20260605-101000' }
+    );
+
+    const root = await findCheckpointByRelativePath(
+      tempRootPath,
+      machine.machineId,
+      source.sourceId,
+      scan.activeGeneration,
+      '.'
+    );
+
+    const scanningRoot = await updateFolderStatus(
+      tempRootPath,
+      machine.machineId,
+      source.sourceId,
+      scan.activeGeneration,
+      root,
+      'scanning',
+      { filesSeen: 2, subfoldersSeen: 2 },
+      new Date('2026-06-05T10:11:00Z')
+    );
+
+    expect(scanningRoot.status).toBe('scanning');
+    expect(scanningRoot.filesSeen).toBe(2);
+
+    const children = await saveDiscoveredFolders(
+      tempRootPath,
+      machine.machineId,
+      source.sourceId,
+      scan.activeGeneration,
+      '.',
+      [
+        { name: 'taxes', path: '/Users/James/Documents/taxes' },
+        { name: 'notes', path: '/Users/James/Documents/notes' }
+      ],
+      new Date('2026-06-05T10:12:00Z')
+    );
+
+    expect(children.map((entry) => entry.relativePath)).toEqual(['taxes', 'notes']);
+
+    const allCheckpoints = await listFolderCheckpoints(
+      tempRootPath,
+      machine.machineId,
+      source.sourceId,
+      scan.activeGeneration
+    );
+
+    expect(allCheckpoints).toHaveLength(3);
+
+    const doneRoot = await updateFolderStatus(
+      tempRootPath,
+      machine.machineId,
+      source.sourceId,
+      scan.activeGeneration,
+      scanningRoot,
+      'done',
+      { filesSeen: 2, subfoldersSeen: 2 },
+      new Date('2026-06-05T10:13:00Z')
+    );
+
+    expect(doneRoot.status).toBe('done');
+    expect(doneRoot.completedAt).toBe('2026-06-05T10:13:00.000Z');
+  });
+
+  test('marks a generation completed and stops resume selection', async () => {
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'complete-host',
+      seed: 'complete-seed',
+      now: new Date('2026-06-05T11:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: '/Users/James/Documents',
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-05T11:05:00Z'));
+
+    await startNewGeneration(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-05T11:10:00Z'),
+      scanId: '20260605-111000'
+    });
+
+    const resumeBefore = await getResumeState(tempRootPath, machine.machineId, source.sourceId);
+    expect(resumeBefore.scanState.activeGeneration).toBe('20260605-111000');
+
+    const completed = await markGenerationCompleted(
+      tempRootPath,
+      machine.machineId,
+      source.sourceId,
+      new Date('2026-06-05T11:20:00Z')
+    );
+
+    expect(completed.status).toBe('completed');
+    expect(completed.completedAt).toBe('2026-06-05T11:20:00.000Z');
+    expect(await getResumeState(tempRootPath, machine.machineId, source.sourceId)).toBeNull();
   });
 });

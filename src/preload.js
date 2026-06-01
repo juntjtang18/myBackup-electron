@@ -1,10 +1,5 @@
-// preload.js
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge } = require('electron');
 
-contextBridge.exposeInMainWorld('electron', {
-    ipcRenderer: {
-        invoke: ipcRenderer.invoke,
-        on: ipcRenderer.on,
-        send: ipcRenderer.send
-    }
+contextBridge.exposeInMainWorld('myBackup', {
+  version: 'step-1-foundation'
 });

@@ -21,6 +21,7 @@ const { loadSource } = require('./metadataStore');
 const { updateSourceScanState } = require('./sourceRegistry');
 const { toPosixPath } = require('./layout');
 const { shortHash } = require('./ids');
+const { createWorkScheduler } = require('./workScheduler');
 
 async function readFolderEntries(folderPath) {
   const entries = await fs.readdir(folderPath, { withFileTypes: true });
@@ -108,6 +109,7 @@ async function processFile(targetRoot, machineId, source, sourceFilePath, source
       action: 'copied',
       fileHash,
       logicalPath,
+      bytesProcessed: stats.size,
       record: registration.record
     };
   }
@@ -129,6 +131,7 @@ async function processFile(targetRoot, machineId, source, sourceFilePath, source
     action: registration.pathStatus === 'alias-added' ? 'indexed-alias' : 'indexed-existing',
     fileHash,
     logicalPath,
+    bytesProcessed: stats.size,
     record: registration.record
   };
 }
@@ -157,80 +160,101 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     filesIndexed: 0,
     conflicts: 0
   };
-
-  while (true) {
-    const checkpoints = await listFolderCheckpoints(targetRoot, machineId, sourceId, scanId);
-    const nextCheckpoint = checkpoints.find((entry) => entry.status === 'pending' || entry.status === 'scanning');
-    if (!nextCheckpoint) {
-      break;
-    }
-
-    const scanningCheckpoint = await updateFolderStatus(
+  const fileScheduler = createWorkScheduler({
+    processTask: async (payload) => processFile(
       targetRoot,
       machineId,
-      sourceId,
-      scanId,
-      nextCheckpoint,
-      'scanning',
-      {
-        filesSeen: nextCheckpoint.filesSeen,
-        subfoldersSeen: nextCheckpoint.subfoldersSeen
-      },
-      options.now || new Date()
-    );
+      source,
+      payload.sourceFilePath,
+      payload.sourceRelativePath,
+      payload.stats,
+      payload.now
+    ),
+    getTaskBytes: (result, payload) => result?.bytesProcessed || payload.stats.size || 0,
+    initialWorkers: options.initialFileWorkers || 1,
+    maxWorkers: options.maxFileWorkers || 4,
+    backlogFactor: options.fileWorkerBacklogFactor || 4,
+    trialWindowMs: options.fileWorkerTrialWindowMs || 20000,
+    throughputImprovementThreshold: options.fileWorkerThroughputImprovementThreshold || 1.15,
+    idleWaitMs: options.fileWorkerIdleWaitMs || 10
+  });
 
-    const { directories, files } = await readFolderEntries(scanningCheckpoint.folderPath);
-    await saveDiscoveredFolders(
-      targetRoot,
-      machineId,
-      sourceId,
-      scanId,
-      scanningCheckpoint.relativePath,
-      directories,
-      options.now || new Date()
-    );
+  try {
+    while (true) {
+      const checkpoints = await listFolderCheckpoints(targetRoot, machineId, sourceId, scanId);
+      const nextCheckpoint = checkpoints.find((entry) => entry.status === 'pending' || entry.status === 'scanning');
+      if (!nextCheckpoint) {
+        break;
+      }
 
-    for (const fileEntry of files) {
-      const sourceRelativePath = scanningCheckpoint.relativePath === '.'
-        ? fileEntry.name
-        : path.posix.join(scanningCheckpoint.relativePath, fileEntry.name);
-      const stats = await fs.stat(fileEntry.path);
-      const result = await processFile(
+      const scanningCheckpoint = await updateFolderStatus(
         targetRoot,
         machineId,
-        source,
-        fileEntry.path,
-        toPosixPath(sourceRelativePath),
-        stats,
+        sourceId,
+        scanId,
+        nextCheckpoint,
+        'scanning',
+        {
+          filesSeen: nextCheckpoint.filesSeen,
+          subfoldersSeen: nextCheckpoint.subfoldersSeen
+        },
         options.now || new Date()
       );
 
-      summary.filesProcessed += 1;
-      if (result.action === 'copied') {
-        summary.filesCopied += 1;
-      } else {
-        summary.filesIndexed += 1;
+      const { directories, files } = await readFolderEntries(scanningCheckpoint.folderPath);
+      await saveDiscoveredFolders(
+        targetRoot,
+        machineId,
+        sourceId,
+        scanId,
+        scanningCheckpoint.relativePath,
+        directories,
+        options.now || new Date()
+      );
+
+      const fileResults = await Promise.all(files.map(async (fileEntry) => {
+        const sourceRelativePath = scanningCheckpoint.relativePath === '.'
+          ? fileEntry.name
+          : path.posix.join(scanningCheckpoint.relativePath, fileEntry.name);
+        const stats = await fs.stat(fileEntry.path);
+        return fileScheduler.push({
+          sourceFilePath: fileEntry.path,
+          sourceRelativePath: toPosixPath(sourceRelativePath),
+          stats,
+          now: options.now || new Date()
+        });
+      }));
+
+      for (const result of fileResults) {
+        summary.filesProcessed += 1;
+        if (result.action === 'copied') {
+          summary.filesCopied += 1;
+        } else {
+          summary.filesIndexed += 1;
+        }
+        if (result.logicalPath.includes(' [')) {
+          summary.conflicts += 1;
+        }
       }
-      if (result.logicalPath.includes(' [')) {
-        summary.conflicts += 1;
-      }
+
+      await updateFolderStatus(
+        targetRoot,
+        machineId,
+        sourceId,
+        scanId,
+        scanningCheckpoint,
+        'done',
+        {
+          filesSeen: files.length,
+          subfoldersSeen: directories.length
+        },
+        options.now || new Date()
+      );
+
+      summary.foldersProcessed += 1;
     }
-
-    await updateFolderStatus(
-      targetRoot,
-      machineId,
-      sourceId,
-      scanId,
-      scanningCheckpoint,
-      'done',
-      {
-        filesSeen: files.length,
-        subfoldersSeen: directories.length
-      },
-      options.now || new Date()
-    );
-
-    summary.foldersProcessed += 1;
+  } finally {
+    await fileScheduler.closeAndDrain();
   }
 
   await markGenerationCompleted(targetRoot, machineId, sourceId, options.now || new Date());
@@ -249,5 +273,6 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
 }
 
 module.exports = {
-  backupSource
+  backupSource,
+  processFile
 };

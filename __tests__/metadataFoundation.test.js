@@ -58,6 +58,7 @@ const {
   writePlainFile
 } = require('../src/core/plainFileStorage');
 const { backupSource } = require('../src/core/backupCoordinator');
+const { createWorkScheduler } = require('../src/core/workScheduler');
 
 describe('metadata foundation', () => {
   let tempRootPath;
@@ -817,5 +818,63 @@ describe('metadata foundation', () => {
 
     expect(await fs.readFile(baseConflictPath, 'utf8')).toBe('content-a');
     expect(await fs.readFile(suffixedConflictPath, 'utf8')).toBe('content-b');
+  });
+
+  test('keeps a trial worker when throughput improves enough', async () => {
+    const scheduler = createWorkScheduler({
+      processTask: async (payload) => {
+        await new Promise((resolve) => setTimeout(resolve, payload.delayMs));
+        return { bytesProcessed: payload.bytes };
+      },
+      initialWorkers: 1,
+      maxWorkers: 2,
+      backlogFactor: 1,
+      trialWindowMs: 60,
+      throughputImprovementThreshold: 1.15,
+      idleWaitMs: 2
+    });
+
+    const tasks = Array.from({ length: 12 }, () => (
+      scheduler.push({ bytes: 100, delayMs: 25 })
+    ));
+
+    await Promise.all(tasks);
+    await scheduler.closeAndDrain();
+
+    const snapshot = scheduler.snapshot();
+    expect(snapshot.acceptedWorkers).toBe(2);
+    expect(snapshot.scalingLocked).toBe(false);
+    expect(snapshot.completedTasks).toBe(12);
+  });
+
+  test('rolls back a trial worker and locks scaling when throughput does not improve enough', async () => {
+    let concurrentTasks = 0;
+    const scheduler = createWorkScheduler({
+      processTask: async (payload) => {
+        concurrentTasks += 1;
+        const delayMs = concurrentTasks > 1 ? payload.contendedDelayMs : payload.baseDelayMs;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        concurrentTasks -= 1;
+        return { bytesProcessed: payload.bytes };
+      },
+      initialWorkers: 1,
+      maxWorkers: 2,
+      backlogFactor: 1,
+      trialWindowMs: 80,
+      throughputImprovementThreshold: 1.15,
+      idleWaitMs: 2
+    });
+
+    const tasks = Array.from({ length: 12 }, () => (
+      scheduler.push({ bytes: 100, baseDelayMs: 20, contendedDelayMs: 60 })
+    ));
+
+    await Promise.all(tasks);
+    await scheduler.closeAndDrain();
+
+    const snapshot = scheduler.snapshot();
+    expect(snapshot.acceptedWorkers).toBe(1);
+    expect(snapshot.scalingLocked).toBe(true);
+    expect(snapshot.completedTasks).toBe(12);
   });
 });

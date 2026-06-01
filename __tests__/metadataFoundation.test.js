@@ -50,6 +50,13 @@ const {
 } = require('../src/core/scanManager');
 const { hashFile } = require('../src/core/hashService');
 const { lookupHashRecord, registerHashRecord } = require('../src/core/hashIndex');
+const {
+  cleanupTempFiles,
+  finalizePlainFile,
+  restorePlainFile,
+  verifyStoredPlainFile,
+  writePlainFile
+} = require('../src/core/plainFileStorage');
 
 describe('metadata foundation', () => {
   let tempRootPath;
@@ -631,5 +638,64 @@ describe('metadata foundation', () => {
     expect(unchanged.status).toBe('unchanged');
     expect(unchanged.record.origins).toHaveLength(2);
     expect(unchanged.record.aliases).toHaveLength(1);
+  });
+
+  test('writes a plain file through temp storage, verifies it, and finalizes it', async () => {
+    const sourceFile = path.join(tempRootPath, 'fixtures', 'report.txt');
+    const sourceContent = 'backup content for v1 plain writer';
+    writeFixture(sourceFile, sourceContent);
+    const expectedHash = await hashFile(sourceFile);
+
+    const pendingWrite = await writePlainFile(tempRootPath, {
+      sourcePath: sourceFile,
+      logicalPath: 'Backups/Machines/machine-a/source-a/report.txt',
+      expectedHash,
+      expectedSize: Buffer.byteLength(sourceContent),
+      jobId: 'job-1'
+    });
+
+    expect(await fs.pathExists(pendingWrite.tempPath)).toBe(true);
+    expect(await fs.pathExists(pendingWrite.finalPath)).toBe(false);
+
+    const contentRef = await finalizePlainFile(tempRootPath, pendingWrite);
+    expect(contentRef).toEqual({
+      type: 'plain',
+      path: 'Backups/Machines/machine-a/source-a/report.txt'
+    });
+    expect(await fs.pathExists(pendingWrite.tempPath)).toBe(false);
+    expect(await fs.pathExists(pendingWrite.finalPath)).toBe(true);
+    expect(await fs.readFile(pendingWrite.finalPath, 'utf8')).toBe(sourceContent);
+    expect(await verifyStoredPlainFile(tempRootPath, contentRef, expectedHash, Buffer.byteLength(sourceContent))).toBe(true);
+  });
+
+  test('restores a stored plain file and cleans temp files', async () => {
+    const sourceFile = path.join(tempRootPath, 'fixtures', 'photo.txt');
+    writeFixture(sourceFile, 'restorable content');
+    const expectedHash = await hashFile(sourceFile);
+
+    const pendingWrite = await writePlainFile(tempRootPath, {
+      sourcePath: sourceFile,
+      logicalPath: 'Backups/Machines/machine-a/source-a/photo.txt',
+      expectedHash,
+      expectedSize: Buffer.byteLength('restorable content'),
+      jobId: 'job-2'
+    });
+    const contentRef = await finalizePlainFile(tempRootPath, pendingWrite);
+
+    const restorePath = path.join(tempRootPath, 'restore', 'photo.txt');
+    await restorePlainFile(tempRootPath, contentRef, restorePath);
+    expect(await fs.readFile(restorePath, 'utf8')).toBe('restorable content');
+
+    const danglingWrite = await writePlainFile(tempRootPath, {
+      sourcePath: sourceFile,
+      logicalPath: 'Backups/Machines/machine-a/source-a/temp-only.txt',
+      expectedHash,
+      expectedSize: Buffer.byteLength('restorable content'),
+      jobId: 'job-3'
+    });
+
+    expect(await fs.pathExists(danglingWrite.tempPath)).toBe(true);
+    expect(await cleanupTempFiles(tempRootPath)).toBe(1);
+    expect(await fs.pathExists(danglingWrite.tempPath)).toBe(false);
   });
 });

@@ -3,7 +3,6 @@ const path = require('path');
 const METADATA_ROOT = '.mybackup';
 const BACKUPS_ROOT = 'Backups';
 const BACKUPS_MACHINES_ROOT = path.posix.join(BACKUPS_ROOT, 'Machines');
-const BACKUPS_MERGED_ROOT = path.posix.join(BACKUPS_ROOT, 'Merged');
 const IMAGES_ROOT = 'Images';
 const VIDEOS_ROOT = 'Videos';
 
@@ -31,6 +30,10 @@ function sourcePath(targetRoot, machineId, sourceId) {
   return path.join(metadataRoot(targetRoot), 'sources', machineId, `${sourceId}.json`);
 }
 
+function sourceSnapshotPath(targetRoot, machineId, sourceId) {
+  return path.join(metadataRoot(targetRoot), 'source-state', machineId, `${sourceId}.json`);
+}
+
 function hashPath(targetRoot, fileHash) {
   return path.join(metadataRoot(targetRoot), 'hashes', fileHash.slice(0, 2), fileHash.slice(2, 4), `${fileHash}.json`);
 }
@@ -41,6 +44,10 @@ function scanCurrentPath(targetRoot, machineId, sourceId) {
 
 function scanGenerationRoot(targetRoot, machineId, sourceId, scanId) {
   return path.join(metadataRoot(targetRoot), 'scans', machineId, sourceId, 'generations', scanId);
+}
+
+function errorReportPath(targetRoot, machineId, sourceId, scanId) {
+  return path.join(metadataRoot(targetRoot), 'reports', machineId, sourceId, `${scanId}.jsonl`);
 }
 
 function folderCheckpointPath(targetRoot, machineId, sourceId, scanId, folderId) {
@@ -56,7 +63,7 @@ function machineBackupRoot(machineId, sourceId) {
 }
 
 function mergedBackupRoot(mergeKey) {
-  return path.posix.join(BACKUPS_MERGED_ROOT, mergeKey);
+  return toPosixPath(mergeKey);
 }
 
 function mediaRoot(kind, year, day, tail) {
@@ -66,12 +73,12 @@ function mediaRoot(kind, year, day, tail) {
 
 module.exports = {
   BACKUPS_MACHINES_ROOT,
-  BACKUPS_MERGED_ROOT,
   BACKUPS_ROOT,
   IMAGES_ROOT,
   METADATA_ROOT,
   VIDEOS_ROOT,
   configPath,
+  errorReportPath,
   folderCheckpointPath,
   hashPath,
   machineBackupRoot,
@@ -83,6 +90,7 @@ module.exports = {
   scanCurrentPath,
   scanGenerationRoot,
   sourcePath,
+  sourceSnapshotPath,
   tempRoot,
   toPosixPath
 };

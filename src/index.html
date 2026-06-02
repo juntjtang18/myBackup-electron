@@ -7,143 +7,460 @@
   <link rel="stylesheet" href="../node_modules/bootstrap/dist/css/bootstrap.min.css">
   <style>
     :root {
-      --canvas: #f2efe6;
-      --panel: #fffdf8;
-      --ink: #1a1a16;
-      --muted: #6b665a;
-      --accent: #0e6b61;
-      --line: #d8d1c2;
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --line: #d6dde5;
+      --ink: #18212b;
+      --muted: #5f6b77;
+      --accent: #136f63;
+      --accent-soft: #e6f4f1;
+      --warn: #8c4b00;
+      --warn-soft: #fff1df;
     }
 
     body {
       margin: 0;
       min-height: 100vh;
-      background:
-        radial-gradient(circle at top left, rgba(14, 107, 97, 0.14), transparent 30%),
-        radial-gradient(circle at bottom right, rgba(164, 113, 54, 0.16), transparent 28%),
-        var(--canvas);
+      background: var(--bg);
       color: var(--ink);
-      font-family: Georgia, "Times New Roman", serif;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
-    .shell {
-      max-width: 980px;
+    .app-shell {
+      max-width: 1360px;
       margin: 0 auto;
-      padding: 48px 24px 64px;
+      padding: 24px;
     }
 
-    .headline {
-      display: grid;
-      grid-template-columns: 2fr 1fr;
-      gap: 24px;
-      align-items: end;
-      margin-bottom: 28px;
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 20px;
     }
 
-    h1 {
+    .title-block h1 {
       margin: 0;
-      font-size: 3.4rem;
-      line-height: 0.95;
-      font-weight: 700;
+      font-size: 1.8rem;
+      line-height: 1.1;
     }
 
-    .eyebrow {
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      font-size: 0.75rem;
+    .title-block p {
+      margin: 4px 0 0;
       color: var(--muted);
-      margin-bottom: 12px;
+      font-size: 0.95rem;
     }
 
-    .summary {
-      color: var(--muted);
-      font-size: 1.05rem;
-      line-height: 1.5;
-      max-width: 40rem;
-    }
-
-    .panel-grid {
+    .workspace {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 14px;
-      margin-top: 24px;
+      grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .column {
+      display: grid;
+      gap: 16px;
+      min-width: 0;
     }
 
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 18px;
-      min-height: 170px;
+      border-radius: 8px;
+      padding: 16px;
+      min-width: 0;
     }
 
-    .panel h2 {
-      margin: 0 0 10px;
-      font-size: 0.85rem;
-      text-transform: uppercase;
-      color: var(--muted);
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
     }
 
-    .panel p,
-    .panel li {
-      font-size: 0.96rem;
-      line-height: 1.5;
-    }
-
-    .panel ul {
+    .panel-header h2 {
       margin: 0;
-      padding-left: 18px;
+      font-size: 1rem;
     }
 
-    .footer-note {
-      margin-top: 24px;
-      font-size: 0.92rem;
+    .muted {
       color: var(--muted);
     }
 
-    @media (max-width: 860px) {
-      .headline,
-      .panel-grid {
+    .small {
+      font-size: 0.88rem;
+    }
+
+    .target-box {
+      display: grid;
+      gap: 10px;
+    }
+
+    .target-path {
+      min-height: 42px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfd;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.82rem;
+      overflow-wrap: anywhere;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 6px;
+    }
+
+    .stat {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 12px;
+      background: #fbfcfd;
+    }
+
+    .stat-label {
+      font-size: 0.77rem;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+
+    .stat-value {
+      margin-top: 6px;
+      font-size: 1.2rem;
+      font-weight: 600;
+    }
+
+    .form-grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .checkbox-row {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .source-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+
+    .source-table th,
+    .source-table td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 8px;
+      vertical-align: top;
+      text-align: left;
+    }
+
+    .source-progress-row td {
+      background: #fbfcfd;
+      padding: 0 8px 12px;
+    }
+
+    .source-progress-panel {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px 12px;
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .progress-summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      align-items: center;
+      font-size: 0.84rem;
+      color: var(--muted);
+    }
+
+    .progress-summary strong {
+      color: var(--ink);
+    }
+
+    .worker-list {
+      display: grid;
+      gap: 6px;
+    }
+
+    .worker-line {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) 92px 92px;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      font-size: 0.82rem;
+      line-height: 1.2;
+    }
+
+    .worker-type {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 20px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #ffffff;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: var(--ink);
+      flex: none;
+    }
+
+    .worker-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+    }
+
+    .worker-progress {
+      height: 6px;
+      background: #e9eef3;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .worker-progress-fill {
+      height: 100%;
+      background: var(--accent);
+    }
+
+    .worker-bytes {
+      text-align: right;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .source-table th {
+      color: var(--muted);
+      font-size: 0.77rem;
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+
+    .path-cell {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.8rem;
+      overflow-wrap: anywhere;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.74rem;
+      border: 1px solid var(--line);
+      background: #f8fafc;
+      margin-right: 6px;
+      margin-bottom: 6px;
+    }
+
+    .tag-merge {
+      background: var(--accent-soft);
+      border-color: #bfe0d8;
+      color: #0b5a50;
+    }
+
+    .tag-media {
+      background: var(--warn-soft);
+      border-color: #f1d1aa;
+      color: var(--warn);
+    }
+
+    .actions-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .log-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      max-height: 340px;
+      overflow: auto;
+      display: grid;
+      gap: 8px;
+    }
+
+    .log-item {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px 12px;
+      background: #fbfcfd;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .log-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 0.77rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+      min-width: 0;
+    }
+
+    .log-meta span:last-child,
+    .log-item .small {
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .empty-state {
+      padding: 24px 12px;
+      text-align: center;
+      color: var(--muted);
+      border: 1px dashed var(--line);
+      border-radius: 6px;
+      background: #fbfcfd;
+    }
+
+    .toolbar-status {
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    @media (max-width: 1040px) {
+      .workspace {
         grid-template-columns: 1fr;
       }
 
-      h1 {
-        font-size: 2.6rem;
+      .stats-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .worker-line {
+        grid-template-columns: 42px minmax(0, 1fr) 1fr;
+      }
+
+      .worker-bytes {
+        grid-column: 3;
       }
     }
   </style>
 </head>
 <body>
-  <main class="shell">
-    <section class="headline">
-      <div>
-        <div class="eyebrow">Metadata Foundation</div>
-        <h1>MyBackup<br>Step 1</h1>
+  <main class="app-shell">
+    <header class="topbar">
+      <div class="title-block">
+        <h1>MyBackup</h1>
+        <p>Source registration, backup execution, and restore over the current metadata core.</p>
       </div>
-      <p class="summary">
-        Machine records, source mappings, hash metadata, scan generations, and atomic JSON persistence are in place.
-      </p>
-    </section>
+      <div class="d-flex align-items-center gap-3">
+        <div>
+          <label class="form-label small mb-1" for="logLevelSelect">Log Level</label>
+          <select class="form-select form-select-sm" id="logLevelSelect">
+            <option value="debug">debug</option>
+            <option value="info">info</option>
+            <option value="warn">warn</option>
+            <option value="error">error</option>
+            <option value="off">off</option>
+          </select>
+        </div>
+        <div class="toolbar-status" id="machineLabel">No target selected</div>
+      </div>
+    </header>
 
-    <section class="panel-grid">
-      <article class="panel">
-        <h2>Schema</h2>
-        <p>`machines`, `sources`, `hashes`, `scans`, and `tmp` are now explicit metadata domains with versioned JSON records.</p>
-      </article>
-      <article class="panel">
-        <h2>Paths</h2>
-        <p>The project now has one layout module for all metadata and backup path conventions, including machine-separated and merged targets.</p>
-      </article>
-      <article class="panel">
-        <h2>Storage Hook</h2>
-        <ul>
-          <li>`content.type = plain` for v1</li>
-          <li>`content.type = blocks` reserved for future dedupe storage</li>
-        </ul>
-      </article>
-    </section>
+    <section class="workspace">
+      <div class="column">
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Backup Target</h2>
+            <button class="btn btn-sm btn-primary" id="selectTargetButton">Select Folder</button>
+          </div>
+          <div class="target-box">
+            <div class="target-path" id="targetPath">No target selected.</div>
+            <div class="small muted" id="targetHint">Choose the backup root before registering sources.</div>
+          </div>
+        </section>
 
-    <p class="footer-note" id="statusLine"></p>
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Add Source</h2>
+          </div>
+          <form class="form-grid" id="sourceForm">
+            <div>
+              <label class="form-label" for="sourcePathInput">Source Folder</label>
+              <div class="input-group">
+                <input class="form-control" id="sourcePathInput" type="text" placeholder="/Users/James/Documents">
+                <button class="btn btn-outline-secondary" type="button" id="browseSourceButton">Browse</button>
+              </div>
+            </div>
+            <div class="checkbox-row">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="mergeEnabledInput">
+                <label class="form-check-label" for="mergeEnabledInput">Merge</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="organizeMediaInput">
+                <label class="form-check-label" for="organizeMediaInput">Organize Media</label>
+              </div>
+            </div>
+            <div>
+              <label class="form-label" for="mergeKeyInput">Merge Key</label>
+              <input class="form-control" id="mergeKeyInput" type="text" placeholder="documents">
+            </div>
+            <div class="actions-row">
+              <button class="btn btn-success" type="submit" id="addSourceButton">Register Source</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Activity</h2>
+          </div>
+          <ul class="log-list" id="logList"></ul>
+        </section>
+      </div>
+
+      <div class="column">
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Current Machine</h2>
+          </div>
+          <div class="stats-grid">
+            <div class="stat">
+              <div class="stat-label">Machine</div>
+              <div class="stat-value" id="statMachine">-</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">Sources</div>
+              <div class="stat-value" id="statSources">0</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">Last Scanned</div>
+              <div class="stat-value" id="statScanned">-</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Sources</h2>
+          </div>
+          <div id="sourcesContainer"></div>
+        </section>
+      </div>
+    </section>
   </main>
 
   <script src="./renderer.js"></script>

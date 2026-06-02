@@ -1,5 +1,6 @@
 const path = require('path');
 const fs = require('fs-extra');
+const crypto = require('crypto');
 const { getTempRoot } = require('./metadataStore');
 const { resolveTargetRoot, toPosixPath } = require('./layout');
 const { hashFile } = require('./hashService');
@@ -38,19 +39,55 @@ async function writePlainFile(targetRoot, input) {
 
   await fs.ensureDir(path.dirname(absoluteDestination));
   await fs.ensureDir(path.dirname(tempPath));
-  await fs.copy(input.sourcePath, tempPath, { preserveTimestamps: true, overwrite: true });
+  const sourceStat = await fs.stat(input.sourcePath);
+  const expectedSize = input.expectedSize !== undefined ? input.expectedSize : sourceStat.size;
+  const hasher = crypto.createHash('sha256');
+  const readStream = fs.createReadStream(input.sourcePath, {
+    highWaterMark: input.chunkSize || 1024 * 1024
+  });
+  const writeStream = fs.createWriteStream(tempPath, {
+    flags: 'w'
+  });
 
-  const stat = await fs.stat(tempPath);
-  if (stat.size !== input.expectedSize) {
+  let copiedBytes = 0;
+
+  await new Promise((resolve, reject) => {
+    function fail(error) {
+      readStream.destroy();
+      writeStream.destroy();
+      reject(error);
+    }
+
+    readStream.on('data', (chunk) => {
+      copiedBytes += chunk.length;
+      hasher.update(chunk);
+      if (typeof input.onProgress === 'function') {
+        input.onProgress({
+          phase: 'copy',
+          copiedBytes,
+          totalBytes: expectedSize,
+          logicalPath: toPosixPath(input.logicalPath)
+        });
+      }
+    });
+    readStream.on('error', fail);
+    writeStream.on('error', fail);
+    writeStream.on('close', resolve);
+    readStream.pipe(writeStream);
+  });
+
+  const actualHash = hasher.digest('hex');
+  if (copiedBytes !== expectedSize) {
     await fs.remove(tempPath);
     throw new Error(`Copied file size mismatch for ${input.logicalPath}`);
   }
 
-  const actualHash = await hashFile(tempPath);
   if (actualHash !== input.expectedHash) {
     await fs.remove(tempPath);
     throw new Error(`Copied file hash mismatch for ${input.logicalPath}`);
   }
+
+  await fs.utimes(tempPath, sourceStat.atime, sourceStat.mtime);
 
   return {
     tempPath,
@@ -65,6 +102,21 @@ async function writePlainFile(targetRoot, input) {
 async function finalizePlainFile(targetRoot, pendingWrite) {
   const destination = pendingWrite.finalPath || resolveLogicalPath(targetRoot, pendingWrite.content.path);
   await fs.ensureDir(path.dirname(destination));
+  if (await fs.pathExists(destination)) {
+    const existingHash = await hashFile(destination);
+    const tempHash = pendingWrite.expectedHash || await hashFile(pendingWrite.tempPath);
+    if (existingHash === tempHash) {
+      await fs.remove(pendingWrite.tempPath);
+      return {
+        type: 'plain',
+        path: pendingWrite.content.path
+      };
+    }
+
+    await fs.remove(pendingWrite.tempPath);
+    throw new Error(`Destination already exists with different content for ${pendingWrite.content.path}`);
+  }
+
   await fs.move(pendingWrite.tempPath, destination, { overwrite: false });
   return {
     type: 'plain',

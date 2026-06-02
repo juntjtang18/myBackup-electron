@@ -17,6 +17,7 @@ function createWorkScheduler(options) {
     throughputImprovementThreshold: options.throughputImprovementThreshold || 1.15,
     now: options.now || (() => Date.now()),
     idleWaitMs: Math.max(1, options.idleWaitMs || 10),
+    onWorkerEvent: typeof options.onWorkerEvent === 'function' ? options.onWorkerEvent : null,
     queue: [],
     workers: [],
     acceptedWorkers: 0,
@@ -75,6 +76,14 @@ function createWorkScheduler(options) {
       }
 
       const startedAt = scheduler.now();
+      if (scheduler.onWorkerEvent) {
+        scheduler.onWorkerEvent({
+          type: 'task-started',
+          workerId: worker.id,
+          payload: item.payload,
+          snapshot: snapshot()
+        });
+      }
       try {
         const result = await scheduler.processTask(item.payload, {
           workerId: worker.id
@@ -84,8 +93,28 @@ function createWorkScheduler(options) {
         scheduler.completedTasks += 1;
         scheduler.totalBytes += bytesProcessed;
         scheduler.totalTaskDurationMs += durationMs;
+        if (scheduler.onWorkerEvent) {
+          scheduler.onWorkerEvent({
+            type: 'task-completed',
+            workerId: worker.id,
+            payload: item.payload,
+            result,
+            snapshot: snapshot()
+          });
+        }
         item.resolve(result);
       } catch (error) {
+        if (scheduler.onWorkerEvent) {
+          scheduler.onWorkerEvent({
+            type: 'task-failed',
+            workerId: worker.id,
+            payload: item.payload,
+            error: {
+              message: error.message
+            },
+            snapshot: snapshot()
+          });
+        }
         item.reject(error);
       } finally {
         scheduler.pendingTasks -= 1;
@@ -110,8 +139,31 @@ function createWorkScheduler(options) {
       accepted
     };
     scheduler.workers.push(worker);
+    if (scheduler.onWorkerEvent) {
+      scheduler.onWorkerEvent({
+        type: 'worker-started',
+        workerId: worker.id,
+        accepted,
+        snapshot: snapshot()
+      });
+    }
     worker.promise = workerLoop(worker);
     return worker;
+  }
+
+  function snapshot() {
+    return {
+      activeWorkers: activeWorkers(),
+      acceptedWorkers: scheduler.acceptedWorkers,
+      queueDepth: scheduler.queue.length,
+      pendingTasks: scheduler.pendingTasks,
+      completedTasks: scheduler.completedTasks,
+      totalBytes: scheduler.totalBytes,
+      totalTaskDurationMs: scheduler.totalTaskDurationMs,
+      throughputBytesPerSecond: overallThroughput(),
+      trialActive: Boolean(scheduler.trial),
+      scalingLocked: scheduler.scalingLocked
+    };
   }
 
   function activeWorkers() {
@@ -126,6 +178,13 @@ function createWorkScheduler(options) {
 
     scheduler.trial.worker.retireAfterTask = true;
     scheduler.scalingLocked = true;
+    if (scheduler.onWorkerEvent) {
+      scheduler.onWorkerEvent({
+        type: 'trial-rejected',
+        workerId: scheduler.trial.worker.id,
+        snapshot: snapshot()
+      });
+    }
     scheduler.trial = null;
   }
 
@@ -147,6 +206,13 @@ function createWorkScheduler(options) {
     if (baseline > 0 && afterThroughput >= baseline * scheduler.throughputImprovementThreshold) {
       scheduler.acceptedWorkers += 1;
       scheduler.trial.worker.accepted = true;
+      if (scheduler.onWorkerEvent) {
+        scheduler.onWorkerEvent({
+          type: 'trial-accepted',
+          workerId: scheduler.trial.worker.id,
+          snapshot: snapshot()
+        });
+      }
       scheduler.trial = null;
       return;
     }
@@ -180,6 +246,13 @@ function createWorkScheduler(options) {
       bytesAtStart: scheduler.totalBytes,
       beforeThroughput: baseline
     };
+    if (scheduler.onWorkerEvent) {
+      scheduler.onWorkerEvent({
+        type: 'trial-started',
+        workerId: worker.id,
+        snapshot: snapshot()
+      });
+    }
     return true;
   }
 
@@ -223,20 +296,7 @@ function createWorkScheduler(options) {
 
       await Promise.all(scheduler.workers.map((worker) => worker.promise));
     },
-    snapshot() {
-      return {
-        activeWorkers: activeWorkers(),
-        acceptedWorkers: scheduler.acceptedWorkers,
-        queueDepth: scheduler.queue.length,
-        pendingTasks: scheduler.pendingTasks,
-        completedTasks: scheduler.completedTasks,
-        totalBytes: scheduler.totalBytes,
-        totalTaskDurationMs: scheduler.totalTaskDurationMs,
-        throughputBytesPerSecond: overallThroughput(),
-        trialActive: Boolean(scheduler.trial),
-        scalingLocked: scheduler.scalingLocked
-      };
-    }
+    snapshot
   };
 }
 

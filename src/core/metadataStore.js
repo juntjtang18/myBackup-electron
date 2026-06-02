@@ -1,3 +1,4 @@
+const fs = require('fs-extra');
 const {
   configPath,
   folderCheckpointPath,
@@ -53,6 +54,10 @@ async function saveHashRecord(targetRoot, document) {
   await writeJsonAtomic(hashPath(targetRoot, document.fileHash), document);
 }
 
+async function deleteHashRecord(targetRoot, fileHash) {
+  await fs.remove(hashPath(targetRoot, fileHash));
+}
+
 async function loadScanState(targetRoot, machineId, sourceId) {
   return readJsonIfExists(scanCurrentPath(targetRoot, machineId, sourceId), validateScanState);
 }
@@ -92,6 +97,7 @@ module.exports = {
   saveAppConfig,
   saveFolderCheckpoint,
   saveHashRecord,
+  deleteHashRecord,
   saveMachine,
   saveScanState,
   saveSource

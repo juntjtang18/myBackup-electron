@@ -126,10 +126,28 @@ async function markGenerationCompleted(targetRoot, machineId, sourceId, now = ne
   return completed;
 }
 
+async function markGenerationPaused(targetRoot, machineId, sourceId, now = new Date()) {
+  const state = await loadScanState(targetRoot, machineId, sourceId);
+  if (!state) {
+    throw new Error(`Scan state not found: ${machineId}/${sourceId}`);
+  }
+
+  const paused = createScanState({
+    ...state,
+    status: 'paused',
+    completedAt: null,
+    updatedAt: now.toISOString()
+  }, now);
+
+  await saveScanState(targetRoot, paused);
+  return paused;
+}
+
 module.exports = {
   ensureScanState,
   getResumeState,
   markGenerationCompleted,
+  markGenerationPaused,
   saveDiscoveredFolders,
   startNewGeneration,
   updateFolderStatus

@@ -2,7 +2,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('myBackup', {
   getDashboard: () => ipcRenderer.invoke('app:get-dashboard'),
-  selectTarget: () => ipcRenderer.invoke('app:select-target'),
+  addTarget: () => ipcRenderer.invoke('app:add-target'),
+  removeTarget: (input) => ipcRenderer.invoke('app:remove-target', input),
+  setTargetCollapsed: (input) => ipcRenderer.invoke('app:set-target-collapsed', input),
   pickSourceFolder: () => ipcRenderer.invoke('app:pick-source-folder'),
   addSource: (input) => ipcRenderer.invoke('app:add-source', input),
   runBackup: (input) => ipcRenderer.invoke('app:run-backup', input),

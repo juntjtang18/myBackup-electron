@@ -12,11 +12,16 @@ const { readJsonIfExists, writeJsonAtomic } = require('./jsonStore');
 const {
   validateAppConfig,
   validateFolderCheckpoint,
-  validateHashRecord,
   validateMachineRecord,
   validateScanState,
   validateSourceRecord
 } = require('./schema');
+const {
+  deleteHashRecord,
+  listHashRecords,
+  loadHashRecord,
+  saveHashRecord
+} = require('./hashBucketStore');
 
 async function loadAppConfig(targetRoot) {
   return readJsonIfExists(configPath(targetRoot), validateAppConfig);
@@ -43,19 +48,6 @@ async function loadSource(targetRoot, machineId, sourceId) {
 async function saveSource(targetRoot, document) {
   validateSourceRecord(document);
   await writeJsonAtomic(sourcePath(targetRoot, document.machineId, document.sourceId), document);
-}
-
-async function loadHashRecord(targetRoot, fileHash) {
-  return readJsonIfExists(hashPath(targetRoot, fileHash), validateHashRecord);
-}
-
-async function saveHashRecord(targetRoot, document) {
-  validateHashRecord(document);
-  await writeJsonAtomic(hashPath(targetRoot, document.fileHash), document);
-}
-
-async function deleteHashRecord(targetRoot, fileHash) {
-  await fs.remove(hashPath(targetRoot, fileHash));
 }
 
 async function loadScanState(targetRoot, machineId, sourceId) {
@@ -88,6 +80,8 @@ function getTempRoot(targetRoot) {
 
 module.exports = {
   getTempRoot,
+  hashPath,
+  listHashRecords,
   loadAppConfig,
   loadFolderCheckpoint,
   loadHashRecord,

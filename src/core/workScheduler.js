@@ -2,6 +2,14 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+class SchedulerCancelledError extends Error {
+  constructor() {
+    super('Scheduler cancelled.');
+    this.name = 'SchedulerCancelledError';
+    this.code = 'PAUSE_CANCELLED';
+  }
+}
+
 function createWorkScheduler(options) {
   if (!options || typeof options.processTask !== 'function') {
     throw new Error('processTask is required.');
@@ -18,6 +26,8 @@ function createWorkScheduler(options) {
     now: options.now || (() => Date.now()),
     idleWaitMs: Math.max(1, options.idleWaitMs || 10),
     onWorkerEvent: typeof options.onWorkerEvent === 'function' ? options.onWorkerEvent : null,
+    summarizePayload: typeof options.summarizePayload === 'function' ? options.summarizePayload : null,
+    queuePreviewLimit: Math.max(1, options.queuePreviewLimit || 20),
     queue: [],
     workers: [],
     acceptedWorkers: 0,
@@ -76,6 +86,7 @@ function createWorkScheduler(options) {
       }
 
       const startedAt = scheduler.now();
+      worker.currentPayload = item.payload;
       if (scheduler.onWorkerEvent) {
         scheduler.onWorkerEvent({
           type: 'task-started',
@@ -117,6 +128,7 @@ function createWorkScheduler(options) {
         }
         item.reject(error);
       } finally {
+        worker.currentPayload = null;
         scheduler.pendingTasks -= 1;
       }
 
@@ -136,7 +148,8 @@ function createWorkScheduler(options) {
       retireAfterTask: false,
       shouldStop: false,
       exited: false,
-      accepted
+      accepted,
+      currentPayload: null
     };
     scheduler.workers.push(worker);
     if (scheduler.onWorkerEvent) {
@@ -151,12 +164,40 @@ function createWorkScheduler(options) {
     return worker;
   }
 
+  function queuedItems() {
+    if (!scheduler.summarizePayload) {
+      return [];
+    }
+
+    return scheduler.queue
+      .slice(0, scheduler.queuePreviewLimit)
+      .map((item) => scheduler.summarizePayload(item.payload));
+  }
+
+  function inFlightCount() {
+    return scheduler.workers.filter((worker) => !worker.exited && worker.currentPayload).length;
+  }
+
+  function inFlightItems() {
+    if (!scheduler.summarizePayload) {
+      return [];
+    }
+
+    return scheduler.workers
+      .filter((worker) => !worker.exited && worker.currentPayload)
+      .slice(0, scheduler.queuePreviewLimit)
+      .map((worker) => scheduler.summarizePayload(worker.currentPayload));
+  }
+
   function snapshot() {
     return {
       activeWorkers: activeWorkers(),
       acceptedWorkers: scheduler.acceptedWorkers,
       queueDepth: scheduler.queue.length,
       pendingTasks: scheduler.pendingTasks,
+      inFlightCount: inFlightCount(),
+      queuedItems: queuedItems(),
+      inFlightItems: inFlightItems(),
       completedTasks: scheduler.completedTasks,
       totalBytes: scheduler.totalBytes,
       totalTaskDurationMs: scheduler.totalTaskDurationMs,
@@ -256,10 +297,14 @@ function createWorkScheduler(options) {
     return true;
   }
 
-  for (let index = 0; index < scheduler.initialWorkers; index += 1) {
-    startWorker({ accepted: true });
-    scheduler.acceptedWorkers += 1;
+  function startInitialWorkers() {
+    for (let index = 0; index < scheduler.initialWorkers; index += 1) {
+      startWorker({ accepted: true });
+      scheduler.acceptedWorkers += 1;
+    }
   }
+
+  queueMicrotask(startInitialWorkers);
 
   return {
     async push(payload) {
@@ -296,10 +341,38 @@ function createWorkScheduler(options) {
 
       await Promise.all(scheduler.workers.map((worker) => worker.promise));
     },
+    async closeAndCancel() {
+      scheduler.closed = true;
+
+      while (scheduler.queue.length > 0) {
+        const item = scheduler.queue.shift();
+        scheduler.pendingTasks -= 1;
+        item.reject(new SchedulerCancelledError());
+      }
+
+      while (scheduler.pendingTasks > 0) {
+        evaluateTrial();
+        await sleep(scheduler.idleWaitMs);
+      }
+
+      if (scheduler.trial) {
+        evaluateTrial();
+        if (scheduler.trial) {
+          markTrialFailed();
+        }
+      }
+
+      for (const worker of scheduler.workers) {
+        worker.shouldStop = true;
+      }
+
+      await Promise.all(scheduler.workers.map((worker) => worker.promise));
+    },
     snapshot
   };
 }
 
 module.exports = {
+  SchedulerCancelledError,
   createWorkScheduler
 };

@@ -1,8 +1,7 @@
 const path = require('path');
-const fs = require('fs-extra');
-const { metadataRoot, toPosixPath } = require('./layout');
+const { toPosixPath } = require('./layout');
 const { restorePlainFile } = require('./plainFileStorage');
-const { loadHashRecord } = require('./metadataStore');
+const { listHashRecords } = require('./metadataStore');
 
 function getAllLogicalPaths(record) {
   const paths = [];
@@ -18,40 +17,6 @@ function getAllLogicalPaths(record) {
   }
 
   return paths;
-}
-
-async function listHashRecords(targetRoot) {
-  const hashesRoot = path.join(metadataRoot(targetRoot), 'hashes');
-  if (!(await fs.pathExists(hashesRoot))) {
-    return [];
-  }
-
-  const records = [];
-
-  async function walk(currentPath) {
-    const entries = await fs.readdir(currentPath, { withFileTypes: true });
-    for (const entry of entries) {
-      const entryPath = path.join(currentPath, entry.name);
-      if (entry.isDirectory()) {
-        await walk(entryPath);
-        continue;
-      }
-
-      if (!entry.isFile() || !entry.name.endsWith('.json')) {
-        continue;
-      }
-
-      const fileHash = path.basename(entry.name, '.json');
-      const record = await loadHashRecord(targetRoot, fileHash);
-      if (record) {
-        records.push(record);
-      }
-    }
-  }
-
-  await walk(hashesRoot);
-  records.sort((left, right) => left.fileHash.localeCompare(right.fileHash));
-  return records;
 }
 
 function isPathInsideRoot(logicalPath, logicalRoot) {

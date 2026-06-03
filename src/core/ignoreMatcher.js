@@ -2,6 +2,23 @@ const path = require('path');
 const fs = require('fs-extra');
 const { toPosixPath } = require('./layout');
 
+const DEFAULT_IGNORE_PATTERNS = [
+  'node_modules/',
+  'bower_components/',
+  'jspm_packages/',
+  'vendor/',
+  '__pycache__/',
+  '.pytest_cache/',
+  '.mypy_cache/',
+  '.tox/',
+  '.venv/',
+  'venv/',
+  'Pods/',
+  '.git/',
+  '.svn/',
+  '.hg/'
+];
+
 function escapeRegex(value) {
   return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
 }
@@ -104,18 +121,13 @@ function shouldIgnorePath(rules, relativePath, isDirectory) {
   return ignored;
 }
 
-async function loadIgnoreMatcher(sourceRoot) {
-  const ignorePath = path.join(sourceRoot, '.mbignore');
-  if (!(await fs.pathExists(ignorePath))) {
-    return {
-      rules: [],
-      shouldIgnore: () => false
-    };
-  }
+function buildIgnoreRules(content = '') {
+  const defaultRules = parseIgnoreFile(DEFAULT_IGNORE_PATTERNS.join('\n'));
+  const userRules = content ? parseIgnoreFile(content) : [];
+  return [...defaultRules, ...userRules];
+}
 
-  const content = await fs.readFile(ignorePath, 'utf8');
-  const rules = parseIgnoreFile(content);
-
+function createIgnoreMatcher(rules) {
   return {
     rules,
     shouldIgnore(relativePath, isDirectory) {
@@ -124,7 +136,20 @@ async function loadIgnoreMatcher(sourceRoot) {
   };
 }
 
+async function loadIgnoreMatcher(sourceRoot) {
+  const ignorePath = path.join(sourceRoot, '.mbignore');
+  let userContent = '';
+  if (await fs.pathExists(ignorePath)) {
+    userContent = await fs.readFile(ignorePath, 'utf8');
+  }
+
+  return createIgnoreMatcher(buildIgnoreRules(userContent));
+}
+
 module.exports = {
+  DEFAULT_IGNORE_PATTERNS,
+  buildIgnoreRules,
+  createIgnoreMatcher,
   loadIgnoreMatcher,
   parseIgnoreFile,
   shouldIgnorePath

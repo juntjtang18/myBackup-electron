@@ -1,3 +1,5 @@
+process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || '16';
+
 const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const path = require('path');
 const { ensureMachine } = require('./core/machineRegistry');
@@ -5,6 +7,7 @@ const { registerSource } = require('./core/sourceRegistry');
 const { backupSource } = require('./core/backupCoordinator');
 const { restoreLogicalTree, restoreSource } = require('./core/restoreService');
 const { loadLocalConfig, saveLocalConfig } = require('./core/localConfig');
+const { addTarget, removeTarget, requireRegisteredTarget, setTargetCollapsed } = require('./core/targetRegistry');
 const { loadCurrentMachineContext } = require('./core/sourceCatalog');
 const { configureLogger, createLogger, getLogLevel } = require('./core/logger');
 
@@ -44,45 +47,67 @@ function getAppDataRoot() {
   return app.getPath('userData');
 }
 
-async function buildDashboardState() {
-  const localConfig = await loadLocalConfig(getAppDataRoot());
-  if (!localConfig.targetRoot) {
+function backupKey(targetRoot, machineId, sourceId) {
+  return `${targetRoot}::${machineId}::${sourceId}`;
+}
+
+function mapSourceEntry(source) {
+  return {
+    machineId: source.machineId,
+    sourceId: source.sourceId,
+    sourcePath: source.sourcePath,
+    targetSubdir: source.targetSubdir,
+    mergeEnabled: source.mergeEnabled,
+    mergeKey: source.mergeKey,
+    organizeMedia: source.organizeMedia,
+    lastCompletedScan: source.lastCompletedScan,
+    lastCompletedAt: source.lastCompletedAt,
+    scanStatus: source.scanState ? source.scanState.status : null,
+    activeGeneration: source.scanState ? source.scanState.activeGeneration : null
+  };
+}
+
+async function buildTargetDashboardEntry(target) {
+  try {
+    const context = await loadCurrentMachineContext(target.path);
     return {
-      targetRoot: null,
-      logLevel: localConfig.logLevel || getLogLevel(),
+      id: target.id,
+      path: target.path,
+      collapsed: target.collapsed,
+      addedAt: target.addedAt,
+      machine: context.machine,
+      sources: context.sources.map(mapSourceEntry)
+    };
+  } catch (error) {
+    logger.warn('Failed to load backup target context.', {
+      targetRoot: target.path,
+      message: error.message
+    });
+    return {
+      id: target.id,
+      path: target.path,
+      collapsed: target.collapsed,
+      addedAt: target.addedAt,
       machine: null,
       sources: []
     };
   }
+}
 
-  const context = await loadCurrentMachineContext(localConfig.targetRoot);
+async function buildDashboardState() {
+  const localConfig = await loadLocalConfig(getAppDataRoot());
+  const targets = await Promise.all(
+    (localConfig.targets || []).map((target) => buildTargetDashboardEntry(target))
+  );
+
   return {
-    targetRoot: localConfig.targetRoot,
     logLevel: localConfig.logLevel || getLogLevel(),
-    machine: context.machine,
-    sources: context.sources.map((source) => ({
-      machineId: source.machineId,
-      sourceId: source.sourceId,
-      sourcePath: source.sourcePath,
-      targetSubdir: source.targetSubdir,
-      mergeEnabled: source.mergeEnabled,
-      mergeKey: source.mergeKey,
-      organizeMedia: source.organizeMedia,
-      lastCompletedScan: source.lastCompletedScan,
-      lastCompletedAt: source.lastCompletedAt,
-      scanStatus: source.scanState ? source.scanState.status : null,
-      activeGeneration: source.scanState ? source.scanState.activeGeneration : null
-    }))
+    targets
   };
 }
 
-async function requireTargetRoot() {
-  const localConfig = await loadLocalConfig(getAppDataRoot());
-  if (!localConfig.targetRoot) {
-    throw new Error('Select a backup target first.');
-  }
-
-  return localConfig.targetRoot;
+async function requireTargetRoot(input) {
+  return requireRegisteredTarget(getAppDataRoot(), input && input.targetRoot);
 }
 
 async function ensureMachineForTarget(targetRoot) {
@@ -102,10 +127,10 @@ function registerIpcHandlers() {
     return buildDashboardState();
   });
 
-  ipcMain.handle('app:select-target', async () => {
+  async function pickAndAddTarget() {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory', 'createDirectory'],
-      title: 'Select Backup Target'
+      title: 'Select Backup Target Folder'
     });
 
     if (result.canceled || result.filePaths.length === 0) {
@@ -113,15 +138,38 @@ function registerIpcHandlers() {
     }
 
     const targetRoot = result.filePaths[0];
-    await saveLocalConfig(getAppDataRoot(), { targetRoot });
+    await addTarget(getAppDataRoot(), targetRoot);
     await ensureMachineForTarget(targetRoot);
-    logger.info('Backup target selected.', { targetRoot });
-    logToRenderer('info', 'Backup target selected.', { targetRoot });
+    logger.info('Backup target added.', { targetRoot });
+    logToRenderer('info', 'Backup target added.', { targetRoot });
+    return buildDashboardState();
+  }
+
+  ipcMain.handle('app:add-target', async () => pickAndAddTarget());
+  ipcMain.handle('app:select-target', async () => pickAndAddTarget());
+
+  ipcMain.handle('app:remove-target', async (_event, input) => {
+    if (!input || !input.targetId) {
+      throw new Error('Target id is required.');
+    }
+
+    await removeTarget(getAppDataRoot(), input.targetId);
+    logger.info('Backup target removed from app list.', { targetId: input.targetId });
+    logToRenderer('info', 'Backup target removed from app list.', { targetId: input.targetId });
+    return buildDashboardState();
+  });
+
+  ipcMain.handle('app:set-target-collapsed', async (_event, input) => {
+    if (!input || !input.targetId) {
+      throw new Error('Target id is required.');
+    }
+
+    await setTargetCollapsed(getAppDataRoot(), input.targetId, Boolean(input.collapsed));
     return buildDashboardState();
   });
 
   ipcMain.handle('app:add-source', async (_event, input) => {
-    const targetRoot = await requireTargetRoot();
+    const targetRoot = await requireTargetRoot(input);
     const machine = await ensureMachineForTarget(targetRoot);
     const source = await registerSource(targetRoot, {
       machineId: machine.machineId,
@@ -153,21 +201,24 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle('app:run-backup', async (_event, input) => {
-    const targetRoot = await requireTargetRoot();
-    const backupKey = `${input.machineId}:${input.sourceId}`;
-    if (activeBackups.has(backupKey)) {
+    const targetRoot = await requireTargetRoot(input);
+    const key = backupKey(targetRoot, input.machineId, input.sourceId);
+    if (activeBackups.has(key)) {
       throw new Error('Backup already running for this source.');
     }
 
     logger.info('Backup requested.', {
+      targetRoot,
       machineId: input.machineId,
       sourceId: input.sourceId,
       forceNewScan: Boolean(input.forceNewScan)
     });
     logToRenderer('info', 'Backup started.', {
+      targetRoot,
       sourceId: input.sourceId
     });
-    activeBackupProgress.set(backupKey, {
+    activeBackupProgress.set(key, {
+      targetRoot,
       machineId: input.machineId,
       sourceId: input.sourceId,
       status: 'running'
@@ -175,7 +226,7 @@ function registerIpcHandlers() {
     const control = {
       pauseRequested: false
     };
-    activeBackups.set(backupKey, control);
+    activeBackups.set(key, control);
 
     try {
       const summary = await backupSource(targetRoot, input.machineId, input.sourceId, {
@@ -183,17 +234,18 @@ function registerIpcHandlers() {
         shouldPause: () => control.pauseRequested,
         onProgress: ({ summary: progressSummary, progress, event }) => {
           const payload = {
+            targetRoot,
             machineId: input.machineId,
             sourceId: input.sourceId,
             summary: progressSummary,
             progress,
             event
           };
-          activeBackupProgress.set(backupKey, payload);
+          activeBackupProgress.set(key, payload);
           sendProgressToRenderer(payload);
         }
       });
-      activeBackupProgress.delete(backupKey);
+      activeBackupProgress.delete(key);
       if (summary.status === 'paused') {
         logger.info('Backup paused.', summary);
         logToRenderer('info', 'Backup paused.', summary);
@@ -206,30 +258,42 @@ function registerIpcHandlers() {
         dashboard: await buildDashboardState()
       };
     } catch (error) {
-      activeBackupProgress.delete(backupKey);
+      activeBackupProgress.delete(key);
       throw error;
     } finally {
-      activeBackups.delete(backupKey);
+      activeBackups.delete(key);
     }
   });
 
   ipcMain.handle('app:pause-backup', async (_event, input) => {
-    const backupKey = `${input.machineId}:${input.sourceId}`;
-    const control = activeBackups.get(backupKey);
+    const targetRoot = await requireTargetRoot(input);
+    const key = backupKey(targetRoot, input.machineId, input.sourceId);
+    const control = activeBackups.get(key);
     if (!control) {
+      logger.warn('Backup pause ignored because no active backup was found.', {
+        machineId: input.machineId,
+        sourceId: input.sourceId
+      });
       return { accepted: false };
     }
 
     control.pauseRequested = true;
+    const activeProgress = activeBackupProgress.get(key);
+    const queueSnapshot = activeProgress?.progress?.queues || null;
     logger.info('Backup pause requested.', {
       machineId: input.machineId,
-      sourceId: input.sourceId
+      sourceId: input.sourceId,
+      queues: queueSnapshot
+    });
+    logToRenderer('info', 'Pause requested. Finishing in-flight work and cancelling queued files...', {
+      sourceId: input.sourceId,
+      queues: queueSnapshot
     });
     return { accepted: true };
   });
 
   ipcMain.handle('app:restore-source', async (_event, input) => {
-    const targetRoot = await requireTargetRoot();
+    const targetRoot = await requireTargetRoot(input);
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory', 'createDirectory'],
       title: 'Select Restore Destination'
@@ -250,7 +314,7 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle('app:restore-merged', async (_event, input) => {
-    const targetRoot = await requireTargetRoot();
+    const targetRoot = await requireTargetRoot(input);
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory', 'createDirectory'],
       title: 'Select Restore Destination'

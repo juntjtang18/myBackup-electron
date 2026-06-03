@@ -5,12 +5,18 @@ function getLocalConfigPath(appDataRoot) {
   return path.join(path.resolve(appDataRoot), 'mybackup-ui.json');
 }
 
+const { normalizeTargets } = require('./targetConfig');
+
 async function loadLocalConfig(appDataRoot) {
   const config = await readJsonIfExists(getLocalConfigPath(appDataRoot));
-  return config || {
-    targetRoot: null,
+  const base = config || {
     logLevel: 'info',
     updatedAt: null
+  };
+  return {
+    logLevel: base.logLevel || 'info',
+    targets: normalizeTargets(base),
+    updatedAt: base.updatedAt || null
   };
 }
 

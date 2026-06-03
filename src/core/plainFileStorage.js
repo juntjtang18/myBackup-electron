@@ -41,6 +41,35 @@ async function writePlainFile(targetRoot, input) {
   await fs.ensureDir(path.dirname(tempPath));
   const sourceStat = await fs.stat(input.sourcePath);
   const expectedSize = input.expectedSize !== undefined ? input.expectedSize : sourceStat.size;
+
+  if (input.expectedHash) {
+    await fs.copyFile(input.sourcePath, tempPath);
+    const copiedBytes = (await fs.stat(tempPath)).size;
+    if (copiedBytes !== expectedSize) {
+      await fs.remove(tempPath);
+      throw new Error(`Copied file size mismatch for ${input.logicalPath}`);
+    }
+    await fs.utimes(tempPath, sourceStat.atime, sourceStat.mtime);
+    if (typeof input.onProgress === 'function') {
+      input.onProgress({
+        phase: 'copy',
+        copiedBytes,
+        totalBytes: expectedSize,
+        logicalPath: toPosixPath(input.logicalPath)
+      });
+    }
+
+    return {
+      tempPath,
+      finalPath: absoluteDestination,
+      expectedHash: input.expectedHash,
+      content: {
+        type: 'plain',
+        path: toPosixPath(input.logicalPath)
+      }
+    };
+  }
+
   const hasher = crypto.createHash('sha256');
   const readStream = fs.createReadStream(input.sourcePath, {
     highWaterMark: input.chunkSize || 1024 * 1024
@@ -80,11 +109,6 @@ async function writePlainFile(targetRoot, input) {
   if (copiedBytes !== expectedSize) {
     await fs.remove(tempPath);
     throw new Error(`Copied file size mismatch for ${input.logicalPath}`);
-  }
-
-  if (actualHash !== input.expectedHash) {
-    await fs.remove(tempPath);
-    throw new Error(`Copied file hash mismatch for ${input.logicalPath}`);
   }
 
   await fs.utimes(tempPath, sourceStat.atime, sourceStat.mtime);

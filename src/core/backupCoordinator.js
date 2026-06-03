@@ -2,7 +2,7 @@ const fs = require('fs-extra');
 const os = require('os');
 const path = require('path');
 const { buildConflictPath, classifyMedia, planLogicalTarget } = require('./pathPlanner');
-const { lookupHashRecord, registerHashRecord, unregisterHashRecord } = require('./hashIndex');
+const { createHashRecordSession } = require('./hashRecordSession');
 const { hashFile } = require('./hashService');
 const {
   cleanupTempFiles,
@@ -18,7 +18,7 @@ const {
   saveDiscoveredFolders,
   updateFolderStatus
 } = require('./scanManager');
-const { listFolderCheckpoints } = require('./scanCheckpointStore');
+const { findNextPendingCheckpoint } = require('./scanCheckpointStore');
 const { loadSource } = require('./metadataStore');
 const { loadIgnoreMatcher } = require('./ignoreMatcher');
 const { createErrorReportWriter } = require('./errorReportStore');
@@ -30,6 +30,33 @@ const { createWorkScheduler } = require('./workScheduler');
 const { createLogger } = require('./logger');
 
 const logger = createLogger('BackupCoordinator', 'backupCoordinator.js');
+
+function createConcurrencyGate(limit) {
+  const max = Math.max(1, limit);
+  let active = 0;
+  const waiters = [];
+
+  return {
+    async acquire() {
+      if (active < max) {
+        active += 1;
+        return;
+      }
+
+      await new Promise((resolve) => {
+        waiters.push(resolve);
+      });
+      active += 1;
+    },
+    release() {
+      active = Math.max(0, active - 1);
+      const next = waiters.shift();
+      if (next) {
+        next();
+      }
+    }
+  };
+}
 
 async function readFolderEntries(folderPath, relativeRoot = '.', ignoreMatcher = null) {
   const entries = await fs.readdir(folderPath, { withFileTypes: true });
@@ -183,7 +210,8 @@ async function buildPlanFromExistingRecord(
   fileHash,
   kind,
   logicalPath,
-  existing
+  existing,
+  hashSession = null
 ) {
   const absolutePath = existing.content.type === 'plain'
     ? resolveLogicalPath(targetRoot, logicalPath)
@@ -205,7 +233,7 @@ async function buildPlanFromExistingRecord(
     };
   }
 
-  const registration = await registerHashRecord(targetRoot, {
+  const registration = await hashSession.register({
     fileHash,
     size: stats.size,
     logicalPath,
@@ -244,7 +272,8 @@ async function planFileOperation(
   stats,
   now = new Date(),
   coordination = null,
-  sourceSnapshot = null
+  sourceSnapshot = null,
+  hashSession = null
 ) {
   logger.debug('Planning file operation.', {
     machineId,
@@ -261,7 +290,7 @@ async function planFileOperation(
     cachedEntry.mtimeMs === stats.mtimeMs &&
     cachedEntry.fileHash
   );
-  const fileHash = cachedHashUsable ? cachedEntry.fileHash : await hashFile(sourceFilePath);
+  const fileHash = cachedHashUsable ? cachedEntry.fileHash : await hashFile(sourceFilePath, stats.size);
   const kind = classifyMedia(sourceFilePath);
   const jobId = shortHash(`${machineId}:${source.sourceId}:${sourceRelativePath}:${now.toISOString()}`, 12);
   const baseLogicalPath = planLogicalTarget({
@@ -291,7 +320,7 @@ async function planFileOperation(
     }
   );
   while (true) {
-    const existing = await lookupHashRecord(targetRoot, fileHash);
+    const existing = await hashSession.lookup(fileHash);
     if (existing) {
       return buildPlanFromExistingRecord(
         targetRoot,
@@ -304,7 +333,8 @@ async function planFileOperation(
         fileHash,
         kind,
         logicalPath,
-        existing
+        existing,
+        hashSession
       );
     }
 
@@ -365,11 +395,11 @@ async function planFileOperation(
   }
 }
 
-async function executeCopyOperation(targetRoot, machineId, source, plan, callbacks = {}, coordination = null) {
+async function executeCopyOperation(targetRoot, machineId, source, plan, callbacks = {}, coordination = null, hashSession = null) {
   if (plan.type === 'copy-new') {
     try {
       if (plan.overwriteExisting && plan.previousHash) {
-        await unregisterHashRecord(targetRoot, {
+        await hashSession.unregister({
           fileHash: plan.previousHash,
           logicalPath: plan.logicalPath,
           origin: {
@@ -390,7 +420,7 @@ async function executeCopyOperation(targetRoot, machineId, source, plan, callbac
         onProgress: callbacks.onCopyProgress
       });
       const content = await finalizePlainFile(targetRoot, pendingWrite);
-      const registration = await registerHashRecord(targetRoot, {
+      const registration = await hashSession.register({
         fileHash: plan.fileHash,
         size: plan.stats.size,
         logicalPath: plan.logicalPath,
@@ -407,7 +437,7 @@ async function executeCopyOperation(targetRoot, machineId, source, plan, callbac
         coordination.resolve(plan.fileHash, registration.record);
       }
 
-      logger.info('Copied new file into backup.', {
+      logger.debug('Copied new file into backup.', {
         fileHash: plan.fileHash,
         logicalPath: plan.logicalPath,
         sourceRelativePath: plan.sourceRelativePath
@@ -437,7 +467,7 @@ async function executeCopyOperation(targetRoot, machineId, source, plan, callbac
     plan.jobId,
     callbacks.onCopyProgress
   );
-  const registration = await registerHashRecord(targetRoot, {
+  const registration = await hashSession.register({
     fileHash: plan.fileHash,
     size: plan.stats.size,
     logicalPath: plan.logicalPath,
@@ -451,7 +481,7 @@ async function executeCopyOperation(targetRoot, machineId, source, plan, callbac
   }, plan.now);
 
   if (materialized) {
-    logger.info('Materialized same-content file at alias path.', {
+    logger.debug('Materialized same-content file at alias path.', {
       fileHash: plan.fileHash,
       logicalPath: plan.logicalPath,
       sourceRelativePath: plan.sourceRelativePath
@@ -516,10 +546,52 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     skippedFolders: 0,
     skippedFiles: 0,
     errors: 0,
-    workers: {}
+    workers: {},
+    queues: {
+      hash: { depth: 0, pending: 0, active: 0, waitingItems: [], activeItems: [], feedItems: [] },
+      copy: { depth: 0, pending: 0, active: 0, waitingItems: [], activeItems: [], handoffItems: [] }
+    }
   };
+  let hashScheduler;
+  let copyScheduler;
+  let schedulersReady = false;
+  let pipelineFeed = [];
+  const copyHandoffQueue = [];
   const emitProgress = (event) => {
+    if (schedulersReady) {
+      const hashSnapshot = hashScheduler.snapshot();
+      const copySnapshot = copyScheduler.snapshot();
+      progress.queues = {
+        hash: {
+          depth: hashSnapshot.queueDepth,
+          pending: hashSnapshot.pendingTasks,
+          active: hashSnapshot.inFlightCount,
+          waitingItems: hashSnapshot.queuedItems,
+          activeItems: hashSnapshot.inFlightItems,
+          feedItems: pipelineFeed.slice(0, 20)
+        },
+        copy: {
+          depth: copySnapshot.queueDepth,
+          pending: copySnapshot.pendingTasks,
+          active: copySnapshot.inFlightCount,
+          waitingItems: copySnapshot.queuedItems,
+          activeItems: copySnapshot.inFlightItems,
+          handoffItems: copyHandoffQueue.slice(0, 20)
+        }
+      };
+    }
     if (typeof options.onProgress === 'function') {
+      const forceEmit = event?.type === 'backup-started'
+        || event?.type === 'backup-paused'
+        || event?.type === 'backup-completed'
+        || event?.type === 'backup-pausing'
+        || event?.type === 'folder-completed'
+        || event?.type === 'folder-skipped';
+      const now = Date.now();
+      if (!forceEmit && now - lastProgressEmitAt < progressEmitIntervalMs) {
+        return;
+      }
+      lastProgressEmitAt = now;
       options.onProgress({
         summary: { ...summary },
         progress: JSON.parse(JSON.stringify(progress)),
@@ -527,8 +599,23 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       });
     }
   };
-  const defaultHashWorkers = Math.min(os.cpus().length || 4, 4);
-  const defaultCopyWorkers = Math.min(os.cpus().length || 4, 4);
+  const cpuCount = os.cpus().length || 4;
+  const defaultHashWorkers = Math.min(cpuCount, 8);
+  const defaultCopyWorkers = Math.min(cpuCount, 8);
+  const maxConcurrentFileTasks = options.maxConcurrentFileTasks
+    || Math.max(defaultHashWorkers * 4, 16);
+  const progressEmitIntervalMs = options.progressEmitIntervalMs || 150;
+  let lastProgressEmitAt = 0;
+  const copyProgressEmitIntervalMs = options.copyProgressEmitIntervalMs || 150;
+  let lastCopyProgressEmitAt = 0;
+  const emitCopyProgress = (event) => {
+    const now = Date.now();
+    if (now - lastCopyProgressEmitAt < copyProgressEmitIntervalMs) {
+      return;
+    }
+    lastCopyProgressEmitAt = now;
+    emitProgress(event);
+  };
   const sourceSnapshot = createSourceSnapshot(
     machineId,
     sourceId,
@@ -538,8 +625,10 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   const errorReport = await createErrorReportWriter(targetRoot, machineId, sourceId, scanId);
   summary.reportPath = errorReport.reportPath;
   const ignoreMatcher = await loadIgnoreMatcher(source.sourcePath);
+  const hashRecordSession = createHashRecordSession(targetRoot);
   const inFlightHashes = createInFlightHashCoordinator();
-  const hashScheduler = createWorkScheduler({
+  const fileTaskGate = createConcurrencyGate(maxConcurrentFileTasks);
+  hashScheduler = createWorkScheduler({
     processTask: async (payload) => planFileOperation(
       targetRoot,
       machineId,
@@ -549,15 +638,20 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       payload.stats,
       payload.now,
       inFlightHashes,
-      sourceSnapshot
+      sourceSnapshot,
+      hashRecordSession
     ),
     getTaskBytes: (result, payload) => result?.bytesProcessed || payload.stats.size || 0,
     initialWorkers: options.initialHashWorkers || defaultHashWorkers,
-    maxWorkers: options.maxHashWorkers || 8,
+    maxWorkers: options.maxHashWorkers || defaultHashWorkers,
     backlogFactor: options.hashWorkerBacklogFactor || 4,
     trialWindowMs: options.hashWorkerTrialWindowMs || 20000,
     throughputImprovementThreshold: options.hashWorkerThroughputImprovementThreshold || 1.15,
     idleWaitMs: options.hashWorkerIdleWaitMs || 10,
+    summarizePayload: (payload) => ({
+      sourceRelativePath: payload.sourceRelativePath,
+      totalBytes: payload.stats?.size || 0
+    }),
     onWorkerEvent: (workerEvent) => {
       const workerKey = `hash:${workerEvent.workerId}`;
       if (workerEvent.type === 'worker-started') {
@@ -613,7 +707,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       emitProgress({ ...workerEvent, pool: 'hash' });
     }
   });
-  const copyScheduler = createWorkScheduler({
+  copyScheduler = createWorkScheduler({
     processTask: async (payload, workerContext) => executeCopyOperation(
       targetRoot,
       machineId,
@@ -631,7 +725,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
             copiedBytes: copyProgress.copiedBytes,
             totalBytes: copyProgress.totalBytes
           };
-          emitProgress({
+          emitCopyProgress({
             type: 'copy-progress',
             pool: 'copy',
             workerId: workerContext.workerId,
@@ -639,15 +733,21 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           });
         }
       },
-      inFlightHashes
+      inFlightHashes,
+      hashRecordSession
     ),
     getTaskBytes: (result, payload) => result?.bytesProcessed || payload.plan.stats.size || 0,
     initialWorkers: options.initialCopyWorkers || defaultCopyWorkers,
-    maxWorkers: options.maxCopyWorkers || 8,
+    maxWorkers: options.maxCopyWorkers || defaultCopyWorkers * 2,
     backlogFactor: options.copyWorkerBacklogFactor || 4,
     trialWindowMs: options.copyWorkerTrialWindowMs || 20000,
     throughputImprovementThreshold: options.copyWorkerThroughputImprovementThreshold || 1.15,
     idleWaitMs: options.copyWorkerIdleWaitMs || 10,
+    summarizePayload: (payload) => ({
+      sourceRelativePath: payload.plan?.sourceRelativePath || null,
+      logicalPath: payload.plan?.logicalPath || null,
+      totalBytes: payload.plan?.stats?.size || 0
+    }),
     onWorkerEvent: (workerEvent) => {
       const workerKey = `copy:${workerEvent.workerId}`;
       if (workerEvent.type === 'worker-started') {
@@ -703,18 +803,70 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       }
     }
   });
+  schedulersReady = true;
   emitProgress({ type: 'backup-started' });
 
   let paused = false;
+  let pausePhase = null;
+  const folderCompletions = [];
+  const shouldStopForPause = () => typeof options.shouldPause === 'function' && options.shouldPause();
+
+  function pauseWorkSnapshot() {
+    if (!schedulersReady) {
+      return {
+        folderCompletions: folderCompletions.length,
+        pipelineFeed: pipelineFeed.length,
+        copyHandoff: copyHandoffQueue.length
+      };
+    }
+
+    const hashSnapshot = hashScheduler.snapshot();
+    const copySnapshot = copyScheduler.snapshot();
+    return {
+      folderCompletions: folderCompletions.length,
+      pipelineFeed: pipelineFeed.length,
+      copyHandoff: copyHandoffQueue.length,
+      hash: {
+        pending: hashSnapshot.pendingTasks,
+        queueDepth: hashSnapshot.queueDepth,
+        inFlight: hashSnapshot.inFlightCount
+      },
+      copy: {
+        pending: copySnapshot.pendingTasks,
+        queueDepth: copySnapshot.queueDepth,
+        inFlight: copySnapshot.inFlightCount
+      }
+    };
+  }
+
+  async function emitPausePhase(phase, message) {
+    pausePhase = phase;
+    progress.status = 'pausing';
+    progress.pausePhase = phase;
+    logger.info(message, pauseWorkSnapshot());
+    emitProgress({ type: 'backup-pausing', phase });
+  }
+
+  async function shutdownForPause() {
+    await emitPausePhase('cancelling-queues', 'Pause: cancelling queued hash/copy work.');
+    await hashScheduler.closeAndCancel();
+    await emitPausePhase('hash-cancelled', 'Pause: hash scheduler queue cancelled; waiting for in-flight hash tasks.');
+    await copyScheduler.closeAndCancel();
+    await emitPausePhase('copy-cancelled', 'Pause: copy scheduler queue cancelled; waiting for in-flight copy tasks.');
+    await emitPausePhase('waiting-folder-tasks', 'Pause: waiting for in-flight folder tasks to settle.');
+    await Promise.allSettled(folderCompletions);
+    await emitPausePhase('folder-tasks-settled', 'Pause: in-flight folder tasks settled.');
+  }
+
   try {
     while (true) {
-      if (typeof options.shouldPause === 'function' && options.shouldPause()) {
+      if (shouldStopForPause()) {
         paused = true;
+        logger.info('Pause: scan loop stopping at folder boundary.', pauseWorkSnapshot());
         break;
       }
 
-      const checkpoints = await listFolderCheckpoints(targetRoot, machineId, sourceId, scanId);
-      const nextCheckpoint = checkpoints.find((entry) => entry.status === 'pending' || entry.status === 'scanning');
+      const nextCheckpoint = await findNextPendingCheckpoint(targetRoot, machineId, sourceId, scanId);
       if (!nextCheckpoint) {
         break;
       }
@@ -805,67 +957,114 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       );
 
       const fileStatsByRelativePath = new Map();
-      const activeFiles = [];
+      const fileResults = [];
+      const fileTasks = [];
+
       for (const fileEntry of files) {
+        if (shouldStopForPause()) {
+          paused = true;
+          logger.info('Pause: stopping file scan mid-folder.', {
+            relativePath: scanningCheckpoint.relativePath,
+            filesScanned: fileTasks.length,
+            filesRemaining: files.length - fileTasks.length,
+            ...pauseWorkSnapshot()
+          });
+          break;
+        }
+
         const sourceRelativePath = scanningCheckpoint.relativePath === '.'
           ? fileEntry.name
           : path.posix.join(scanningCheckpoint.relativePath, fileEntry.name);
-        let stats;
-        try {
-          stats = await fs.stat(fileEntry.path);
-        } catch (error) {
-          logger.warn('Skipped unreadable or missing file during scan.', {
-            scanId,
-            sourceRelativePath: toPosixPath(sourceRelativePath),
-            code: error.code || null
-          });
-          await errorReport.append({
-            type: isMissingPathError(error) ? 'missing-file' : 'file-stat-error',
-            relativePath: sourceRelativePath,
-            path: fileEntry.path,
-            code: error.code || null,
-            message: error.message
-          });
-          summary.skippedFiles += 1;
-          summary.errors += 1;
-          progress.skippedFiles = summary.skippedFiles;
-          progress.errors = summary.errors;
-          emitProgress({
-            type: 'file-skipped',
-            sourceRelativePath: toPosixPath(sourceRelativePath)
-          });
-          continue;
-        }
-        fileStatsByRelativePath.set(toPosixPath(sourceRelativePath), stats);
-        activeFiles.push({
-          fileEntry,
-          sourceRelativePath: toPosixPath(sourceRelativePath),
-          stats
-        });
-      }
+        const normalizedRelativePath = toPosixPath(sourceRelativePath);
 
-      const fileResults = [];
-      for (const { fileEntry, sourceRelativePath, stats } of activeFiles) {
-        try {
-          const planResult = await hashScheduler.push({
+        fileTasks.push((async () => {
+          await fileTaskGate.acquire();
+          try {
+          let stats;
+          try {
+            stats = await fs.stat(fileEntry.path);
+          } catch (error) {
+            logger.warn('Skipped unreadable or missing file during scan.', {
+              scanId,
+              sourceRelativePath: normalizedRelativePath,
+              code: error.code || null
+            });
+            await errorReport.append({
+              type: isMissingPathError(error) ? 'missing-file' : 'file-stat-error',
+              relativePath: normalizedRelativePath,
+              path: fileEntry.path,
+              code: error.code || null,
+              message: error.message
+            });
+            summary.skippedFiles += 1;
+            summary.errors += 1;
+            progress.skippedFiles = summary.skippedFiles;
+            progress.errors = summary.errors;
+            emitProgress({
+              type: 'file-skipped',
+              sourceRelativePath: normalizedRelativePath
+            });
+            return null;
+          }
+
+          fileStatsByRelativePath.set(normalizedRelativePath, stats);
+          pipelineFeed.push({
+            sourceRelativePath: normalizedRelativePath,
+            totalBytes: stats.size
+          });
+
+          const feedIndex = pipelineFeed.findIndex(
+            (entry) => entry.sourceRelativePath === normalizedRelativePath
+          );
+          if (feedIndex >= 0) {
+            pipelineFeed.splice(feedIndex, 1);
+          }
+
+          const finalResult = await hashScheduler.push({
             sourceFilePath: fileEntry.path,
-            sourceRelativePath,
+            sourceRelativePath: normalizedRelativePath,
             stats,
             now: options.now || new Date()
-          });
-          const finalResult = (planResult.type === 'copy-new' || planResult.type === 'copy-duplicate')
-            ? await copyScheduler.push({ plan: planResult })
-            : planResult;
+          })
+            .then((planResult) => {
+              if (planResult.type === 'copy-new' || planResult.type === 'copy-duplicate') {
+                const handoffItem = {
+                  sourceRelativePath: planResult.sourceRelativePath,
+                  logicalPath: planResult.logicalPath,
+                  totalBytes: planResult.stats?.size || stats.size
+                };
+                copyHandoffQueue.push(handoffItem);
+                return copyScheduler.push({ plan: planResult })
+                  .finally(() => {
+                    const handoffIndex = copyHandoffQueue.findIndex(
+                      (entry) => entry.sourceRelativePath === handoffItem.sourceRelativePath
+                        && entry.logicalPath === handoffItem.logicalPath
+                    );
+                    if (handoffIndex >= 0) {
+                      copyHandoffQueue.splice(handoffIndex, 1);
+                    }
+                  });
+              }
+              return planResult;
+            });
+
           fileResults.push(finalResult);
-        } catch (error) {
+          return finalResult;
+          } finally {
+            fileTaskGate.release();
+          }
+        })().catch(async (error) => {
+          if (error && error.code === 'PAUSE_CANCELLED') {
+            return null;
+          }
           logger.error('File backup failed; continuing with next file.', {
-            sourceRelativePath,
+            sourceRelativePath: normalizedRelativePath,
             code: error.code || null,
             message: error.message
           });
           await errorReport.append({
             type: 'file-error',
-            relativePath: sourceRelativePath,
+            relativePath: normalizedRelativePath,
             path: fileEntry.path,
             code: error.code || null,
             message: error.message
@@ -874,12 +1073,20 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           progress.errors = summary.errors;
           emitProgress({
             type: 'file-error',
-            sourceRelativePath
+            sourceRelativePath: normalizedRelativePath
           });
-        }
+          return null;
+        }));
       }
 
-      for (const result of fileResults) {
+      if (paused) {
+        break;
+      }
+
+      folderCompletions.push((async () => {
+      await Promise.all(fileTasks);
+
+      for (const result of fileResults.filter(Boolean)) {
         summary.filesProcessed += 1;
         if (result.action === 'copied' || result.action === 'copied-duplicate') {
           summary.filesCopied += 1;
@@ -893,7 +1100,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       }
 
       for (const [sourceRelativePath, stats] of fileStatsByRelativePath.entries()) {
-        const matchingResult = fileResults.find((entry) => entry.record.origins.some(
+        const matchingResult = fileResults.filter(Boolean).find((entry) => entry.record.origins.some(
           (origin) => origin.sourceRelativePath === sourceRelativePath
         ));
         if (matchingResult) {
@@ -927,24 +1134,44 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         ...sourceSnapshot,
         updatedAt: (options.now || new Date()).toISOString()
       });
+      await hashRecordSession.flush();
       emitProgress({
         type: 'folder-completed',
         relativePath: scanningCheckpoint.relativePath
       });
+      })());
     }
   } finally {
-    await hashScheduler.closeAndDrain();
-    await copyScheduler.closeAndDrain();
+    await hashRecordSession.flush();
+    if (paused) {
+      await shutdownForPause();
+    } else {
+      await Promise.all(folderCompletions);
+      await hashScheduler.closeAndDrain();
+      await copyScheduler.closeAndDrain();
+    }
   }
 
   if (paused) {
+    logger.info('Pause: persisting paused scan state.', {
+      scanId,
+      pausePhase,
+      ...pauseWorkSnapshot()
+    });
     await markGenerationPaused(targetRoot, machineId, sourceId, options.now || new Date());
     await saveSourceSnapshot(targetRoot, {
       ...sourceSnapshot,
       updatedAt: (options.now || new Date()).toISOString()
     });
     progress.status = 'paused';
+    delete progress.pausePhase;
     emitProgress({ type: 'backup-paused' });
+    logger.info('Pause: backup run paused.', {
+      scanId,
+      foldersProcessed: summary.foldersProcessed,
+      filesProcessed: summary.filesProcessed,
+      filesCopied: summary.filesCopied
+    });
     return {
       ...summary,
       status: 'paused'

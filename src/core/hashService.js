@@ -1,7 +1,20 @@
 const crypto = require('crypto');
 const fs = require('fs-extra');
 
-async function hashFile(filePath) {
+const SMALL_FILE_HASH_BYTES = 256 * 1024;
+
+async function hashFile(filePath, fileSize) {
+  let size = fileSize;
+  if (size === undefined) {
+    const stat = await fs.stat(filePath);
+    size = stat.size;
+  }
+
+  if (size <= SMALL_FILE_HASH_BYTES) {
+    const buffer = await fs.readFile(filePath);
+    return crypto.createHash('sha256').update(buffer).digest('hex');
+  }
+
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
     const stream = fs.createReadStream(filePath);
@@ -13,5 +26,6 @@ async function hashFile(filePath) {
 }
 
 module.exports = {
+  SMALL_FILE_HASH_BYTES,
   hashFile
 };

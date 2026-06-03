@@ -1,7 +1,7 @@
 const path = require('path');
 const { createFolderId, createScanId } = require('./ids');
 const { loadScanState, loadSource, saveFolderCheckpoint, saveScanState } = require('./metadataStore');
-const { findCheckpointByRelativePath, listFolderCheckpoints } = require('./scanCheckpointStore');
+const { findCheckpointByRelativePath } = require('./scanCheckpointStore');
 const { createFolderCheckpoint, createScanState } = require('./schema');
 
 async function startNewGeneration(targetRoot, machineId, sourceId, options = {}) {
@@ -43,10 +43,8 @@ async function getResumeState(targetRoot, machineId, sourceId) {
     return null;
   }
 
-  const checkpoints = await listFolderCheckpoints(targetRoot, machineId, sourceId, state.activeGeneration);
   return {
-    scanState: state,
-    checkpoints
+    scanState: state
   };
 }
 
@@ -58,8 +56,7 @@ async function ensureScanState(targetRoot, machineId, sourceId, options = {}) {
 
   const scanState = await startNewGeneration(targetRoot, machineId, sourceId, options);
   return {
-    scanState,
-    checkpoints: await listFolderCheckpoints(targetRoot, machineId, sourceId, scanState.activeGeneration)
+    scanState
   };
 }
 

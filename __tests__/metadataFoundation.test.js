@@ -51,6 +51,9 @@ const {
 } = require('../src/core/scanManager');
 const { hashFile } = require('../src/core/hashService');
 const { lookupHashRecord, registerHashRecord } = require('../src/core/hashIndex');
+const { packHashRecord, unpackHashRecord } = require('../src/core/hashRecordCodec');
+const { bucketPath } = require('../src/core/hashBucketLayout');
+const { createHashRecordSession } = require('../src/core/hashRecordSession');
 const {
   cleanupTempFiles,
   finalizePlainFile,
@@ -60,7 +63,7 @@ const {
 } = require('../src/core/plainFileStorage');
 const { backupSource } = require('../src/core/backupCoordinator');
 const { createWorkScheduler } = require('../src/core/workScheduler');
-const { parseIgnoreFile, shouldIgnorePath } = require('../src/core/ignoreMatcher');
+const { parseIgnoreFile, shouldIgnorePath, buildIgnoreRules } = require('../src/core/ignoreMatcher');
 const { readJsonIfExists } = require('../src/core/jsonStore');
 const { createSourceSnapshot, loadSourceSnapshot, saveSourceSnapshot } = require('../src/core/sourceSnapshotStore');
 const {
@@ -230,6 +233,74 @@ describe('metadata foundation', () => {
 
     expect(await loadHashRecord(tempRootPath, records[0].fileHash)).toEqual(records[0]);
     expect(await loadHashRecord(tempRootPath, records[1].fileHash)).toEqual(records[1]);
+  });
+
+  test('stores hash records in bucket index files with compact rows and legacy read support', async () => {
+    const fileHash = `f${'a'.repeat(63)}`;
+    const record = createHashRecord({
+      fileHash,
+      size: 99,
+      logicalPath: 'documents/compact.txt',
+      content: {
+        type: 'plain',
+        path: 'documents/compact.txt'
+      },
+      origins: [{
+        machineId: 'machine-a',
+        sourceId: 'source-a',
+        sourceRelativePath: 'compact.txt',
+        discoveredAt: '2026-06-10T10:00:00.000Z'
+      }]
+    }, new Date('2026-06-10T10:00:00.000Z'));
+
+    await saveHashRecord(tempRootPath, record);
+    const bucketFile = bucketPath(tempRootPath, fileHash);
+    const raw = await fs.readJson(bucketFile);
+    expect(raw.p).toBe(fileHash.slice(0, 15));
+    expect(raw.r[0][0]).toBe(fileHash.slice(15));
+    expect(await loadHashRecord(tempRootPath, fileHash)).toEqual(record);
+    expect(unpackHashRecord(record)).toEqual(record);
+    expect(packHashRecord(record).c).toEqual(['p', 'documents/compact.txt']);
+  });
+
+  test('buffers hash record updates in bucket memory and flushes one index file', async () => {
+    const session = createHashRecordSession(tempRootPath);
+    const fileHash = 'e'.repeat(64);
+    const now = new Date('2026-06-10T11:00:00.000Z');
+
+    await session.register({
+      fileHash,
+      size: 10,
+      logicalPath: 'documents/a.txt',
+      kind: 'file',
+      content: {
+        type: 'plain',
+        path: 'documents/a.txt'
+      },
+      origin: {
+        machineId: 'machine-a',
+        sourceId: 'source-a',
+        sourceRelativePath: 'a.txt'
+      }
+    }, now);
+
+    expect(await loadHashRecord(tempRootPath, fileHash)).toBeNull();
+    expect(session.snapshot().dirtyBuckets).toBe(1);
+
+    const flushed = await session.flush();
+    expect(flushed.writes).toBe(1);
+    expect(await fs.pathExists(bucketPath(tempRootPath, fileHash))).toBe(true);
+    expect(await lookupHashRecord(tempRootPath, fileHash)).toMatchObject({
+      fileHash,
+      logicalPath: 'documents/a.txt'
+    });
+  });
+
+  test('resolves hash bucket paths using three-character tree segments', () => {
+    const fileHash = 'abcdefghijklmno'.padEnd(64, '0');
+    expect(bucketPath('/target', fileHash)).toBe(
+      path.join('/target', '.mybackup', 'hashes', 'abc', 'def', 'ghi', 'jkl', 'mno.indx')
+    );
   });
 
   test('exposes the metadata path layout explicitly', () => {
@@ -967,6 +1038,58 @@ dist/**
     expect(shouldIgnorePath(rules, 'dist/app.js', false)).toBe(true);
     expect(shouldIgnorePath(rules, 'logs/build.log', false)).toBe(true);
     expect(shouldIgnorePath(rules, 'keep.log', false)).toBe(false);
+  });
+
+  test('applies default library ignore patterns without a .mbignore file', () => {
+    const rules = buildIgnoreRules('');
+
+    expect(shouldIgnorePath(rules, 'node_modules', true)).toBe(true);
+    expect(shouldIgnorePath(rules, 'packages/app/node_modules', true)).toBe(true);
+    expect(shouldIgnorePath(rules, 'vendor', true)).toBe(true);
+    expect(shouldIgnorePath(rules, 'project/.git', true)).toBe(true);
+    expect(shouldIgnorePath(rules, 'docs/readme.txt', false)).toBe(false);
+  });
+
+  test('backupSource skips node_modules by default even without .mbignore', async () => {
+    const sourceRoot = path.join(tempRootPath, 'default-ignore-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha');
+    writeFixture(path.join(sourceRoot, 'node_modules', 'pkg', 'index.js'), 'ignored');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'default-ignore-host',
+      seed: 'default-ignore-seed',
+      now: new Date('2026-06-09T12:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-09T12:05:00Z'));
+
+    const summary = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-09T12:10:00Z'),
+      forceNewScan: true
+    });
+
+    expect(summary.filesProcessed).toBe(1);
+    expect(await fs.pathExists(path.join(
+      tempRootPath,
+      'Backups',
+      'Machines',
+      machine.machineId,
+      source.sourceId,
+      'docs',
+      'a.txt'
+    ))).toBe(true);
+    expect(await fs.pathExists(path.join(
+      tempRootPath,
+      'Backups',
+      'Machines',
+      machine.machineId,
+      source.sourceId,
+      'node_modules'
+    ))).toBe(false);
   });
 
   test('backupSource skips files and folders matched by .mbignore', async () => {
@@ -1745,5 +1868,45 @@ dist/**
     expect(snapshot.acceptedWorkers).toBe(1);
     expect(snapshot.scalingLocked).toBe(true);
     expect(snapshot.completedTasks).toBe(12);
+  });
+
+  test('exposes queued item previews through snapshot', async () => {
+    let releaseFirstTask;
+    const firstTaskGate = new Promise((resolve) => {
+      releaseFirstTask = resolve;
+    });
+    const scheduler = createWorkScheduler({
+      processTask: async (payload) => {
+        if (payload.id === 1) {
+          await firstTaskGate;
+        }
+        return { bytesProcessed: payload.bytes };
+      },
+      initialWorkers: 1,
+      maxWorkers: 1,
+      summarizePayload: (payload) => ({
+        id: payload.id,
+        totalBytes: payload.bytes
+      })
+    });
+
+    const tasks = [
+      scheduler.push({ id: 1, bytes: 100 }),
+      scheduler.push({ id: 2, bytes: 200 }),
+      scheduler.push({ id: 3, bytes: 300 })
+    ];
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const snapshot = scheduler.snapshot();
+    expect(snapshot.queueDepth).toBe(2);
+    expect(snapshot.pendingTasks).toBe(3);
+    expect(snapshot.queuedItems).toEqual([
+      { id: 2, totalBytes: 200 },
+      { id: 3, totalBytes: 300 }
+    ]);
+
+    releaseFirstTask();
+    await Promise.all(tasks);
+    await scheduler.closeAndDrain();
   });
 });

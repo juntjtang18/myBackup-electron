@@ -21,7 +21,7 @@ async function readJsonIfExists(filePath, validator) {
   }
 }
 
-async function writeJsonAtomic(filePath, document) {
+async function writeJsonAtomic(filePath, document, options = {}) {
   const parentDir = path.dirname(filePath);
   const tempPath = path.join(
     parentDir,
@@ -29,7 +29,9 @@ async function writeJsonAtomic(filePath, document) {
   );
 
   await fs.ensureDir(parentDir);
-  await fs.writeJson(tempPath, document, { spaces: 2 });
+  await fs.writeJson(tempPath, document, {
+    spaces: options.compact ? 0 : 2
+  });
   await fs.move(tempPath, filePath, { overwrite: true });
 }
 

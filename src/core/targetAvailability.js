@@ -99,6 +99,85 @@ function checkTargetAvailability(targetPath, mountedRoots = new Set(), platform 
   };
 }
 
+function mapSourceDashboardEntry(source) {
+  return {
+    machineId: source.machineId,
+    sourceId: source.sourceId,
+    sourcePath: source.sourcePath,
+    targetSubdir: source.targetSubdir,
+    mergeEnabled: source.mergeEnabled,
+    mergeKey: source.mergeKey,
+    organizeMedia: source.organizeMedia,
+    lastCompletedScan: source.lastCompletedScan,
+    lastCompletedAt: source.lastCompletedAt,
+    scanStatus: source.scanState ? source.scanState.status : null,
+    activeGeneration: source.scanState ? source.scanState.activeGeneration : null
+  };
+}
+
+async function loadCurrentMachineContextWithReviveRetry(targetPath, platformLabel, availability) {
+  let context = await loadCurrentMachineContext(targetPath);
+  if ((context.sources || []).length === 0 && availability.mountPath) {
+    logger.info(`${platformLabel} target revived; retrying source context load.`, {
+      targetRoot: targetPath,
+      mountPath: availability.mountPath
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const retryContext = await loadCurrentMachineContext(targetPath);
+    if ((retryContext.sources || []).length > 0 || !context.machine) {
+      context = retryContext;
+    }
+  }
+
+  logger.info(`${platformLabel} target context loaded.`, {
+    targetRoot: targetPath,
+    sourceCount: (context.sources || []).length
+  });
+  return context;
+}
+
+async function createAvailableTargetDashboardEntry(target, platform, mountedRoots, platformLabel) {
+  const availability = checkTargetAvailability(target.path, mountedRoots, platform);
+  if (!availability.available) {
+    return {
+      id: target.id,
+      path: target.path,
+      collapsed: target.collapsed,
+      addedAt: target.addedAt,
+      available: false,
+      unavailableReason: availability.unavailableReason,
+      machine: null,
+      sources: []
+    };
+  }
+
+  try {
+    const context = await loadCurrentMachineContextWithReviveRetry(target.path, platformLabel, availability);
+    return {
+      id: target.id,
+      path: target.path,
+      collapsed: target.collapsed,
+      addedAt: target.addedAt,
+      available: true,
+      unavailableReason: null,
+      machine: context.machine,
+      sources: (context.sources || []).map(mapSourceDashboardEntry)
+    };
+  } catch (error) {
+    return {
+      id: target.id,
+      path: target.path,
+      collapsed: target.collapsed,
+      addedAt: target.addedAt,
+      available: true,
+      unavailableReason: null,
+      machine: null,
+      sources: [],
+      contextError: error.message
+    };
+  }
+}
+
 async function readMountedRootsDarwin() {
   try {
     const entries = await fse.readdir(VOLUME_ROOT, { withFileTypes: true });
@@ -264,57 +343,7 @@ function createDarwinTargetAvailabilityMonitor(options = {}) {
   }
 
   async function buildTargetDashboardEntry(target) {
-    const availability = checkTargetAvailability(target.path, mountedRoots, 'darwin');
-    if (!availability.available) {
-      return {
-        id: target.id,
-        path: target.path,
-        collapsed: target.collapsed,
-        addedAt: target.addedAt,
-        available: false,
-        unavailableReason: availability.unavailableReason,
-        machine: null,
-        sources: []
-      };
-    }
-
-    try {
-      const context = await loadCurrentMachineContext(target.path);
-      return {
-        id: target.id,
-        path: target.path,
-        collapsed: target.collapsed,
-        addedAt: target.addedAt,
-        available: true,
-        unavailableReason: null,
-        machine: context.machine,
-        sources: context.sources.map((source) => ({
-          machineId: source.machineId,
-          sourceId: source.sourceId,
-          sourcePath: source.sourcePath,
-          targetSubdir: source.targetSubdir,
-          mergeEnabled: source.mergeEnabled,
-          mergeKey: source.mergeKey,
-          organizeMedia: source.organizeMedia,
-          lastCompletedScan: source.lastCompletedScan,
-          lastCompletedAt: source.lastCompletedAt,
-          scanStatus: source.scanState ? source.scanState.status : null,
-          activeGeneration: source.scanState ? source.scanState.activeGeneration : null
-        }))
-      };
-    } catch (error) {
-      return {
-        id: target.id,
-        path: target.path,
-        collapsed: target.collapsed,
-        addedAt: target.addedAt,
-        available: true,
-        unavailableReason: null,
-        machine: null,
-        sources: [],
-        contextError: error.message
-      };
-    }
+    return createAvailableTargetDashboardEntry(target, 'darwin', mountedRoots, 'macOS');
   }
 
   return {
@@ -433,57 +462,7 @@ function createLinuxTargetAvailabilityMonitor(options = {}) {
   }
 
   async function buildTargetDashboardEntry(target) {
-    const availability = checkTargetAvailability(target.path, mountedRoots, 'linux');
-    if (!availability.available) {
-      return {
-        id: target.id,
-        path: target.path,
-        collapsed: target.collapsed,
-        addedAt: target.addedAt,
-        available: false,
-        unavailableReason: availability.unavailableReason,
-        machine: null,
-        sources: []
-      };
-    }
-
-    try {
-      const context = await loadCurrentMachineContext(target.path);
-      return {
-        id: target.id,
-        path: target.path,
-        collapsed: target.collapsed,
-        addedAt: target.addedAt,
-        available: true,
-        unavailableReason: null,
-        machine: context.machine,
-        sources: context.sources.map((source) => ({
-          machineId: source.machineId,
-          sourceId: source.sourceId,
-          sourcePath: source.sourcePath,
-          targetSubdir: source.targetSubdir,
-          mergeEnabled: source.mergeEnabled,
-          mergeKey: source.mergeKey,
-          organizeMedia: source.organizeMedia,
-          lastCompletedScan: source.lastCompletedScan,
-          lastCompletedAt: source.lastCompletedAt,
-          scanStatus: source.scanState ? source.scanState.status : null,
-          activeGeneration: source.scanState ? source.scanState.activeGeneration : null
-        }))
-      };
-    } catch (error) {
-      return {
-        id: target.id,
-        path: target.path,
-        collapsed: target.collapsed,
-        addedAt: target.addedAt,
-        available: true,
-        unavailableReason: null,
-        machine: null,
-        sources: [],
-        contextError: error.message
-      };
-    }
+    return createAvailableTargetDashboardEntry(target, 'linux', mountedRoots, 'Linux');
   }
 
   return {
@@ -610,57 +589,7 @@ function createWindowsTargetAvailabilityMonitor(options = {}) {
   }
 
   async function buildTargetDashboardEntry(target) {
-    const availability = checkTargetAvailability(target.path, mountedRoots, 'win32');
-    if (!availability.available) {
-      return {
-        id: target.id,
-        path: target.path,
-        collapsed: target.collapsed,
-        addedAt: target.addedAt,
-        available: false,
-        unavailableReason: availability.unavailableReason,
-        machine: null,
-        sources: []
-      };
-    }
-
-    try {
-      const context = await loadCurrentMachineContext(target.path);
-      return {
-        id: target.id,
-        path: target.path,
-        collapsed: target.collapsed,
-        addedAt: target.addedAt,
-        available: true,
-        unavailableReason: null,
-        machine: context.machine,
-        sources: context.sources.map((source) => ({
-          machineId: source.machineId,
-          sourceId: source.sourceId,
-          sourcePath: source.sourcePath,
-          targetSubdir: source.targetSubdir,
-          mergeEnabled: source.mergeEnabled,
-          mergeKey: source.mergeKey,
-          organizeMedia: source.organizeMedia,
-          lastCompletedScan: source.lastCompletedScan,
-          lastCompletedAt: source.lastCompletedAt,
-          scanStatus: source.scanState ? source.scanState.status : null,
-          activeGeneration: source.scanState ? source.scanState.activeGeneration : null
-        }))
-      };
-    } catch (error) {
-      return {
-        id: target.id,
-        path: target.path,
-        collapsed: target.collapsed,
-        addedAt: target.addedAt,
-        available: true,
-        unavailableReason: null,
-        machine: null,
-        sources: [],
-        contextError: error.message
-      };
-    }
+    return createAvailableTargetDashboardEntry(target, 'win32', mountedRoots, 'Windows');
   }
 
   return {
@@ -691,57 +620,10 @@ function createTargetAvailabilityMonitor(platformInput, options = {}) {
 }
 
 async function buildTargetDashboardEntry(target, platform = process.platform, mountedRoots = new Set()) {
-  const availability = checkTargetAvailability(target.path, mountedRoots, platform);
-  if (!availability.available) {
-    return {
-      id: target.id,
-      path: target.path,
-      collapsed: target.collapsed,
-      addedAt: target.addedAt,
-      available: false,
-      unavailableReason: availability.unavailableReason,
-      machine: null,
-      sources: []
-    };
-  }
-
-  try {
-    const context = await loadCurrentMachineContext(target.path);
-    return {
-      id: target.id,
-      path: target.path,
-      collapsed: target.collapsed,
-      addedAt: target.addedAt,
-      available: true,
-      unavailableReason: null,
-      machine: context.machine,
-      sources: context.sources.map((source) => ({
-        machineId: source.machineId,
-        sourceId: source.sourceId,
-        sourcePath: source.sourcePath,
-        targetSubdir: source.targetSubdir,
-        mergeEnabled: source.mergeEnabled,
-        mergeKey: source.mergeKey,
-        organizeMedia: source.organizeMedia,
-        lastCompletedScan: source.lastCompletedScan,
-        lastCompletedAt: source.lastCompletedAt,
-        scanStatus: source.scanState ? source.scanState.status : null,
-        activeGeneration: source.scanState ? source.scanState.activeGeneration : null
-      }))
-    };
-  } catch (error) {
-    return {
-      id: target.id,
-      path: target.path,
-      collapsed: target.collapsed,
-      addedAt: target.addedAt,
-      available: true,
-      unavailableReason: null,
-      machine: null,
-      sources: [],
-      contextError: error.message
-    };
-  }
+  const platformLabel = normalizePlatform(platform) === 'darwin'
+    ? 'macOS'
+    : (normalizePlatform(platform) === 'linux' ? 'Linux' : 'Windows');
+  return createAvailableTargetDashboardEntry(target, platform, mountedRoots, platformLabel);
 }
 
 module.exports = {

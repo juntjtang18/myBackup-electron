@@ -63,10 +63,12 @@ const {
 } = require('../src/core/plainFileStorage');
 const { backupSource } = require('../src/core/backupCoordinator');
 const { createWorkScheduler } = require('../src/core/workScheduler');
+const { buildFolderTraversalStack } = require('../src/core/scanner/folderWalker');
 const { parseIgnoreFile, shouldIgnorePath, buildIgnoreRules } = require('../src/core/ignoreMatcher');
 const { readJsonIfExists } = require('../src/core/jsonStore');
 const { createSourceSnapshot, loadSourceSnapshot, saveSourceSnapshot } = require('../src/core/sourceSnapshotStore');
 const { createTargetAvailabilityMonitor, checkTargetAvailability } = require('../src/core/targetAvailability');
+const { loadLoggerConfig, parseLoggerProperties } = require('../src/core/loggerConfig');
 const {
   listHashRecords,
   restoreLogicalFile,
@@ -1086,6 +1088,67 @@ describe('metadata foundation', () => {
     expect(summary.status).toBe('paused');
     const context = await loadCurrentMachineContext(tempRootPath);
     expect(context.sources[0].scanState.status).toBe('paused');
+    expect(context.sources[0].scanState.resumeCursor).toMatchObject({
+      scanId: summary.scanId,
+      relativePath: '.'
+    });
+  });
+
+  test('resumes a paused backup run and continues into copy work', async () => {
+    const events = [];
+    configureLogger({
+      level: 'info',
+      sink: (record) => events.push(record),
+      moduleLevels: {}
+    });
+
+    const sourceRoot = path.join(tempRootPath, 'resume-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha');
+    writeFixture(path.join(sourceRoot, 'docs', 'b.txt'), 'beta');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'resume-copy-host',
+      seed: 'resume-copy-seed',
+      now: new Date('2026-06-07T08:30:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-07T08:35:00Z'));
+
+    const paused = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-07T08:40:00Z'),
+      forceNewScan: true,
+      shouldPause: (() => {
+        let seenRootBoundary = false;
+        return () => {
+          if (seenRootBoundary) {
+            return true;
+          }
+          seenRootBoundary = true;
+          return false;
+        };
+      })()
+    });
+
+    expect(paused.status).toBe('paused');
+    expect(paused.filesCopied).toBe(0);
+
+    events.length = 0;
+
+    const resumed = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-07T08:50:00Z')
+    });
+
+    expect(resumed.status).toBe('completed');
+    expect(resumed.filesCopied).toBe(2);
+    expect(resumed.filesProcessed).toBeGreaterThanOrEqual(2);
+    expect(events.some((entry) => entry.module === 'ScanManager' && entry.message === 'Loaded resumable scan state.')).toBe(true);
+    expect(events.some((entry) => entry.module === 'FolderWalker' && entry.message === 'Built resume traversal stack from cursor.')).toBe(true);
+    expect(events.some((entry) => entry.module === 'BackupCoordinator' && entry.message === 'Processing folder from traversal stack.')).toBe(true);
+    expect(events.some((entry) => entry.module === 'BackupCoordinator' && entry.message === 'First copy task started.')).toBe(true);
   });
 
   test('second backup skips unchanged files and overwrites changed files for separated sources', async () => {
@@ -1903,14 +1966,15 @@ dist/**
       module: 'BackupCoordinator',
       sourceCode: 'backupCoordinator.js',
       level: 'info',
+      timestamp: '2026-06-08T14:00:00.000Z',
       message: 'started'
-    })).toBe('[BackupCoordinator][backupCoordinator.js][INFO]: started');
+    })).toBe('[2026-06-08T14:00:00.000Z][BackupCoordinator][backupCoordinator.js][INFO]: started');
 
     logger.info('This should be filtered.');
     logger.error('This should pass.', { fileHash: 'abc' });
 
     expect(events).toHaveLength(1);
-    expect(events[0].formatted).toBe('[BackupCoordinator][backupCoordinator.js][ERROR]: This should pass.');
+    expect(events[0].formatted).toMatch(/^\[[^\]]+\]\[BackupCoordinator\]\[backupCoordinator\.js\]\[ERROR\]: This should pass\.$/);
     expect(events[0].details).toEqual({ fileHash: 'abc' });
 
     errorSpy.mockRestore();
@@ -1918,6 +1982,148 @@ dist/**
       level: 'info',
       sink: null
     });
+  });
+
+  test('supports per-module logger levels without changing the global threshold', () => {
+    const events = [];
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    configureLogger({
+      level: 'warn',
+      sink: (record) => events.push(record)
+    });
+
+    const targetAvailabilityLogger = createLogger('TargetAvailability', 'targetAvailability.js', {
+      level: 'debug'
+    });
+    const backupCoordinatorLogger = createLogger('BackupCoordinator', 'backupCoordinator.js');
+
+    targetAvailabilityLogger.debug('Mount watcher fired.');
+    backupCoordinatorLogger.debug('This should still be filtered.');
+
+    expect(events).toHaveLength(1);
+    expect(events[0].module).toBe('TargetAvailability');
+    expect(events[0].level).toBe('debug');
+
+    logSpy.mockRestore();
+    warnSpy.mockRestore();
+    configureLogger({
+      level: 'info',
+      sink: null,
+      moduleLevels: {}
+    });
+  });
+
+  test('parses logger properties for global and module-specific levels', () => {
+    const parsed = parseLoggerProperties(`
+      # defaults
+      logger.level=warn
+      TargetAvailability.logger=debug
+      BackupCoordinator.logger=info
+      invalid-line-without-equals
+      Broken.logger=not-a-level
+    `, '/tmp/mybackup-logging.properties');
+
+    expect(parsed.level).toBe('warn');
+    expect(parsed.moduleLevels).toEqual({
+      TargetAvailability: 'debug',
+      BackupCoordinator: 'info'
+    });
+    expect(parsed.warnings.length).toBeGreaterThan(0);
+  });
+
+  test('loads logger config from the startup properties file', async () => {
+    const configPath = path.join(tempRootPath, 'mybackup-logging.properties');
+    fs.writeFileSync(configPath, `
+      logger.level=error
+      TargetAvailability.logger=debug
+      MainProcess.logger=warn
+    `.trim());
+
+    const config = await loadLoggerConfig(tempRootPath, {
+      appPath: path.join(tempRootPath, 'app'),
+      cwd: path.join(tempRootPath, 'cwd')
+    });
+
+    expect(config.level).toBe('error');
+    expect(config.moduleLevels.TargetAvailability).toBe('debug');
+    expect(config.moduleLevels.MainProcess).toBe('warn');
+    expect(config.sources.some((entry) => entry.endsWith('mybackup-logging.properties'))).toBe(true);
+  });
+
+  test('logs resumable scan reuse when ensureScanState resumes an active generation', async () => {
+    const events = [];
+    configureLogger({
+      level: 'info',
+      sink: (record) => events.push(record),
+      moduleLevels: {}
+    });
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'resume-log-host',
+      seed: 'resume-log-seed',
+      now: new Date('2026-06-10T09:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: '/Users/James/Documents',
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-10T09:05:00Z'));
+
+    await ensureScanState(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-10T09:10:00Z'),
+      scanId: '20260610-091000'
+    });
+
+    events.length = 0;
+
+    const resumed = await ensureScanState(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-10T09:20:00Z')
+    });
+
+    expect(resumed.scanState.activeGeneration).toBe('20260610-091000');
+    expect(events.some((entry) => entry.module === 'ScanManager' && entry.message === 'Loaded resumable scan state.')).toBe(true);
+    expect(events.some((entry) => entry.module === 'ScanManager' && entry.message === 'Reusing resumable scan state.')).toBe(true);
+  });
+
+  test('builds a resume traversal stack from the source root cursor', async () => {
+    const events = [];
+    configureLogger({
+      level: 'info',
+      sink: (record) => events.push(record),
+      moduleLevels: {}
+    });
+
+    const sourceRoot = path.join(tempRootPath, 'resume-stack-source');
+    writeFixture(path.join(sourceRoot, 'alpha', 'one.txt'), 'alpha');
+    writeFixture(path.join(sourceRoot, 'beta', 'two.txt'), 'beta');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'resume-checkpoint-host',
+      seed: 'resume-checkpoint-seed',
+      now: new Date('2026-06-10T10:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-10T10:05:00Z'));
+
+    events.length = 0;
+    const stack = await buildFolderTraversalStack(
+      sourceRoot,
+      null,
+      {
+        scanId: '20260610-101000',
+        relativePath: '.',
+        folderHash: createFolderId('.')
+      }
+    );
+
+    expect(stack.map((entry) => entry.relativePath)).toEqual(['alpha', 'beta']);
+    expect(events.some((entry) => entry.module === 'FolderWalker' && entry.message === 'Built resume traversal stack from cursor.')).toBe(true);
   });
 
   test('keeps a trial worker when throughput improves enough', async () => {

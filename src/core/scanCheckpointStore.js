@@ -51,45 +51,8 @@ async function findCheckpointByRelativePath(targetRoot, machineId, sourceId, sca
   return checkpoint;
 }
 
-async function findNextPendingCheckpoint(targetRoot, machineId, sourceId, scanId) {
-  const folderDir = scanGenerationRoot(targetRoot, machineId, sourceId, scanId);
-  const checkpointsDir = `${folderDir}/folders`;
-
-  if (!(await fs.pathExists(checkpointsDir))) {
-    return null;
-  }
-
-  const entries = await fs.readdir(checkpointsDir);
-  let nextCheckpoint = null;
-
-  for (const entry of entries) {
-    if (!entry.endsWith('.json')) {
-      continue;
-    }
-
-    const checkpoint = await loadFolderCheckpoint(
-      targetRoot,
-      machineId,
-      sourceId,
-      scanId,
-      entry.slice(0, -5)
-    );
-
-    if (!checkpoint || (checkpoint.status !== 'pending' && checkpoint.status !== 'scanning')) {
-      continue;
-    }
-
-    if (!nextCheckpoint || checkpoint.relativePath.localeCompare(nextCheckpoint.relativePath) < 0) {
-      nextCheckpoint = checkpoint;
-    }
-  }
-
-  return nextCheckpoint;
-}
-
 module.exports = {
   findCheckpointByRelativePath,
-  findNextPendingCheckpoint,
   listFolderCheckpoints,
   loadFolderCheckpoint
 };

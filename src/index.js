@@ -7,6 +7,7 @@ const { registerSource } = require('./core/sourceRegistry');
 const { backupSource } = require('./core/backupCoordinator');
 const { restoreLogicalTree, restoreSource } = require('./core/restoreService');
 const { loadLocalConfig, saveLocalConfig } = require('./core/localConfig');
+const { loadLoggerConfig } = require('./core/loggerConfig');
 const { addTarget, removeTarget, requireRegisteredTarget, setTargetCollapsed } = require('./core/targetRegistry');
 const { createTargetAvailabilityMonitor, normalizePlatform } = require('./core/targetAvailability');
 const { configureLogger, createLogger, getLogLevel } = require('./core/logger');
@@ -71,7 +72,7 @@ async function buildDashboardState() {
   }));
 
   return {
-    logLevel: localConfig.logLevel || getLogLevel(),
+    logLevel: getLogLevel(),
     targets
   };
 }
@@ -343,12 +344,29 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   const localConfig = await loadLocalConfig(getAppDataRoot());
+  const loggerConfig = await loadLoggerConfig(getAppDataRoot(), {
+    appPath: app.getAppPath(),
+    cwd: process.cwd()
+  });
   configureLogger({
-    level: localConfig.logLevel || process.env.MYBACKUP_LOG_LEVEL || 'info',
+    level: loggerConfig.level || localConfig.logLevel || process.env.MYBACKUP_LOG_LEVEL || 'info',
+    moduleLevels: loggerConfig.moduleLevels,
     sink: (record) => {
       logToRenderer(record.level, record.formatted, record.details);
     }
   });
+  if ((loggerConfig.sources || []).length > 0 || (loggerConfig.warnings || []).length > 0) {
+    logger.info('Logger configuration loaded.', {
+      sources: loggerConfig.sources,
+      moduleCount: Object.keys(loggerConfig.moduleLevels || {}).length,
+      warningCount: (loggerConfig.warnings || []).length
+    });
+    for (const warning of loggerConfig.warnings || []) {
+      logger.warn('Logger configuration warning.', {
+        warning
+      });
+    }
+  }
   logger.info('Application ready.', {
     logLevel: getLogLevel(),
     platform: appPlatform

@@ -18,12 +18,13 @@ const {
   saveDiscoveredFolders,
   updateFolderStatus
 } = require('./scanManager');
-const { findNextPendingCheckpoint } = require('./scanCheckpointStore');
 const { loadSource } = require('./metadataStore');
 const { loadIgnoreMatcher } = require('./ignoreMatcher');
 const { createErrorReportWriter } = require('./errorReportStore');
 const { loadSourceSnapshot } = require('./sourceSnapshotStore');
 const { updateSourceScanState } = require('./sourceRegistry');
+const { updateResumeCursor, clearResumeCursor } = require('./resume/resumeStateService');
+const { buildFolderTraversalStack } = require('./scanner/folderWalker');
 const { toPosixPath } = require('./layout');
 const { shortHash } = require('./ids');
 const { createWorkScheduler } = require('./workScheduler');
@@ -502,11 +503,15 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     throw new Error(`Source not found: ${machineId}/${sourceId}`);
   }
 
+  const runStartedAt = Date.now();
+  const resumeRequested = !options.forceNewScan;
+
   logger.info('Backup source started.', {
     machineId,
     sourceId,
     targetRoot,
-    sourcePath: source.sourcePath
+    sourcePath: source.sourcePath,
+    resumeRequested
   });
 
   const traceTaskTimings = String(process.env.MYBACKUP_TRACE_TASK_TIMINGS || '').trim() === '1';
@@ -518,6 +523,14 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   const stateBundle = await ensureScanState(targetRoot, machineId, sourceId, {
     forceNew: options.forceNewScan,
     now: options.now || new Date()
+  });
+  logger.info('Scan state resolved for backup run.', {
+    machineId,
+    sourceId,
+    scanId: stateBundle.scanState.activeGeneration,
+    status: stateBundle.scanState.status,
+    resumed: Boolean(stateBundle.resumed),
+    forceNewScan: Boolean(options.forceNewScan)
   });
 
   const scanId = stateBundle.scanState.activeGeneration;
@@ -562,6 +575,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   let schedulersReady = false;
   let pipelineFeed = [];
   const copyHandoffQueue = [];
+  let firstCopyTaskQueued = false;
   const emitProgress = (event) => {
     if (schedulersReady) {
       const hashSnapshot = hashScheduler.snapshot();
@@ -626,6 +640,18 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   const errorReport = await createErrorReportWriter(targetRoot, machineId, sourceId, scanId);
   summary.reportPath = errorReport.reportPath;
   const ignoreMatcher = await loadIgnoreMatcher(source.sourcePath);
+  const folderTraversal = await buildFolderTraversalStack(
+    source.sourcePath,
+    ignoreMatcher,
+    stateBundle.scanState.resumeCursor || null
+  );
+  logger.info('Folder traversal stack prepared for backup run.', {
+    machineId,
+    sourceId,
+    scanId,
+    folderCount: folderTraversal.length,
+    resumeCursor: stateBundle.scanState.resumeCursor || null
+  });
   const hashRecordSession = createHashRecordSession(targetRoot);
   const inFlightHashes = createInFlightHashCoordinator();
   const fileTaskGate = createConcurrencyGate(maxConcurrentFileTasks);
@@ -780,6 +806,18 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           totalBytes: 0
         };
       } else if (workerEvent.type === 'task-started') {
+        if (!progress.firstCopyTaskStartedAt && workerEvent.payload.plan) {
+          progress.firstCopyTaskStartedAt = Date.now();
+          logger.info('First copy task started.', {
+            machineId,
+            sourceId,
+            scanId,
+            sourceRelativePath: workerEvent.payload.plan.sourceRelativePath,
+            logicalPath: workerEvent.payload.plan.logicalPath,
+            elapsedMsSinceRunStart: progress.firstCopyTaskStartedAt - runStartedAt,
+            resumed: Boolean(stateBundle.resumed)
+          });
+        }
         progress.workers[workerKey] = {
           workerId: workerEvent.workerId,
           pool: 'copy',
@@ -790,6 +828,20 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           totalBytes: workerEvent.payload.plan.stats.size
         };
       } else if (workerEvent.type === 'task-completed') {
+        if (!progress.firstCopyTaskCompletedAt && workerEvent.result) {
+          progress.firstCopyTaskCompletedAt = Date.now();
+          logger.info('First copy task completed.', {
+            machineId,
+            sourceId,
+            scanId,
+            sourceRelativePath: workerEvent.result.sourceRelativePath || workerEvent.payload.plan.sourceRelativePath,
+            logicalPath: workerEvent.result.logicalPath,
+            action: workerEvent.result.action,
+            elapsedMsSinceRunStart: progress.firstCopyTaskCompletedAt - runStartedAt,
+            elapsedMsSinceFirstCopyStart: progress.firstCopyTaskStartedAt ? progress.firstCopyTaskCompletedAt - progress.firstCopyTaskStartedAt : null,
+            resumed: Boolean(stateBundle.resumed)
+          });
+        }
         progress.workers[workerKey] = {
           workerId: workerEvent.workerId,
           pool: 'copy',
@@ -846,22 +898,13 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
 
   let paused = false;
   let pausePhase = null;
-  const folderCompletions = [];
+  let lastCompletedCheckpoint = null;
   const shouldStopForPause = () => typeof options.shouldPause === 'function' && options.shouldPause();
 
   function pauseWorkSnapshot() {
-    if (!schedulersReady) {
-      return {
-        folderCompletions: folderCompletions.length,
-        pipelineFeed: pipelineFeed.length,
-        copyHandoff: copyHandoffQueue.length
-      };
-    }
-
     const hashSnapshot = hashScheduler.snapshot();
     const copySnapshot = copyScheduler.snapshot();
     return {
-      folderCompletions: folderCompletions.length,
       pipelineFeed: pipelineFeed.length,
       copyHandoff: copyHandoffQueue.length,
       hash: {
@@ -892,28 +935,25 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     await copyScheduler.closeAndCancel();
     await emitPausePhase('copy-cancelled', 'Pause: copy scheduler queue cancelled; waiting for in-flight copy tasks.');
     await emitPausePhase('waiting-folder-tasks', 'Pause: waiting for in-flight folder tasks to settle.');
-    await Promise.allSettled(folderCompletions);
     await emitPausePhase('folder-tasks-settled', 'Pause: in-flight folder tasks settled.');
   }
 
   try {
-    while (true) {
+    for (const nextCheckpoint of folderTraversal) {
       if (shouldStopForPause()) {
         paused = true;
         logger.info('Pause: scan loop stopping at folder boundary.', pauseWorkSnapshot());
         break;
       }
 
-      const nextCheckpoint = await findNextPendingCheckpoint(targetRoot, machineId, sourceId, scanId);
-      if (!nextCheckpoint) {
-        break;
-      }
-
-      logger.debug('Scanning folder checkpoint.', {
+      logger.info('Processing folder from traversal stack.', {
         scanId,
         folderPath: nextCheckpoint.folderPath,
         relativePath: nextCheckpoint.relativePath,
-        status: nextCheckpoint.status
+        resumed: Boolean(stateBundle.resumed),
+        foldersProcessed: summary.foldersProcessed,
+        filesProcessed: summary.filesProcessed,
+        filesCopied: summary.filesCopied
       });
 
       const scanningCheckpoint = await updateFolderStatus(
@@ -1073,6 +1113,18 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
                   totalBytes: planResult.stats?.size || stats.size
                 };
                 copyHandoffQueue.push(handoffItem);
+                if (!firstCopyTaskQueued) {
+                  firstCopyTaskQueued = true;
+                  logger.info('First copy task queued.', {
+                    machineId,
+                    sourceId,
+                    scanId,
+                    sourceRelativePath: planResult.sourceRelativePath,
+                    logicalPath: planResult.logicalPath,
+                    elapsedMsSinceRunStart: Date.now() - runStartedAt,
+                    resumed: Boolean(stateBundle.resumed)
+                  });
+                }
                 return copyScheduler.push({ plan: planResult })
                   .finally(() => {
                     const handoffIndex = copyHandoffQueue.findIndex(
@@ -1124,8 +1176,6 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       if (paused) {
         break;
       }
-
-      folderCompletions.push((async () => {
       await Promise.all(fileTasks);
 
       for (const result of fileResults.filter(Boolean)) {
@@ -1170,19 +1220,35 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
 
       summary.foldersProcessed += 1;
       progress.foldersProcessed = summary.foldersProcessed;
+      lastCompletedCheckpoint = {
+        scanId,
+        folderPath: scanningCheckpoint.folderPath,
+        relativePath: scanningCheckpoint.relativePath,
+        folderHash: scanningCheckpoint.folderId || null
+      };
+      await updateResumeCursor(
+        targetRoot,
+        machineId,
+        sourceId,
+        {
+          scanId,
+          relativePath: lastCompletedCheckpoint.relativePath,
+          folderPath: lastCompletedCheckpoint.folderPath,
+          folderHash: lastCompletedCheckpoint.folderHash
+        },
+        options.now || new Date()
+      );
       await hashRecordSession.flush();
       emitProgress({
         type: 'folder-completed',
         relativePath: scanningCheckpoint.relativePath
       });
-      })());
     }
   } finally {
     await hashRecordSession.flush();
     if (paused) {
       await shutdownForPause();
     } else {
-      await Promise.all(folderCompletions);
       await hashScheduler.closeAndDrain();
       await copyScheduler.closeAndDrain();
     }
@@ -1194,6 +1260,20 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       pausePhase,
       ...pauseWorkSnapshot()
     });
+    if (lastCompletedCheckpoint) {
+      await updateResumeCursor(
+        targetRoot,
+        machineId,
+        sourceId,
+        {
+          scanId,
+          relativePath: lastCompletedCheckpoint.relativePath,
+          folderPath: lastCompletedCheckpoint.folderPath,
+          folderHash: lastCompletedCheckpoint.folderHash
+        },
+        options.now || new Date()
+      );
+    }
     await markGenerationPaused(targetRoot, machineId, sourceId, options.now || new Date());
     progress.status = 'paused';
     delete progress.pausePhase;
@@ -1211,6 +1291,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   }
 
   await markGenerationCompleted(targetRoot, machineId, sourceId, options.now || new Date());
+  await clearResumeCursor(targetRoot, machineId, sourceId, options.now || new Date());
   await updateSourceScanState(
     targetRoot,
     machineId,

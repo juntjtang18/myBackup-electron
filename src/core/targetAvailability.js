@@ -115,20 +115,34 @@ function mapSourceDashboardEntry(source) {
   };
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function loadCurrentMachineContextWithReviveRetry(targetPath, platformLabel, availability) {
+  const maxAttempts = 5;
   let context = await loadCurrentMachineContext(targetPath);
-  if ((context.sources || []).length === 0 && availability.mountPath) {
+  for (let attempt = 1; attempt < maxAttempts && (context.sources || []).length === 0 && availability.mountPath; attempt += 1) {
     logger.info(`${platformLabel} target revived; retrying source context load.`, {
       targetRoot: targetPath,
-      mountPath: availability.mountPath
+      mountPath: availability.mountPath,
+      attempt,
+      maxAttempts
     });
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await sleep(150 * attempt);
     const retryContext = await loadCurrentMachineContext(targetPath);
-    if ((retryContext.sources || []).length > 0 || !context.machine) {
+    if ((retryContext.sources || []).length > 0 || (!context.machine && retryContext.machine)) {
       context = retryContext;
     }
   }
 
+  if ((context.sources || []).length === 0 && availability.mountPath) {
+    logger.warn(`${platformLabel} target revived but no sources were loaded.`, {
+      targetRoot: targetPath,
+      mountPath: availability.mountPath,
+      loadedMachine: Boolean(context.machine)
+    });
+  }
   logger.info(`${platformLabel} target context loaded.`, {
     targetRoot: targetPath,
     sourceCount: (context.sources || []).length

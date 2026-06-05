@@ -891,6 +891,86 @@ describe('metadata foundation', () => {
     });
   });
 
+  test('reloads backup sources when a revived target becomes available', async () => {
+    jest.resetModules();
+
+    const loadCurrentMachineContext = jest.fn()
+      .mockResolvedValueOnce({
+        machine: { machineId: 'machine-a' },
+        sources: []
+      })
+      .mockResolvedValueOnce({
+        machine: { machineId: 'machine-a' },
+        sources: [
+          {
+            machineId: 'machine-a',
+            sourceId: 'documents-0cf0ec50',
+            sourcePath: '/Users/James/Documents',
+            targetSubdir: 'Backups/Machines/machine-a/documents-0cf0ec50',
+            mergeEnabled: false,
+            mergeKey: null,
+            organizeMedia: false,
+            lastCompletedScan: '20260605-090000',
+            lastCompletedAt: '2026-06-05T09:05:00.000Z',
+            scanState: {
+              status: 'paused',
+              activeGeneration: '20260605-090000'
+            }
+          }
+        ]
+      });
+
+    jest.doMock('electron', () => ({
+      app: {
+        on: jest.fn(),
+        removeListener: jest.fn(),
+        getPath: jest.fn(() => tempRootPath),
+        getName: jest.fn(() => 'mybackup-electron')
+      },
+      powerMonitor: {
+        on: jest.fn(),
+        removeListener: jest.fn()
+      }
+    }));
+
+    jest.doMock('../src/core/sourceCatalog', () => ({
+      loadCurrentMachineContext
+    }));
+
+    jest.doMock('../src/core/logger', () => ({
+      createLogger: () => ({
+        debug: jest.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn()
+      })
+    }));
+
+    const { buildTargetDashboardEntry: buildRevivedTargetDashboardEntry } = require('../src/core/targetAvailability');
+    const entry = await buildRevivedTargetDashboardEntry(
+      {
+        id: 'target-1',
+        path: '/Volumes/5T/Backup',
+        collapsed: false,
+        addedAt: '2026-06-05T09:00:00.000Z'
+      },
+      'darwin',
+      new Set(['/Volumes/5T'])
+    );
+
+    expect(loadCurrentMachineContext).toHaveBeenCalledTimes(2);
+    expect(entry.available).toBe(true);
+    expect(entry.machine).toEqual({ machineId: 'machine-a' });
+    expect(entry.sources).toHaveLength(1);
+    expect(entry.sources[0]).toMatchObject({
+      machineId: 'machine-a',
+      sourceId: 'documents-0cf0ec50',
+      sourcePath: '/Users/James/Documents',
+      scanStatus: 'paused',
+      activeGeneration: '20260605-090000'
+    });
+  });
+
   test('restores a stored plain file and cleans temp files', async () => {
     const sourceFile = path.join(tempRootPath, 'fixtures', 'photo.txt');
     writeFixture(sourceFile, 'restorable content');

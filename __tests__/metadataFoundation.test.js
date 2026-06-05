@@ -66,6 +66,7 @@ const { createWorkScheduler } = require('../src/core/workScheduler');
 const { parseIgnoreFile, shouldIgnorePath, buildIgnoreRules } = require('../src/core/ignoreMatcher');
 const { readJsonIfExists } = require('../src/core/jsonStore');
 const { createSourceSnapshot, loadSourceSnapshot, saveSourceSnapshot } = require('../src/core/sourceSnapshotStore');
+const { createTargetAvailabilityMonitor, checkTargetAvailability } = require('../src/core/targetAvailability');
 const {
   listHashRecords,
   restoreLogicalFile,
@@ -861,6 +862,33 @@ describe('metadata foundation', () => {
 
     await saveSourceSnapshot(tempRootPath, snapshot);
     await expect(loadSourceSnapshot(tempRootPath, 'machine-a', 'source-a')).resolves.toEqual(snapshot);
+  });
+
+  test('detects unavailable backup targets on startup', async () => {
+    const mountedVolumes = new Set(['/Volumes/BackupDrive']);
+
+    expect(checkTargetAvailability('/Volumes/BackupDrive/Archive', mountedVolumes, 'darwin')).toEqual({
+      available: true,
+      unavailableReason: null,
+      mountPath: '/Volumes/BackupDrive'
+    });
+
+    expect(checkTargetAvailability('/Volumes/MissingDrive/Archive', mountedVolumes, 'darwin')).toMatchObject({
+      available: false,
+      mountPath: '/Volumes/MissingDrive'
+    });
+
+    const monitor = createTargetAvailabilityMonitor('darwin');
+    await expect(monitor.buildTargetDashboardEntry({
+      id: 'target-1',
+      path: '/Volumes/MissingDrive/Archive',
+      collapsed: false,
+      addedAt: '2026-06-09T10:00:00Z'
+    })).resolves.toMatchObject({
+      available: false,
+      machine: null,
+      sources: []
+    });
   });
 
   test('restores a stored plain file and cleans temp files', async () => {

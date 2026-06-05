@@ -8,13 +8,19 @@ const { backupSource } = require('./core/backupCoordinator');
 const { restoreLogicalTree, restoreSource } = require('./core/restoreService');
 const { loadLocalConfig, saveLocalConfig } = require('./core/localConfig');
 const { addTarget, removeTarget, requireRegisteredTarget, setTargetCollapsed } = require('./core/targetRegistry');
-const { loadCurrentMachineContext } = require('./core/sourceCatalog');
+const { createTargetAvailabilityMonitor, normalizePlatform } = require('./core/targetAvailability');
 const { configureLogger, createLogger, getLogLevel } = require('./core/logger');
 
 let mainWindow = null;
 const logger = createLogger('MainProcess', 'index.js');
 const activeBackupProgress = new Map();
 const activeBackups = new Map();
+const appPlatform = normalizePlatform(process.platform);
+const targetAvailability = createTargetAvailabilityMonitor(appPlatform, {
+  onChange: async () => {
+    await refreshDashboardState(true);
+  }
+});
 
 // The app is a form-heavy desktop tool and does not benefit from GPU acceleration.
 // Disabling it avoids noisy Chromium/EGL initialization failures on some machines.
@@ -51,59 +57,44 @@ function backupKey(targetRoot, machineId, sourceId) {
   return `${targetRoot}::${machineId}::${sourceId}`;
 }
 
-function mapSourceEntry(source) {
-  return {
-    machineId: source.machineId,
-    sourceId: source.sourceId,
-    sourcePath: source.sourcePath,
-    targetSubdir: source.targetSubdir,
-    mergeEnabled: source.mergeEnabled,
-    mergeKey: source.mergeKey,
-    organizeMedia: source.organizeMedia,
-    lastCompletedScan: source.lastCompletedScan,
-    lastCompletedAt: source.lastCompletedAt,
-    scanStatus: source.scanState ? source.scanState.status : null,
-    activeGeneration: source.scanState ? source.scanState.activeGeneration : null
-  };
-}
-
-async function buildTargetDashboardEntry(target) {
-  try {
-    const context = await loadCurrentMachineContext(target.path);
-    return {
-      id: target.id,
-      path: target.path,
-      collapsed: target.collapsed,
-      addedAt: target.addedAt,
-      machine: context.machine,
-      sources: context.sources.map(mapSourceEntry)
-    };
-  } catch (error) {
-    logger.warn('Failed to load backup target context.', {
-      targetRoot: target.path,
-      message: error.message
-    });
-    return {
-      id: target.id,
-      path: target.path,
-      collapsed: target.collapsed,
-      addedAt: target.addedAt,
-      machine: null,
-      sources: []
-    };
-  }
-}
-
 async function buildDashboardState() {
   const localConfig = await loadLocalConfig(getAppDataRoot());
-  const targets = await Promise.all(
-    (localConfig.targets || []).map((target) => buildTargetDashboardEntry(target))
-  );
+  const targets = await Promise.all((localConfig.targets || []).map(async (target) => {
+    const entry = await targetAvailability.buildTargetDashboardEntry(target);
+    if (!entry.available) {
+      logger.warn('Backup target is unavailable.', {
+        targetRoot: target.path,
+        reason: entry.unavailableReason
+      });
+    }
+    return entry;
+  }));
 
   return {
     logLevel: localConfig.logLevel || getLogLevel(),
     targets
   };
+}
+
+async function refreshDashboardState(emitUpdate = false) {
+  const startedAt = Date.now();
+  logger.debug('Refreshing dashboard state.', {
+    emitUpdate,
+    platform: appPlatform
+  });
+  const dashboard = await buildDashboardState();
+  if (emitUpdate && mainWindow && !mainWindow.isDestroyed()) {
+    logger.info('Sending dashboard update to renderer.', {
+      targetCount: dashboard.targets ? dashboard.targets.length : 0
+    });
+    mainWindow.webContents.send('app:dashboard-updated', dashboard);
+  }
+  logger.info('Dashboard state refresh completed.', {
+    emitUpdate,
+    targetCount: dashboard.targets ? dashboard.targets.length : 0,
+    durationMs: Date.now() - startedAt
+  });
+  return dashboard;
 }
 
 async function requireTargetRoot(input) {
@@ -118,13 +109,13 @@ async function ensureMachineForTarget(targetRoot) {
 }
 
 function registerIpcHandlers() {
-  ipcMain.handle('app:get-dashboard', async () => buildDashboardState());
+  ipcMain.handle('app:get-dashboard', async () => refreshDashboardState(false));
   ipcMain.handle('app:set-log-level', async (_event, input) => {
     const level = input && input.level ? input.level : 'info';
     configureLogger({ level });
     await saveLocalConfig(getAppDataRoot(), { logLevel: level });
     logger.info('Log level updated.', { level });
-    return buildDashboardState();
+    return refreshDashboardState(false);
   });
 
   async function pickAndAddTarget() {
@@ -134,7 +125,7 @@ function registerIpcHandlers() {
     });
 
     if (result.canceled || result.filePaths.length === 0) {
-      return buildDashboardState();
+      return refreshDashboardState(false);
     }
 
     const targetRoot = result.filePaths[0];
@@ -142,7 +133,7 @@ function registerIpcHandlers() {
     await ensureMachineForTarget(targetRoot);
     logger.info('Backup target added.', { targetRoot });
     logToRenderer('info', 'Backup target added.', { targetRoot });
-    return buildDashboardState();
+    return refreshDashboardState(false);
   }
 
   ipcMain.handle('app:add-target', async () => pickAndAddTarget());
@@ -156,7 +147,7 @@ function registerIpcHandlers() {
     await removeTarget(getAppDataRoot(), input.targetId);
     logger.info('Backup target removed from app list.', { targetId: input.targetId });
     logToRenderer('info', 'Backup target removed from app list.', { targetId: input.targetId });
-    return buildDashboardState();
+    return refreshDashboardState(false);
   });
 
   ipcMain.handle('app:set-target-collapsed', async (_event, input) => {
@@ -359,11 +350,19 @@ app.whenReady().then(async () => {
     }
   });
   logger.info('Application ready.', {
-    logLevel: getLogLevel()
+    logLevel: getLogLevel(),
+    platform: appPlatform
   });
 
   registerIpcHandlers();
+  await targetAvailability.bootstrap();
+  logger.info('Target availability monitor bootstrapped.', {
+    platform: appPlatform,
+    mountedRoots: Array.from(targetAvailability.getMountedRoots())
+  });
+  targetAvailability.start();
   createWindow();
+  await refreshDashboardState(true);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

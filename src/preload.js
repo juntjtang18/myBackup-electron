@@ -21,5 +21,10 @@ contextBridge.exposeInMainWorld('myBackup', {
     const handler = (_event, payload) => listener(payload);
     ipcRenderer.on('app:log', handler);
     return () => ipcRenderer.removeListener('app:log', handler);
+  },
+  onDashboardUpdated: (listener) => {
+    const handler = (_event, payload) => listener(payload);
+    ipcRenderer.on('app:dashboard-updated', handler);
+    return () => ipcRenderer.removeListener('app:dashboard-updated', handler);
   }
 });

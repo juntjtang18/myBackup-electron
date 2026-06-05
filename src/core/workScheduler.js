@@ -109,17 +109,20 @@ function createWorkScheduler(options) {
             type: 'task-completed',
             workerId: worker.id,
             payload: item.payload,
+            durationMs,
             result,
             snapshot: snapshot()
           });
         }
         item.resolve(result);
       } catch (error) {
+        const durationMs = Math.max(0, scheduler.now() - startedAt);
         if (scheduler.onWorkerEvent) {
           scheduler.onWorkerEvent({
             type: 'task-failed',
             workerId: worker.id,
             payload: item.payload,
+            durationMs,
             error: {
               message: error.message
             },

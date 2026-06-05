@@ -10,6 +10,8 @@ const state = {
   workerDisplayOrder: {}
 };
 
+let lastDashboardPushAt = 0;
+
 function progressKey(targetRoot, machineId, sourceId) {
   return `${targetRoot}::${machineId}::${sourceId}`;
 }
@@ -363,7 +365,18 @@ function renderProgressPanel(targetRoot, source) {
   `;
 }
 
-function renderTargetSourcesTable(targetRoot, sources) {
+function renderTargetSourcesTable(target) {
+  const targetRoot = target.path;
+  const sources = target.sources || [];
+
+  if (!target.available) {
+    return `
+      <div class="empty-state target-unavailable-state">
+        Backup target is unavailable${target.unavailableReason ? `: <span class="muted">${escapeHtml(target.unavailableReason)}</span>` : '.'}
+      </div>
+    `;
+  }
+
   if (!sources || sources.length === 0) {
     return '<div class="empty-state" style="padding:24px 12px;margin-top:8px;">No sources in this target. Click <strong>+ Source</strong> to add one.</div>';
   }
@@ -491,9 +504,10 @@ function renderTargets() {
     const isRunning = targetHasActiveBackup(target);
     const collapsedClass = target.collapsed ? 'collapsed' : '';
     const activeClass = isRunning ? 'is-active' : '';
+    const unavailableClass = target.available === false ? 'unavailable' : '';
 
     return `
-      <article class="target-panel ${collapsedClass} ${activeClass}" data-target-id="${escapeHtml(target.id)}">
+      <article class="target-panel ${collapsedClass} ${activeClass} ${unavailableClass}" data-target-id="${escapeHtml(target.id)}">
         <div class="target-panel-header" data-target-id="${escapeHtml(target.id)}">
           <span class="target-chevron" aria-hidden="true">▶</span>
           ${TARGET_HEADER_ICON}
@@ -502,15 +516,16 @@ function renderTargets() {
           </div>
           <div class="target-panel-meta">
             ${isRunning ? '<span class="target-running-dot" title="Backup running"></span>' : ''}
+            ${target.available === false ? '<span class="target-status-badge target-status-unavailable">Unavailable</span>' : ''}
             <span class="target-count-badge">${sourceCount} source${sourceCount === 1 ? '' : 's'}</span>
           </div>
           <div class="target-panel-actions">
-            <button type="button" class="btn-target-action add-source-button" data-target-root="${escapeHtml(target.path)}">+ Source</button>
+            <button type="button" class="btn-target-action add-source-button" data-target-root="${escapeHtml(target.path)}"${target.available === false ? ' disabled' : ''}>+ Source</button>
             <button type="button" class="btn-target-action danger remove-target-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(target.path)}" title="Remove from list">Remove</button>
           </div>
         </div>
         <div class="target-panel-body">
-          <div class="sources-wrap">${renderTargetSourcesTable(target.path, target.sources)}</div>
+          <div class="sources-wrap">${renderTargetSourcesTable(target)}</div>
         </div>
       </article>
     `;
@@ -544,6 +559,17 @@ function renderDashboard() {
     logLevelSelect.value = state.dashboard.logLevel;
   }
   renderTargets();
+  const targets = state.dashboard.targets || [];
+  const targetSummary = targets.map((target) => ({
+    path: target.path,
+    available: target.available,
+    unavailableReason: target.unavailableReason || null
+  }));
+  const firstPanel = document.querySelector('.target-panel');
+  appendLog('info', 'Dashboard rendered.', {
+    targetSummary,
+    firstPanelUnavailableClass: firstPanel ? firstPanel.classList.contains('unavailable') : null
+  });
 }
 
 let addSourceModal = null;
@@ -578,7 +604,21 @@ function hideAddSourceModal() {
 }
 
 async function refreshDashboard() {
-  state.dashboard = await window.myBackup.getDashboard();
+  const requestStartedAt = Date.now();
+  appendLog('info', 'Requesting dashboard snapshot from main process.');
+  const dashboard = await window.myBackup.getDashboard();
+  appendLog('info', 'Dashboard snapshot received from main process.', {
+    targetCount: dashboard?.targets ? dashboard.targets.length : 0,
+    unavailableTargets: (dashboard?.targets || []).filter((target) => target.available === false).length
+  });
+  if (lastDashboardPushAt > requestStartedAt) {
+    appendLog('info', 'Skipped stale dashboard snapshot because a newer push update already arrived.', {
+      requestStartedAt,
+      lastDashboardPushAt
+    });
+    return;
+  }
+  state.dashboard = dashboard;
   renderDashboard();
 }
 
@@ -647,6 +687,12 @@ async function openAddSourceFlow(targetRoot) {
     return;
   }
 
+  const target = (state.dashboard.targets || []).find((entry) => entry.path === targetRoot);
+  if (target && target.available === false) {
+    appendLog('warn', 'Backup target is unavailable.');
+    return;
+  }
+
   state.addSourceTargetRoot = targetRoot;
   showAddSourceModal();
 }
@@ -696,6 +742,11 @@ async function registerSource(event) {
 
 async function runBackup(targetRoot, machineId, sourceId, button) {
   const key = progressKey(targetRoot, machineId, sourceId);
+  const currentTarget = (state.dashboard.targets || []).find((entry) => entry.path === targetRoot);
+  if (currentTarget && currentTarget.available === false) {
+    appendLog('warn', 'Backup target is unavailable.');
+    return;
+  }
   if (state.backupProgress[key]) {
     try {
       state.pauseRequests[key] = true;
@@ -709,7 +760,7 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
     return;
   }
 
-  const target = (state.dashboard.targets || []).find((entry) => entry.path === targetRoot);
+  const target = currentTarget;
   const source = (target?.sources || []).find((entry) => entry.machineId === machineId && entry.sourceId === sourceId);
   if (target && target.collapsed) {
     target.collapsed = false;
@@ -811,6 +862,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else {
       scheduleProgressRender();
     }
+  });
+  window.myBackup.onDashboardUpdated((dashboard) => {
+    lastDashboardPushAt = Date.now();
+    appendLog('info', 'Dashboard update received from main process.', {
+      targetCount: dashboard?.targets ? dashboard.targets.length : 0,
+      unavailableTargets: (dashboard?.targets || []).filter((target) => target.available === false).length
+    });
+    state.dashboard = dashboard;
+    renderDashboard();
   });
   window.myBackup.onLog((entry) => appendLog(entry.level, entry.message, entry.details));
   await refreshDashboard();

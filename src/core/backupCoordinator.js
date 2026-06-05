@@ -22,7 +22,7 @@ const { findNextPendingCheckpoint } = require('./scanCheckpointStore');
 const { loadSource } = require('./metadataStore');
 const { loadIgnoreMatcher } = require('./ignoreMatcher');
 const { createErrorReportWriter } = require('./errorReportStore');
-const { createSourceSnapshot, loadSourceSnapshot, saveSourceSnapshot } = require('./sourceSnapshotStore');
+const { loadSourceSnapshot } = require('./sourceSnapshotStore');
 const { updateSourceScanState } = require('./sourceRegistry');
 const { toPosixPath } = require('./layout');
 const { shortHash } = require('./ids');
@@ -258,6 +258,7 @@ async function buildPlanFromExistingRecord(
     action: registration.pathStatus === 'alias-added' ? 'indexed-alias' : 'indexed-existing',
     fileHash,
     logicalPath,
+    sourceRelativePath,
     bytesProcessed: stats.size,
     record: registration.record
   };
@@ -272,7 +273,7 @@ async function planFileOperation(
   stats,
   now = new Date(),
   coordination = null,
-  sourceSnapshot = null,
+  sourceSnapshotCache = null,
   hashSession = null
 ) {
   logger.debug('Planning file operation.', {
@@ -281,9 +282,7 @@ async function planFileOperation(
     sourceRelativePath,
     size: stats.size
   });
-  const cachedEntry = sourceSnapshot && sourceSnapshot.files
-    ? sourceSnapshot.files[sourceRelativePath]
-    : null;
+  const cachedEntry = sourceSnapshotCache ? sourceSnapshotCache.get(sourceRelativePath) : null;
   const cachedHashUsable = Boolean(
     cachedEntry &&
     cachedEntry.size === stats.size &&
@@ -510,6 +509,10 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     sourcePath: source.sourcePath
   });
 
+  const traceTaskTimings = String(process.env.MYBACKUP_TRACE_TASK_TIMINGS || '').trim() === '1';
+  let hashTaskCount = 0;
+  let copyTaskCount = 0;
+
   await cleanupTempFiles(targetRoot);
 
   const stateBundle = await ensureScanState(targetRoot, machineId, sourceId, {
@@ -526,6 +529,8 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     filesProcessed: 0,
     filesCopied: 0,
     filesIndexed: 0,
+    hashTaskDurationMs: 0,
+    copyTaskDurationMs: 0,
     conflicts: 0,
     skippedFolders: 0,
     skippedFiles: 0,
@@ -616,12 +621,8 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     lastCopyProgressEmitAt = now;
     emitProgress(event);
   };
-  const sourceSnapshot = createSourceSnapshot(
-    machineId,
-    sourceId,
-    await loadSourceSnapshot(targetRoot, machineId, sourceId),
-    options.now || new Date()
-  );
+  const loadedSourceSnapshot = await loadSourceSnapshot(targetRoot, machineId, sourceId);
+  const sourceSnapshotCache = new Map(Object.entries((loadedSourceSnapshot && loadedSourceSnapshot.files) || {}));
   const errorReport = await createErrorReportWriter(targetRoot, machineId, sourceId, scanId);
   summary.reportPath = errorReport.reportPath;
   const ignoreMatcher = await loadIgnoreMatcher(source.sourcePath);
@@ -638,7 +639,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       payload.stats,
       payload.now,
       inFlightHashes,
-      sourceSnapshot,
+      sourceSnapshotCache,
       hashRecordSession
     ),
     getTaskBytes: (result, payload) => result?.bytesProcessed || payload.stats.size || 0,
@@ -683,14 +684,26 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           logicalPath: workerEvent.result.logicalPath,
           copiedBytes: workerEvent.result.bytesProcessed || 0,
           totalBytes: workerEvent.result.bytesProcessed || 0,
-          lastAction: workerEvent.result.action
+          lastAction: workerEvent.result.action,
+          lastTaskDurationMs: workerEvent.durationMs || 0
         };
         if (workerEvent.result.action === 'indexed-existing' || workerEvent.result.action === 'indexed-alias') {
           progress.filesIndexed += 1;
           progress.filesProcessed += 1;
         }
+        hashTaskCount += 1;
+        summary.hashTaskDurationMs += workerEvent.durationMs || 0;
         if (workerEvent.snapshot && typeof workerEvent.snapshot.throughputBytesPerSecond === 'number') {
           progress.hashThroughputBytesPerSecond = workerEvent.snapshot.throughputBytesPerSecond;
+        }
+        if (traceTaskTimings) {
+          logger.info('Hash task completed.', {
+            sourceRelativePath: workerEvent.payload.sourceRelativePath,
+            logicalPath: workerEvent.result.logicalPath,
+            action: workerEvent.result.action,
+            durationMs: workerEvent.durationMs || 0,
+            bytesProcessed: workerEvent.result.bytesProcessed || 0
+          });
         }
       } else if (workerEvent.type === 'task-failed') {
         progress.workers[workerKey] = {
@@ -701,8 +714,14 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           logicalPath: null,
           copiedBytes: 0,
           totalBytes: workerEvent.payload.stats.size,
-          error: workerEvent.error.message
+          error: workerEvent.error.message,
+          lastTaskDurationMs: workerEvent.durationMs || 0
         };
+        logger.warn('Hash task failed.', {
+          sourceRelativePath: workerEvent.payload.sourceRelativePath,
+          durationMs: workerEvent.durationMs || 0,
+          error: workerEvent.error.message
+        });
       }
       emitProgress({ ...workerEvent, pool: 'hash' });
     }
@@ -779,11 +798,23 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           logicalPath: workerEvent.result.logicalPath,
           copiedBytes: workerEvent.result.bytesProcessed || 0,
           totalBytes: workerEvent.result.bytesProcessed || 0,
-          lastAction: workerEvent.result.action
+          lastAction: workerEvent.result.action,
+          lastTaskDurationMs: workerEvent.durationMs || 0
         };
         if (workerEvent.result.action === 'copied' || workerEvent.result.action === 'copied-duplicate') {
           progress.filesCopied += 1;
           progress.filesProcessed += 1;
+        }
+        copyTaskCount += 1;
+        summary.copyTaskDurationMs += workerEvent.durationMs || 0;
+        if (traceTaskTimings) {
+          logger.info('Copy task completed.', {
+            sourceRelativePath: workerEvent.payload.plan.sourceRelativePath,
+            logicalPath: workerEvent.result.logicalPath,
+            action: workerEvent.result.action,
+            durationMs: workerEvent.durationMs || 0,
+            bytesProcessed: workerEvent.result.bytesProcessed || 0
+          });
         }
       } else if (workerEvent.type === 'task-failed') {
         progress.workers[workerKey] = {
@@ -794,8 +825,15 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           logicalPath: workerEvent.payload.plan.logicalPath,
           copiedBytes: 0,
           totalBytes: workerEvent.payload.plan.stats.size,
-          error: workerEvent.error.message
+          error: workerEvent.error.message,
+          lastTaskDurationMs: workerEvent.durationMs || 0
         };
+        logger.warn('Copy task failed.', {
+          sourceRelativePath: workerEvent.payload.plan.sourceRelativePath,
+          logicalPath: workerEvent.payload.plan.logicalPath,
+          durationMs: workerEvent.durationMs || 0,
+          error: workerEvent.error.message
+        });
       }
       emitProgress({ ...workerEvent, pool: 'copy' });
       if (workerEvent.snapshot && typeof workerEvent.snapshot.throughputBytesPerSecond === 'number') {
@@ -958,6 +996,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
 
       const fileStatsByRelativePath = new Map();
       const fileResults = [];
+      const fileResultsByRelativePath = new Map();
       const fileTasks = [];
 
       for (const fileEntry of files) {
@@ -1049,6 +1088,9 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
             });
 
           fileResults.push(finalResult);
+          if (finalResult) {
+            fileResultsByRelativePath.set(normalizedRelativePath, finalResult);
+          }
           return finalResult;
           } finally {
             fileTaskGate.release();
@@ -1100,17 +1142,15 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       }
 
       for (const [sourceRelativePath, stats] of fileStatsByRelativePath.entries()) {
-        const matchingResult = fileResults.filter(Boolean).find((entry) => entry.record.origins.some(
-          (origin) => origin.sourceRelativePath === sourceRelativePath
-        ));
+        const matchingResult = fileResultsByRelativePath.get(sourceRelativePath);
         if (matchingResult) {
-          sourceSnapshot.files[sourceRelativePath] = {
+          sourceSnapshotCache.set(sourceRelativePath, {
             size: stats.size,
             mtimeMs: stats.mtimeMs,
             fileHash: matchingResult.fileHash,
             logicalPath: matchingResult.logicalPath,
             updatedAt: (options.now || new Date()).toISOString()
-          };
+          });
         }
       }
 
@@ -1130,10 +1170,6 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
 
       summary.foldersProcessed += 1;
       progress.foldersProcessed = summary.foldersProcessed;
-      await saveSourceSnapshot(targetRoot, {
-        ...sourceSnapshot,
-        updatedAt: (options.now || new Date()).toISOString()
-      });
       await hashRecordSession.flush();
       emitProgress({
         type: 'folder-completed',
@@ -1159,10 +1195,6 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       ...pauseWorkSnapshot()
     });
     await markGenerationPaused(targetRoot, machineId, sourceId, options.now || new Date());
-    await saveSourceSnapshot(targetRoot, {
-      ...sourceSnapshot,
-      updatedAt: (options.now || new Date()).toISOString()
-    });
     progress.status = 'paused';
     delete progress.pausePhase;
     emitProgress({ type: 'backup-paused' });
@@ -1197,6 +1229,8 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   progress.errors = summary.errors;
   emitProgress({ type: 'backup-completed' });
 
+  summary.hashTaskAverageMs = hashTaskCount > 0 ? Math.round(summary.hashTaskDurationMs / hashTaskCount) : 0;
+  summary.copyTaskAverageMs = copyTaskCount > 0 ? Math.round(summary.copyTaskDurationMs / copyTaskCount) : 0;
   logger.info('Backup source completed.', summary);
 
   return {

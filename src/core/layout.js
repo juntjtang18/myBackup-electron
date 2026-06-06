@@ -42,16 +42,8 @@ function scanCurrentPath(targetRoot, machineId, sourceId) {
   return path.join(metadataRoot(targetRoot), 'scans', machineId, sourceId, 'current.json');
 }
 
-function scanGenerationRoot(targetRoot, machineId, sourceId, scanId) {
-  return path.join(metadataRoot(targetRoot), 'scans', machineId, sourceId, 'generations', scanId);
-}
-
 function errorReportPath(targetRoot, machineId, sourceId, scanId) {
   return path.join(metadataRoot(targetRoot), 'reports', machineId, sourceId, `${scanId}.jsonl`);
-}
-
-function folderCheckpointPath(targetRoot, machineId, sourceId, scanId, folderId) {
-  return path.join(scanGenerationRoot(targetRoot, machineId, sourceId, scanId), 'folders', `${folderId}.json`);
 }
 
 function tempRoot(targetRoot) {
@@ -79,7 +71,6 @@ module.exports = {
   VIDEOS_ROOT,
   configPath,
   errorReportPath,
-  folderCheckpointPath,
   hashPath,
   machineBackupRoot,
   machinePath,
@@ -88,7 +79,6 @@ module.exports = {
   metadataRoot,
   resolveTargetRoot,
   scanCurrentPath,
-  scanGenerationRoot,
   sourcePath,
   sourceSnapshotPath,
   tempRoot,

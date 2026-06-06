@@ -7,10 +7,18 @@ const state = {
   logs: [],
   backupProgress: {},
   pauseRequests: {},
-  workerDisplayOrder: {}
+  runtimeFlags: {
+    traceProgressUi: true
+  },
+  lastProgressTraceAt: {},
+  progressPayloadTraceCount: 0,
+  progressRenderTraceCount: 0
 };
 
 let lastDashboardPushAt = 0;
+const PROGRESS_TRACE_LOG_LIMIT = 160;
+let logRenderTimer = null;
+const LOG_RENDER_MS = 100;
 
 function progressKey(targetRoot, machineId, sourceId) {
   return `${targetRoot}::${machineId}::${sourceId}`;
@@ -99,51 +107,101 @@ function flushProgressRender() {
   renderSources();
 }
 
-function clearWorkerDisplayOrder(progressKey) {
-  delete state.workerDisplayOrder[progressKey];
+function summarizeProgressWorker(worker) {
+  return {
+    id: worker.workerId,
+    pool: worker.pool,
+    state: worker.state,
+    sourceRelativePath: worker.sourceRelativePath || null,
+    logicalPath: worker.logicalPath || null,
+    lastAction: worker.lastAction || null,
+    copiedBytes: worker.copiedBytes || 0,
+    totalBytes: worker.totalBytes || 0
+  };
 }
 
-function ensureWorkerDisplayOrder(progressKey, workers) {
-  if (!state.workerDisplayOrder[progressKey]) {
-    state.workerDisplayOrder[progressKey] = { hash: [], copy: [] };
-  }
-
-  const order = state.workerDisplayOrder[progressKey];
-  for (const worker of Object.values(workers || {})) {
-    const slotList = order[worker.pool];
-    if (!slotList || slotList.includes(worker.workerId)) {
-      continue;
-    }
-    slotList.push(worker.workerId);
-  }
+function summarizeQueue(queue) {
+  return {
+    depth: queue?.depth || 0,
+    pending: queue?.pending || 0,
+    active: queue?.active || 0,
+    waitingItems: (queue?.waitingItems || []).slice(0, 5),
+    activeItems: (queue?.activeItems || []).slice(0, 5),
+    feedItems: (queue?.feedItems || []).slice(0, 5),
+    handoffItems: (queue?.handoffItems || []).slice(0, 5)
+  };
 }
 
-function orderWorkersForDisplay(pool, workers, slotOrder) {
-  const byId = new Map();
-  for (const worker of workers) {
-    if (worker.pool === pool) {
-      byId.set(worker.workerId, worker);
-    }
+function traceProgressRenderSplit(key, payload) {
+  if (!payload?.progress || state.progressPayloadTraceCount >= PROGRESS_TRACE_LOG_LIMIT) {
+    return;
   }
 
-  return slotOrder.map((workerId, index) => {
-    const worker = byId.get(workerId);
-    if (worker) {
-      return { worker, slot: index + 1 };
-    }
+  state.progressPayloadTraceCount += 1;
+  const workers = Object.values(payload.progress.workers || {});
+  appendLog('info', 'Progress trace: renderer received payload.', {
+    key,
+    traceIndex: state.progressPayloadTraceCount,
+    sequence: payload.trace?.sequence || null,
+    upstreamStage: payload.trace?.stage || null,
+    event: payload.event ? {
+      type: payload.event.type,
+      pool: payload.event.pool || null,
+      workerId: payload.event.workerId || null,
+      sourceRelativePath: payload.event.sourceRelativePath || null
+    } : null,
+    status: payload.progress.status || null,
+    hashWorkers: workers.filter((worker) => worker.pool === 'hash').map(summarizeProgressWorker),
+    copyWorkers: workers.filter((worker) => worker.pool === 'copy').map(summarizeProgressWorker),
+    invalidWorkers: workers.filter((worker) => worker.pool !== 'hash' && worker.pool !== 'copy').map(summarizeProgressWorker),
+    hashQueue: summarizeQueue(payload.progress.queues?.hash),
+    copyQueue: summarizeQueue(payload.progress.queues?.copy)
+  });
+}
 
-    return {
-      worker: {
-        workerId,
-        pool,
-        state: 'idle',
-        sourceRelativePath: null,
-        logicalPath: null,
-        copiedBytes: 0,
-        totalBytes: 0
-      },
-      slot: index + 1
-    };
+function traceProgressPanelRendered(key, entry, html) {
+  if (!entry?.progress || !window.myBackupProgressPanel || state.progressRenderTraceCount >= PROGRESS_TRACE_LOG_LIMIT) {
+    return;
+  }
+
+  state.progressRenderTraceCount += 1;
+  const normalized = window.myBackupProgressPanel.normalizeProgress(entry);
+  const hashPanelStart = html.indexOf('data-progress-pool="hash"');
+  const copyPanelStart = html.indexOf('data-progress-pool="copy"');
+  const hashPanelHtml = hashPanelStart >= 0 && copyPanelStart > hashPanelStart
+    ? html.slice(hashPanelStart, copyPanelStart)
+    : '';
+  const copyPanelHtml = copyPanelStart >= 0 ? html.slice(copyPanelStart) : '';
+
+  appendLog('info', 'Progress trace: renderer generated panels.', {
+    key,
+    traceIndex: state.progressRenderTraceCount,
+    sequence: entry.trace?.sequence || null,
+    status: normalized.summary.status,
+    hashWorkerCount: normalized.hashProgress.workers.length,
+    copyWorkerCount: normalized.copyProgress.workers.length,
+    hashQueueCounts: {
+      waiting: normalized.hashProgress.queue.waitingItems.length,
+      active: normalized.hashProgress.queue.activeItems.length,
+      feed: normalized.hashProgress.queue.feedItems.length,
+      handoff: normalized.hashProgress.queue.handoffItems.length
+    },
+    copyQueueCounts: {
+      waiting: normalized.copyProgress.queue.waitingItems.length,
+      active: normalized.copyProgress.queue.activeItems.length,
+      feed: normalized.copyProgress.queue.feedItems.length,
+      handoff: normalized.copyProgress.queue.handoffItems.length
+    },
+    htmlChecks: {
+      hasHashPanel: hashPanelStart >= 0,
+      hasCopyPanel: copyPanelStart >= 0,
+      hashPanelContainsCopyQueueLabel: hashPanelHtml.includes('Copy Queue'),
+      hashPanelContainsCopyWorkerId: /C\d+/.test(hashPanelHtml),
+      hashPanelContainsHandoffLabel: hashPanelHtml.includes('Hashed, awaiting copy'),
+      copyPanelContainsHashQueueLabel: copyPanelHtml.includes('Hash Queue'),
+      copyPanelContainsHashWorkerId: /H\d+/.test(copyPanelHtml),
+      copyPanelContainsFeedLabel: copyPanelHtml.includes('Awaiting hash')
+    }
   });
 }
 
@@ -156,15 +214,77 @@ function formatTimestamp(value) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
+function formatLogEntryPlain(entry) {
+  const details = entry.details === undefined || entry.details === null
+    ? ''
+    : ` ${JSON.stringify(entry.details)}`;
+  return `[${entry.timestamp}][${String(entry.level || 'info').toUpperCase()}] ${entry.message}${details}`;
+}
+
+function getLogsPlainText() {
+  return state.logs
+    .slice()
+    .reverse()
+    .map(formatLogEntryPlain)
+    .join('\n');
+}
+
 function appendLog(level, message, details) {
-  state.logs.unshift({
+  const entry = {
     level,
     message,
     details,
     timestamp: new Date().toISOString()
-  });
-  state.logs = state.logs.slice(0, 40);
+  };
+  state.logs.unshift(entry);
+  state.logs = state.logs.slice(0, state.runtimeFlags.traceProgressUi ? 400 : 40);
+  scheduleLogRender();
+}
+
+function scheduleLogRender() {
+  if (logRenderTimer) {
+    return;
+  }
+
+  logRenderTimer = window.setTimeout(() => {
+    logRenderTimer = null;
+    renderLogs();
+  }, LOG_RENDER_MS);
+}
+
+function flushLogRender() {
+  if (logRenderTimer) {
+    window.clearTimeout(logRenderTimer);
+    logRenderTimer = null;
+  }
   renderLogs();
+}
+
+async function copyLogsToClipboard() {
+  flushLogRender();
+  const status = document.getElementById('logCopyStatus');
+  const text = getLogsPlainText();
+  if (!text) {
+    if (status) {
+      status.textContent = 'No logs';
+    }
+    return;
+  }
+
+  try {
+    await window.myBackup.copyText(text);
+    if (status) {
+      status.textContent = 'Copied';
+      window.setTimeout(() => {
+        status.textContent = '';
+      }, 1800);
+    }
+  } catch (error) {
+    if (status) {
+      status.textContent = 'Failed';
+    }
+    appendLog('error', 'Failed to copy logs.', { message: error.message });
+  }
 }
 
 function setBusy(button, busy, label) {
@@ -232,137 +352,18 @@ function escapeHtml(value) {
 function renderProgressPanel(targetRoot, source) {
   const key = progressKey(targetRoot, source.machineId, source.sourceId);
   const entry = state.backupProgress[key];
-  if (!entry || !entry.progress) {
+  if (!entry || !entry.progress || !window.myBackupProgressPanel) {
     return '';
   }
 
-  const workers = Object.values(entry.progress.workers || {});
-  ensureWorkerDisplayOrder(key, entry.progress.workers || {});
-  const workerOrder = state.workerDisplayOrder[key] || { hash: [], copy: [] };
-  const hashWorkers = orderWorkersForDisplay('hash', workers, workerOrder.hash);
-  const copyWorkers = orderWorkersForDisplay('copy', workers, workerOrder.copy);
-
-  const hashQueue = entry.progress.queues?.hash || {
-    depth: 0, pending: 0, active: 0, waitingItems: [], activeItems: [], feedItems: []
-  };
-  const copyQueue = entry.progress.queues?.copy || {
-    depth: 0, pending: 0, active: 0, waitingItems: [], activeItems: [], handoffItems: []
-  };
-
-  const hashThroughput = Math.round(((entry.progress.hashThroughputBytesPerSecond || 0) / (1024 * 1024)) * 10) / 10;
-  const copyThroughput = Math.round(((entry.progress.copyThroughputBytesPerSecond || 0) / (1024 * 1024)) * 10) / 10;
-
-  function renderWorkerLine(worker, slot, prefix) {
-    const totalBytes = worker.totalBytes || 0;
-    const copiedBytes = worker.copiedBytes || 0;
-    const percent = totalBytes > 0 ? Math.min(100, Math.round((copiedBytes / totalBytes) * 100)) : 0;
-    const stateLabel = worker.state === 'idle'
-      ? 'idle'
-      : (worker.state === 'hashing' ? 'hashing' : (worker.state === 'copying' ? 'copying' : worker.state));
-    const isIdle = worker.state === 'idle' && !worker.sourceRelativePath && !worker.logicalPath;
-    return `
-      <div class="worker-line${isIdle ? ' worker-line-idle' : ''}">
-        <span class="worker-type" title="${escapeHtml(worker.pool || 'worker')}">${escapeHtml(`${prefix}${slot}`)}</span>
-        <div class="worker-name" title="${escapeHtml(worker.sourceRelativePath || worker.logicalPath || stateLabel)}">${escapeHtml(worker.sourceRelativePath || worker.logicalPath || stateLabel)}</div>
-        <div class="worker-progress"><div class="worker-progress-fill" style="width: ${percent}%"></div></div>
-        <div class="worker-bytes">${formatBytes(copiedBytes)} / ${formatBytes(totalBytes)}</div>
-      </div>
-    `;
-  }
-
-  function renderQueueSection(label, queue, emptyLabel) {
-    const waitingCount = queue.depth || 0;
-    const activeCount = queue.active || 0;
-    const pendingCount = queue.pending || 0;
-    const feedCount = (queue.feedItems || []).length;
-    const handoffCount = (queue.handoffItems || []).length;
-    const header = `
-      <div class="queue-header">
-        <span class="queue-title">${escapeHtml(label)}</span>
-        <span class="queue-counts">
-          pending ${pendingCount}
-          · waiting ${waitingCount}
-          · active ${activeCount}
-          ${feedCount > 0 ? ` · feed ${feedCount}` : ''}
-          ${handoffCount > 0 ? ` · handoff ${handoffCount}` : ''}
-        </span>
-      </div>
-    `;
-
-    const sections = [];
-    if (queue.feedItems && queue.feedItems.length > 0) {
-      sections.push({ title: 'Awaiting hash', items: queue.feedItems });
-    }
-    if (queue.waitingItems && queue.waitingItems.length > 0) {
-      sections.push({ title: 'Waiting for worker', items: queue.waitingItems });
-    }
-    if (queue.activeItems && queue.activeItems.length > 0) {
-      sections.push({ title: 'In progress', items: queue.activeItems });
-    }
-    if (queue.handoffItems && queue.handoffItems.length > 0) {
-      sections.push({ title: 'Hashed, awaiting copy', items: queue.handoffItems });
-    }
-
-    if (sections.length === 0) {
-      return `${header}<div class="queue-empty">${escapeHtml(emptyLabel)}</div>`;
-    }
-
-    const sectionHtml = sections.map((section) => {
-      const itemLines = section.items.map((item) => `
-        <div class="queue-line">
-          <div class="queue-name" title="${escapeHtml(item.sourceRelativePath || item.logicalPath || '-')}">${escapeHtml(item.sourceRelativePath || item.logicalPath || '-')}</div>
-          <div class="queue-bytes">${formatBytes(item.totalBytes || 0)}</div>
-        </div>
-      `).join('');
-      const extraCount = Math.max(0, waitingCount - (queue.waitingItems || []).length);
-      const moreLine = section.title === 'Waiting for worker' && extraCount > 0
-        ? `<div class="queue-more">+ ${extraCount} more waiting</div>`
-        : '';
-      return `
-        <div class="queue-section">
-          <div class="queue-section-title">${escapeHtml(section.title)}</div>
-          <div class="queue-list">${itemLines}${moreLine}</div>
-        </div>
-      `;
-    }).join('');
-
-    return `${header}${sectionHtml}`;
-  }
-
-  const hashWorkerLines = hashWorkers.length > 0
-    ? hashWorkers.map(({ worker, slot }) => renderWorkerLine(worker, slot, 'H')).join('')
-    : '<div class="queue-empty">No hash workers active.</div>';
-  const copyWorkerLines = copyWorkers.length > 0
-    ? copyWorkers.map(({ worker, slot }) => renderWorkerLine(worker, slot, 'C')).join('')
-    : '<div class="queue-empty">No copy workers active.</div>';
-
-  return `
-    <tr class="source-progress-row">
-      <td colspan="5">
-        <div class="source-progress-panel">
-          <div class="progress-summary">
-            <span><strong>Status</strong> ${escapeHtml(entry.progress.status || 'running')}${entry.progress.pausePhase ? ` (${escapeHtml(entry.progress.pausePhase)})` : ''}</span>
-            <span><strong>Files</strong> ${entry.progress.filesProcessed || 0}</span>
-            <span><strong>Copied</strong> ${entry.progress.filesCopied || 0}</span>
-            <span><strong>Hash</strong> ${hashThroughput} MB/s</span>
-            <span><strong>Copy</strong> ${copyThroughput} MB/s</span>
-          </div>
-          <div class="progress-pools">
-            <div class="progress-pool">
-              <div class="pool-heading">Hash Workers</div>
-              <div class="worker-list">${hashWorkerLines}</div>
-              ${renderQueueSection('Hash Queue', hashQueue, 'No hash backlog right now.')}
-            </div>
-            <div class="progress-pool">
-              <div class="pool-heading">Copy Workers</div>
-              <div class="worker-list">${copyWorkerLines}</div>
-              ${renderQueueSection('Copy Queue', copyQueue, 'No copy backlog right now.')}
-            </div>
-          </div>
-        </div>
-      </td>
-    </tr>
-  `;
+  const html = window.myBackupProgressPanel.renderBackupProgressPanel({
+    targetRoot,
+    source,
+    entry,
+    progressKey: key
+  });
+  traceProgressPanelRendered(key, entry, html);
+  return html;
 }
 
 function renderTargetSourcesTable(target) {
@@ -536,21 +537,6 @@ function renderTargets() {
 
 function renderSources() {
   renderTargets();
-}
-
-function formatBytes(value) {
-  const bytes = Number(value || 0);
-  if (bytes <= 0) {
-    return '0 B';
-  }
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let size = bytes;
-  let unitIndex = 0;
-  while (size >= 1024 && unitIndex < units.length - 1) {
-    size /= 1024;
-    unitIndex += 1;
-  }
-  return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
 function renderDashboard() {
@@ -742,6 +728,13 @@ async function registerSource(event) {
 
 async function runBackup(targetRoot, machineId, sourceId, button) {
   const key = progressKey(targetRoot, machineId, sourceId);
+  appendLog('info', 'Backup UI action invoked.', {
+    key,
+    targetRoot,
+    machineId,
+    sourceId,
+    hasExistingProgress: Boolean(state.backupProgress[key])
+  });
   const currentTarget = (state.dashboard.targets || []).find((entry) => entry.path === targetRoot);
   if (currentTarget && currentTarget.available === false) {
     appendLog('warn', 'Backup target is unavailable.');
@@ -779,6 +772,10 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
       },
       event: null
     };
+    appendLog('info', 'Progress trace: optimistic running row created.', {
+      key,
+      progressPanelLoaded: Boolean(window.myBackupProgressPanel)
+    });
     renderSources();
     const result = await window.myBackup.runBackup({
       targetRoot,
@@ -788,14 +785,12 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
     });
     delete state.backupProgress[key];
     delete state.pauseRequests[key];
-    clearWorkerDisplayOrder(key);
     state.dashboard = result.dashboard;
     renderDashboard();
     appendLog('info', result.summary.status === 'paused' ? 'Backup paused.' : 'Backup summary.', result.summary);
   } catch (error) {
     delete state.backupProgress[key];
     delete state.pauseRequests[key];
-    clearWorkerDisplayOrder(key);
     renderSources();
     appendLog('error', error.message || 'Backup failed.');
   }
@@ -830,6 +825,22 @@ async function runRestoreMerged(targetRoot, logicalRoot, button) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  try {
+    state.runtimeFlags = {
+      ...state.runtimeFlags,
+      ...(await window.myBackup.getRuntimeFlags())
+    };
+    if (state.runtimeFlags.traceProgressUi) {
+      appendLog('info', 'Progress UI tracing enabled.');
+    }
+  } catch (error) {
+    appendLog('warn', 'Failed to load runtime flags.', { message: error.message });
+  }
+  appendLog('info', 'Progress trace hooks registered.', {
+    traceProgressUi: state.runtimeFlags.traceProgressUi,
+    progressPanelLoaded: Boolean(window.myBackupProgressPanel)
+  });
+
   document.getElementById('addTargetButton').addEventListener('click', addTarget);
   document.getElementById('closeAddSourceButton').addEventListener('click', hideAddSourceModal);
   document.getElementById('cancelAddSourceButton').addEventListener('click', hideAddSourceModal);
@@ -841,21 +852,37 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('browseSourceButton').addEventListener('click', browseSource);
   document.getElementById('sourceForm').addEventListener('submit', registerSource);
   document.getElementById('logLevelSelect').addEventListener('change', updateLogLevel);
+  document.getElementById('copyLogsButton')?.addEventListener('click', copyLogsToClipboard);
   window.myBackup.onBackupProgress((payload) => {
     const key = progressKeyFromPayload(payload);
+    if (state.progressPayloadTraceCount < PROGRESS_TRACE_LOG_LIMIT) {
+      appendLog('info', 'Progress trace: IPC payload received.', {
+        key,
+        sequence: payload.trace?.sequence || null,
+        eventType: payload.event?.type || null,
+        eventPool: payload.event?.pool || null,
+        status: payload.progress?.status || null,
+        workerCount: Object.keys(payload.progress?.workers || {}).length,
+        hashQueueDepth: payload.progress?.queues?.hash?.depth || 0,
+        copyQueueDepth: payload.progress?.queues?.copy?.depth || 0
+      });
+    }
     state.backupProgress[key] = payload;
+    traceProgressRenderSplit(key, payload);
     if (payload.progress && payload.progress.status !== 'running' && payload.progress.status !== 'pausing') {
       delete state.pauseRequests[key];
-      clearWorkerDisplayOrder(key);
+      delete state.lastProgressTraceAt[key];
     }
     if (payload.event?.type === 'backup-pausing' && payload.event?.phase) {
       appendLog('info', `Backup pausing: ${payload.event.phase}.`, payload.progress?.queues || null);
     }
 
-    const shouldRenderImmediately = payload.event?.type === 'backup-paused'
-      || payload.event?.type === 'backup-completed'
-      || payload.event?.type === 'backup-started'
-      || payload.progress?.status === 'paused';
+    const shouldRenderImmediately = window.myBackupProgressPanel
+      ? window.myBackupProgressPanel.shouldRenderImmediatelyForProgress(payload)
+      : payload.event?.type === 'backup-paused'
+        || payload.event?.type === 'backup-completed'
+        || payload.event?.type === 'backup-started'
+        || payload.progress?.status === 'paused';
 
     if (shouldRenderImmediately) {
       flushProgressRender();

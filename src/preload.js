@@ -1,6 +1,8 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { clipboard, contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('myBackup', {
+  getRuntimeFlags: () => ipcRenderer.invoke('app:get-runtime-flags'),
+  copyText: (text) => clipboard.writeText(String(text || '')),
   getDashboard: () => ipcRenderer.invoke('app:get-dashboard'),
   addTarget: () => ipcRenderer.invoke('app:add-target'),
   removeTarget: (input) => ipcRenderer.invoke('app:remove-target', input),

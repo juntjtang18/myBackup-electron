@@ -473,7 +473,6 @@
       background: var(--panel);
     }
 
-    /* Progress panel (unchanged structure, refined) */
     .source-progress-panel {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -509,6 +508,14 @@
       border-radius: 6px;
       padding: 8px 10px;
       background: #fbfcfd;
+    }
+
+    .progress-pool-hash {
+      border-left: 4px solid #2563eb;
+    }
+
+    .progress-pool-copy {
+      border-left: 4px solid #16a34a;
     }
 
     .pool-heading {
@@ -585,6 +592,18 @@
       font-weight: 700;
     }
 
+    .worker-type-hash {
+      color: #1d4ed8;
+      border-color: #bfdbfe;
+      background: #eff6ff;
+    }
+
+    .worker-type-copy {
+      color: #15803d;
+      border-color: #bbf7d0;
+      background: #f0fdf4;
+    }
+
     .worker-name {
       min-width: 0;
       overflow: hidden;
@@ -603,6 +622,14 @@
     .worker-progress-fill {
       height: 100%;
       background: var(--accent);
+    }
+
+    .worker-line-hash .worker-progress-fill {
+      background: #2563eb;
+    }
+
+    .worker-line-copy .worker-progress-fill {
+      background: #16a34a;
     }
 
     .worker-bytes {
@@ -644,6 +671,41 @@
       text-transform: uppercase;
       letter-spacing: 0.08em;
       color: #7a8799;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .log-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    .log-copy-status {
+      color: #93c5fd;
+      font-size: 0.64rem;
+      min-width: 42px;
+      text-align: right;
+    }
+
+    .log-copy-button {
+      border: 1px solid #334155;
+      border-radius: 6px;
+      background: #243142;
+      color: #c5cdd8;
+      font-size: 0.66rem;
+      line-height: 1;
+      padding: 4px 8px;
+      cursor: pointer;
+    }
+
+    .log-copy-button:hover {
+      background: #2f4056;
+      color: #ffffff;
     }
 
     .log-list {
@@ -655,6 +717,8 @@
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 0.68rem;
       line-height: 1.45;
+      user-select: text;
+      cursor: text;
     }
 
     .log-line {
@@ -664,6 +728,7 @@
       padding: 1px 0;
       color: #c5cdd8;
       border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      user-select: text;
     }
 
     .log-time { color: #6b7789; }
@@ -672,7 +737,7 @@
     .log-level-warn { color: #fcd34d; }
     .log-level-error { color: #fca5a5; }
     .log-level-debug { color: #93c5fd; }
-    .log-msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .log-msg { overflow: visible; text-overflow: clip; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
     .log-msg .muted { color: #7a8799; }
 
     .log-empty {
@@ -782,7 +847,13 @@
 
   <section class="log-dock" aria-label="Activity log">
     <div class="log-dock-inner">
-      <div class="log-dock-header">Activity</div>
+      <div class="log-dock-header">
+        <span>Activity</span>
+        <div class="log-actions">
+          <span class="log-copy-status" id="logCopyStatus" aria-live="polite"></span>
+          <button type="button" class="log-copy-button" id="copyLogsButton">Copy</button>
+        </div>
+      </div>
       <ul class="log-list" id="logList"></ul>
     </div>
   </section>
@@ -826,6 +897,7 @@
     </div>
   </div>
 
+  <script src="./progressPanel.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

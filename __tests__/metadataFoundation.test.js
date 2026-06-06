@@ -4,7 +4,6 @@ const fs = require('fs-extra');
 const { createFolderId, createMachineId, createScanId, createSourceId } = require('../src/core/ids');
 const {
   configPath,
-  folderCheckpointPath,
   errorReportPath,
   hashPath,
   machineBackupRoot,
@@ -15,7 +14,6 @@ const {
 } = require('../src/core/layout');
 const {
   createAppConfig,
-  createFolderCheckpoint,
   createHashRecord,
   createMachineRecord,
   createScanState,
@@ -25,13 +23,11 @@ const {
 } = require('../src/core/schema');
 const {
   loadAppConfig,
-  loadFolderCheckpoint,
   loadHashRecord,
   loadMachine,
   loadScanState,
   loadSource,
   saveAppConfig,
-  saveFolderCheckpoint,
   saveHashRecord,
   saveMachine,
   saveScanState,
@@ -40,14 +36,11 @@ const {
 const { ensureMachine, updateMachine } = require('../src/core/machineRegistry');
 const { registerSource, updateSourceScanState } = require('../src/core/sourceRegistry');
 const { buildConflictPath, classifyMedia, planLogicalTarget } = require('../src/core/pathPlanner');
-const { findCheckpointByRelativePath, listFolderCheckpoints } = require('../src/core/scanCheckpointStore');
 const {
   ensureScanState,
   getResumeState,
   markGenerationCompleted,
-  saveDiscoveredFolders,
-  startNewGeneration,
-  updateFolderStatus
+  startNewGeneration
 } = require('../src/core/scanManager');
 const { hashFile } = require('../src/core/hashService');
 const { lookupHashRecord, registerHashRecord } = require('../src/core/hashIndex');
@@ -70,12 +63,24 @@ const { createSourceSnapshot, loadSourceSnapshot, saveSourceSnapshot } = require
 const { createTargetAvailabilityMonitor, checkTargetAvailability } = require('../src/core/targetAvailability');
 const { loadLoggerConfig, parseLoggerProperties } = require('../src/core/loggerConfig');
 const {
+  createFolderHash,
+  loadResumeManifest,
+  resumeManifestPath,
+  walkFoldersFromCursor
+} = require('../src/core/resume');
+const {
   listHashRecords,
   restoreLogicalFile,
   restoreLogicalTree,
   restoreSource
 } = require('../src/core/restoreService');
-const { loadLocalConfig, saveLocalConfig } = require('../src/core/localConfig');
+const {
+  ensureLocalConfig,
+  getLocalConfigPath,
+  loadLocalConfig,
+  normalizeWorkerPools,
+  saveLocalConfig
+} = require('../src/core/localConfig');
 const { listSourcesForMachine, loadCurrentMachineContext } = require('../src/core/sourceCatalog');
 const { configureLogger, createLogger, formatLogMessage, getLogLevel } = require('../src/core/logger');
 
@@ -175,11 +180,6 @@ describe('metadata foundation', () => {
       sourceId: source.sourceId,
       activeGeneration: '20260601-100000'
     }, new Date('2026-06-01T10:00:00Z'));
-    const folder = createFolderCheckpoint({
-      folderPath: '/Users/James/Documents',
-      relativePath: '.',
-      status: 'scanning'
-    }, new Date('2026-06-01T10:00:00Z'));
     const hashRecord = createHashRecord({
       fileHash: 'c'.repeat(64),
       size: 11,
@@ -195,16 +195,12 @@ describe('metadata foundation', () => {
     await saveMachine(tempRootPath, machine);
     await saveSource(tempRootPath, source);
     await saveScanState(tempRootPath, scanState);
-    await saveFolderCheckpoint(tempRootPath, machine.machineId, source.sourceId, scanState.activeGeneration, folder);
     await saveHashRecord(tempRootPath, hashRecord);
 
     expect(await loadAppConfig(tempRootPath)).toEqual(appConfig);
     expect(await loadMachine(tempRootPath, machine.machineId)).toEqual(machine);
     expect(await loadSource(tempRootPath, machine.machineId, source.sourceId)).toEqual(source);
     expect(await loadScanState(tempRootPath, machine.machineId, source.sourceId)).toEqual(scanState);
-    expect(
-      await loadFolderCheckpoint(tempRootPath, machine.machineId, source.sourceId, scanState.activeGeneration, folder.folderId)
-    ).toEqual(folder);
     expect(await loadHashRecord(tempRootPath, hashRecord.fileHash)).toEqual(hashRecord);
   });
 
@@ -300,9 +296,9 @@ describe('metadata foundation', () => {
   });
 
   test('resolves hash bucket paths using three-character tree segments', () => {
-    const fileHash = 'abcdefghijklmno'.padEnd(64, '0');
+    const fileHash = 'abcdefabcdefabc'.padEnd(64, '0');
     expect(bucketPath('/target', fileHash)).toBe(
-      path.join('/target', '.mybackup', 'hashes', 'abc', 'def', 'ghi', 'jkl', 'mno.indx')
+      path.join('/target', '.mybackup', 'hashes', 'abc', 'def', 'abc', 'def', 'abc.indx')
     );
   });
 
@@ -316,9 +312,6 @@ describe('metadata foundation', () => {
     );
     expect(scanCurrentPath('/target', 'machine-a', 'source-a')).toBe(
       path.join('/target', '.mybackup', 'scans', 'machine-a', 'source-a', 'current.json')
-    );
-    expect(folderCheckpointPath('/target', 'machine-a', 'source-a', 'scan-1', 'folder-1')).toBe(
-      path.join('/target', '.mybackup', 'scans', 'machine-a', 'source-a', 'generations', 'scan-1', 'folders', 'folder-1.json')
     );
     expect(machineBackupRoot('machine-a', 'source-a')).toBe('Backups/Machines/machine-a/source-a');
     expect(mergedBackupRoot('documents')).toBe('documents');
@@ -462,7 +455,7 @@ describe('metadata foundation', () => {
       .toBe('documents/taxes/2024 [machine-b-documents-abc12345].pdf');
   });
 
-  test('starts a new scan generation with a root folder checkpoint', async () => {
+  test('starts a new scan generation with scan state only', async () => {
     const machine = await ensureMachine(tempRootPath, {
       hostname: 'scan-host',
       seed: 'scan-seed',
@@ -484,17 +477,6 @@ describe('metadata foundation', () => {
 
     expect(scanState.activeGeneration).toBe('20260605-081000');
     expect(scanState.status).toBe('running');
-
-    const checkpoints = await listFolderCheckpoints(
-      tempRootPath,
-      machine.machineId,
-      source.sourceId,
-      scanState.activeGeneration
-    );
-
-    expect(checkpoints).toHaveLength(1);
-    expect(checkpoints[0].relativePath).toBe('.');
-    expect(checkpoints[0].status).toBe('pending');
   });
 
   test('resumes incomplete scan state and resets with a forced new generation', async () => {
@@ -529,87 +511,6 @@ describe('metadata foundation', () => {
 
     expect(forced.scanState.activeGeneration).toBe('20260605-093000');
     expect(forced.scanState.activeGeneration).not.toBe(first.scanState.activeGeneration);
-  });
-
-  test('tracks discovered child folders and folder status transitions', async () => {
-    const machine = await ensureMachine(tempRootPath, {
-      hostname: 'folder-host',
-      seed: 'folder-seed',
-      now: new Date('2026-06-05T10:00:00Z')
-    });
-    const source = await registerSource(tempRootPath, {
-      machineId: machine.machineId,
-      sourcePath: '/Users/James/Documents',
-      mergeEnabled: false,
-      organizeMedia: false
-    }, new Date('2026-06-05T10:05:00Z'));
-
-    const scan = await startNewGeneration(
-      tempRootPath,
-      machine.machineId,
-      source.sourceId,
-      { now: new Date('2026-06-05T10:10:00Z'), scanId: '20260605-101000' }
-    );
-
-    const root = await findCheckpointByRelativePath(
-      tempRootPath,
-      machine.machineId,
-      source.sourceId,
-      scan.activeGeneration,
-      '.'
-    );
-
-    const scanningRoot = await updateFolderStatus(
-      tempRootPath,
-      machine.machineId,
-      source.sourceId,
-      scan.activeGeneration,
-      root,
-      'scanning',
-      { filesSeen: 2, subfoldersSeen: 2 },
-      new Date('2026-06-05T10:11:00Z')
-    );
-
-    expect(scanningRoot.status).toBe('scanning');
-    expect(scanningRoot.filesSeen).toBe(2);
-
-    const children = await saveDiscoveredFolders(
-      tempRootPath,
-      machine.machineId,
-      source.sourceId,
-      scan.activeGeneration,
-      '.',
-      [
-        { name: 'taxes', path: '/Users/James/Documents/taxes' },
-        { name: 'notes', path: '/Users/James/Documents/notes' }
-      ],
-      new Date('2026-06-05T10:12:00Z')
-    );
-
-    expect(children.map((entry) => entry.relativePath)).toEqual(['taxes', 'notes']);
-
-    const allCheckpoints = await listFolderCheckpoints(
-      tempRootPath,
-      machine.machineId,
-      source.sourceId,
-      scan.activeGeneration
-    );
-
-    expect(allCheckpoints).toHaveLength(3);
-
-    const doneRoot = await updateFolderStatus(
-      tempRootPath,
-      machine.machineId,
-      source.sourceId,
-      scan.activeGeneration,
-      scanningRoot,
-      'done',
-      { filesSeen: 2, subfoldersSeen: 2 },
-      new Date('2026-06-05T10:13:00Z')
-    );
-
-    expect(doneRoot.status).toBe('done');
-    expect(doneRoot.completedAt).toBe('2026-06-05T10:13:00.000Z');
   });
 
   test('marks a generation completed and stops resume selection', async () => {
@@ -1151,6 +1052,88 @@ describe('metadata foundation', () => {
     expect(events.some((entry) => entry.module === 'BackupCoordinator' && entry.message === 'First copy task started.')).toBe(true);
   });
 
+  test('walks source folders from a saved resume cursor without checkpoint lookup', async () => {
+    const sourceRoot = path.join(tempRootPath, 'cursor-source');
+    writeFixture(path.join(sourceRoot, 'a', 'a1', 'file.txt'), 'a1');
+    writeFixture(path.join(sourceRoot, 'b', 'file.txt'), 'b');
+
+    const cursor = {
+      folderHash: createFolderHash('a'),
+      relativePath: 'a',
+      folderPath: path.join(sourceRoot, 'a'),
+      status: 'done'
+    };
+
+    const folders = [];
+    for await (const folder of walkFoldersFromCursor(sourceRoot, cursor)) {
+      folders.push(folder.relativePath);
+    }
+
+    expect(folders).toEqual(['a/a1', 'b']);
+  });
+
+  test('resumes paused backup using the new source cursor manifest', async () => {
+    const sourceRoot = path.join(tempRootPath, 'resume-cursor-source');
+    writeFixture(path.join(sourceRoot, 'a', 'one.txt'), 'one');
+    writeFixture(path.join(sourceRoot, 'b', 'two.txt'), 'two');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'resume-cursor-host',
+      seed: 'resume-cursor-seed',
+      now: new Date('2026-06-07T08:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-07T08:05:00Z'));
+
+    const paused = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-07T08:10:00Z'),
+      forceNewScan: true,
+      shouldPause: (() => {
+        let calls = 0;
+        return () => {
+          calls += 1;
+          return calls > 1;
+        };
+      })()
+    });
+
+    expect(paused.status).toBe('paused');
+    const pausedManifest = await loadResumeManifest(tempRootPath, machine.machineId, source.sourceId);
+    expect(pausedManifest.status).toBe('paused');
+    expect(pausedManifest.cursor.relativePath).toBe('.');
+    expect(pausedManifest.cursor.status).toBe('done');
+    expect(await fs.pathExists(resumeManifestPath(tempRootPath, machine.machineId, source.sourceId))).toBe(true);
+
+    const completed = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-07T08:20:00Z')
+    });
+
+    expect(completed.status).toBe('completed');
+    expect(completed.scanId).toBe(paused.scanId);
+    expect(completed.filesCopied).toBe(2);
+
+    const completedManifest = await loadResumeManifest(tempRootPath, machine.machineId, source.sourceId);
+    expect(completedManifest.status).toBe('completed');
+    expect(completedManifest.cursor.relativePath).toBe('b');
+
+    expect(
+      await fs.readFile(
+        path.join(tempRootPath, 'Backups', 'Machines', machine.machineId, source.sourceId, 'a', 'one.txt'),
+        'utf8'
+      )
+    ).toBe('one');
+    expect(
+      await fs.readFile(
+        path.join(tempRootPath, 'Backups', 'Machines', machine.machineId, source.sourceId, 'b', 'two.txt'),
+        'utf8'
+      )
+    ).toBe('two');
+  });
+
   test('second backup skips unchanged files and overwrites changed files for separated sources', async () => {
     const sourceRoot = path.join(tempRootPath, 'incremental-source');
     writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha');
@@ -1458,6 +1441,43 @@ dist/**
     expect(seen.some((entry) => entry.filesCopied > 0)).toBe(true);
     expect(seen.some((entry) => entry.filesProcessed > 0)).toBe(true);
     expect(seen.some((entry) => entry.throughput > 0)).toBe(true);
+  });
+
+  test('hash progress workers never expose copy target logical paths', async () => {
+    const sourceRoot = path.join(tempRootPath, 'hash-progress-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha');
+    writeFixture(path.join(sourceRoot, 'docs', 'b.txt'), 'beta');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'hash-progress-host',
+      seed: 'hash-progress-seed',
+      now: new Date('2026-06-07T10:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: true,
+      mergeKey: 'documents',
+      organizeMedia: false
+    }, new Date('2026-06-07T10:05:00Z'));
+
+    const hashWorkerSnapshots = [];
+    await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-07T10:10:00Z'),
+      forceNewScan: true,
+      progressEmitIntervalMs: 0,
+      onProgress: (payload) => {
+        for (const worker of Object.values(payload.progress.workers || {})) {
+          if (worker.pool === 'hash') {
+            hashWorkerSnapshots.push(worker);
+          }
+        }
+      }
+    });
+
+    expect(hashWorkerSnapshots.length).toBeGreaterThan(0);
+    expect(hashWorkerSnapshots.every((worker) => worker.logicalPath === null)).toBe(true);
+    expect(hashWorkerSnapshots.some((worker) => String(worker.logicalPath || '').startsWith('documents/'))).toBe(false);
   });
 
   test('reuses same-content files and resolves merged-path conflicts end-to-end', async () => {
@@ -1912,6 +1932,37 @@ dist/**
 
     const loaded = await loadLocalConfig(tempRootPath);
     expect(loaded).toEqual(saved);
+  });
+
+  test('loads configurable worker pool defaults and persists overrides', async () => {
+    const initial = await loadLocalConfig(tempRootPath);
+    expect(initial.workerPools).toEqual({ hash: 6, copy: 6 });
+
+    const saved = await saveLocalConfig(tempRootPath, {
+      workerPools: { hash: 4, copy: 8 }
+    }, new Date('2026-06-08T12:30:00Z'));
+
+    expect(saved.workerPools).toEqual({ hash: 4, copy: 8 });
+
+    const loaded = await loadLocalConfig(tempRootPath);
+    expect(loaded.workerPools).toEqual({ hash: 4, copy: 8 });
+  });
+
+  test('creates local config file with default worker pools when missing', async () => {
+    const configPath = getLocalConfigPath(tempRootPath);
+    expect(await fs.pathExists(configPath)).toBe(false);
+
+    const config = await ensureLocalConfig(tempRootPath, new Date('2026-06-08T12:20:00Z'));
+
+    expect(config.workerPools).toEqual({ hash: 6, copy: 6 });
+    expect(await fs.pathExists(configPath)).toBe(true);
+    const raw = await fs.readJson(configPath);
+    expect(raw.workerPools).toEqual({ hash: 6, copy: 6 });
+  });
+
+  test('normalizes invalid worker pool config values', () => {
+    expect(normalizeWorkerPools({ hash: 0, copy: 'bad' })).toEqual({ hash: 6, copy: 6 });
+    expect(normalizeWorkerPools({ hash: 2, copy: 128 })).toEqual({ hash: 2, copy: 64 });
   });
 
   test('lists registered sources for the current machine context', async () => {

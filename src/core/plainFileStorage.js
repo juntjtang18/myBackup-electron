@@ -42,7 +42,7 @@ async function writePlainFile(targetRoot, input) {
   const sourceStat = await fs.stat(input.sourcePath);
   const expectedSize = input.expectedSize !== undefined ? input.expectedSize : sourceStat.size;
 
-  if (input.expectedHash) {
+  if (input.expectedHash && typeof input.onProgress !== 'function') {
     await fs.copyFile(input.sourcePath, tempPath);
     const copiedBytes = (await fs.stat(tempPath)).size;
     if (copiedBytes !== expectedSize) {
@@ -110,12 +110,17 @@ async function writePlainFile(targetRoot, input) {
     await fs.remove(tempPath);
     throw new Error(`Copied file size mismatch for ${input.logicalPath}`);
   }
+  if (input.expectedHash && actualHash !== input.expectedHash) {
+    await fs.remove(tempPath);
+    throw new Error(`Copied file hash mismatch for ${input.logicalPath}`);
+  }
 
   await fs.utimes(tempPath, sourceStat.atime, sourceStat.mtime);
 
   return {
     tempPath,
     finalPath: absoluteDestination,
+    expectedHash: input.expectedHash || actualHash,
     content: {
       type: 'plain',
       path: toPosixPath(input.logicalPath)

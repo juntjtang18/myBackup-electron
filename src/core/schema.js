@@ -1,10 +1,9 @@
 const os = require('os');
 const path = require('path');
-const { createFolderId, createMachineId, createScanId, createSourceId, sanitizeSegment } = require('./ids');
+const { createMachineId, createScanId, createSourceId, sanitizeSegment } = require('./ids');
 const { machineBackupRoot, mergedBackupRoot, toPosixPath } = require('./layout');
 
 const SCHEMA_VERSION = 1;
-const FOLDER_STATUSES = new Set(['pending', 'scanning', 'done', 'failed']);
 const CONTENT_TYPES = new Set(['plain', 'blocks']);
 
 function nowIso(now = new Date()) {
@@ -128,6 +127,16 @@ function createScanState(input, now = new Date()) {
   assertNonEmptyString(input.machineId, 'machineId');
   assertNonEmptyString(input.sourceId, 'sourceId');
   const activeGeneration = input.activeGeneration || createScanId(now);
+  const resumeCursor = input.resumeCursor
+    ? {
+        scanId: input.resumeCursor.scanId || activeGeneration,
+        folderHash: input.resumeCursor.folderHash || null,
+        relativePath: input.resumeCursor.relativePath || '.',
+        folderPath: input.resumeCursor.folderPath || null,
+        status: input.resumeCursor.status || 'scanning',
+        updatedAt: input.resumeCursor.updatedAt || nowIso(now)
+      }
+    : null;
 
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -135,33 +144,10 @@ function createScanState(input, now = new Date()) {
     sourceId: input.sourceId,
     activeGeneration,
     status: input.status || 'running',
-    resumeCursor: input.resumeCursor || null,
     startedAt: input.startedAt || nowIso(now),
     completedAt: input.completedAt || null,
-    updatedAt: input.updatedAt || nowIso(now)
-  };
-}
-
-function createFolderCheckpoint(input, now = new Date()) {
-  assertNonEmptyString(input.folderPath, 'folderPath');
-  const relativePath = toPosixPath(input.relativePath || '.');
-  const status = input.status || 'pending';
-  if (!FOLDER_STATUSES.has(status)) {
-    throw new Error(`Unsupported folder status: ${status}`);
-  }
-
-  return {
-    schemaVersion: SCHEMA_VERSION,
-    folderId: input.folderId || createFolderId(relativePath),
-    folderPath: path.resolve(input.folderPath),
-    relativePath,
-    status,
-    filesSeen: input.filesSeen || 0,
-    subfoldersSeen: input.subfoldersSeen || 0,
-    nextChildIndex: input.nextChildIndex || 0,
-    startedAt: input.startedAt || nowIso(now),
     updatedAt: input.updatedAt || nowIso(now),
-    completedAt: input.completedAt || null
+    resumeCursor
   };
 }
 
@@ -242,55 +228,23 @@ function validateScanState(record) {
   assertNonEmptyString(record.sourceId, 'sourceId');
   assertNonEmptyString(record.activeGeneration, 'activeGeneration');
   assertNonEmptyString(record.status, 'status');
-  if (record.resumeCursor !== undefined && record.resumeCursor !== null) {
-    if (typeof record.resumeCursor !== 'object') {
-      throw new Error('resumeCursor must be an object or null.');
-    }
-    if (record.resumeCursor.scanId !== undefined && record.resumeCursor.scanId !== null) {
-      assertNonEmptyString(record.resumeCursor.scanId, 'resumeCursor.scanId');
-    }
-    if (record.resumeCursor.relativePath !== undefined && record.resumeCursor.relativePath !== null) {
-      assertNonEmptyString(record.resumeCursor.relativePath, 'resumeCursor.relativePath');
-    }
-    if (record.resumeCursor.folderHash !== undefined && record.resumeCursor.folderHash !== null) {
-      assertNonEmptyString(record.resumeCursor.folderHash, 'resumeCursor.folderHash');
-    }
-  }
-  return record;
-}
-
-function validateFolderCheckpoint(record) {
-  if (!record || typeof record !== 'object') {
-    throw new Error('folder checkpoint must be an object.');
-  }
-  if (record.schemaVersion !== SCHEMA_VERSION) {
-    throw new Error(`Unsupported folder checkpoint schema version: ${record.schemaVersion}`);
-  }
-  assertNonEmptyString(record.folderId, 'folderId');
-  assertNonEmptyString(record.folderPath, 'folderPath');
-  assertNonEmptyString(record.relativePath, 'relativePath');
-  if (!FOLDER_STATUSES.has(record.status)) {
-    throw new Error(`Unsupported folder status: ${record.status}`);
-  }
-  if (record.nextChildIndex !== undefined && record.nextChildIndex !== null && (typeof record.nextChildIndex !== 'number' || record.nextChildIndex < 0)) {
-    throw new Error('nextChildIndex must be a non-negative number.');
+  if (record.resumeCursor) {
+    assertNonEmptyString(record.resumeCursor.scanId, 'resumeCursor.scanId');
+    assertNonEmptyString(record.resumeCursor.relativePath, 'resumeCursor.relativePath');
   }
   return record;
 }
 
 module.exports = {
   CONTENT_TYPES,
-  FOLDER_STATUSES,
   SCHEMA_VERSION,
   createAppConfig,
   createFileContentRef,
-  createFolderCheckpoint,
   createHashRecord,
   createMachineRecord,
   createScanState,
   createSourceRecord,
   validateAppConfig,
-  validateFolderCheckpoint,
   validateHashRecord,
   validateMachineRecord,
   validateScanState,

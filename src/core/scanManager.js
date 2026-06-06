@@ -1,18 +1,11 @@
-const path = require('path');
-const { createFolderId, createScanId } = require('./ids');
-const { loadScanState, loadSource, saveFolderCheckpoint, saveScanState } = require('./metadataStore');
-const { findCheckpointByRelativePath } = require('./scanCheckpointStore');
-const { createFolderCheckpoint, createScanState } = require('./schema');
+const { createScanId } = require('./ids');
+const { loadScanState, saveScanState } = require('./metadataStore');
+const { createScanState } = require('./schema');
 const { createLogger } = require('./logger');
 
 const logger = createLogger('ScanManager', 'scanManager.js');
 
 async function startNewGeneration(targetRoot, machineId, sourceId, options = {}) {
-  const source = await loadSource(targetRoot, machineId, sourceId);
-  if (!source) {
-    throw new Error(`Source not found: ${machineId}/${sourceId}`);
-  }
-
   const now = options.now || new Date();
   const scanState = createScanState({
     machineId,
@@ -25,38 +18,12 @@ async function startNewGeneration(targetRoot, machineId, sourceId, options = {})
   }, now);
 
   await saveScanState(targetRoot, scanState);
-  logger.info('Started new scan generation.', {
-    targetRoot,
-    machineId,
-    sourceId,
-    scanId: scanState.activeGeneration,
-    status: scanState.status
-  });
-
-  const rootCheckpoint = createFolderCheckpoint({
-    folderId: createFolderId('.'),
-    folderPath: source.sourcePath,
-    relativePath: '.',
-    status: 'pending',
-    startedAt: now.toISOString(),
-    updatedAt: now.toISOString(),
-    completedAt: null
-  }, now);
-
-  await saveFolderCheckpoint(targetRoot, machineId, sourceId, scanState.activeGeneration, rootCheckpoint);
   return scanState;
 }
 
 async function getResumeState(targetRoot, machineId, sourceId) {
   const state = await loadScanState(targetRoot, machineId, sourceId);
   if (!state || state.status === 'completed') {
-    logger.debug('No resumable scan state found.', {
-      targetRoot,
-      machineId,
-      sourceId,
-      hasState: Boolean(state),
-      status: state ? state.status : null
-    });
     return null;
   }
 
@@ -65,9 +32,9 @@ async function getResumeState(targetRoot, machineId, sourceId) {
     machineId,
     sourceId,
     scanId: state.activeGeneration,
-    status: state.status,
-    resumeCursor: state.resumeCursor || null
+    status: state.status
   });
+
   return {
     scanState: state
   };
@@ -81,73 +48,15 @@ async function ensureScanState(targetRoot, machineId, sourceId, options = {}) {
       machineId,
       sourceId,
       scanId: resume.scanState.activeGeneration,
-      status: resume.scanState.status,
-      resumeCursor: resume.scanState.resumeCursor || null
+      status: resume.scanState.status
     });
-    return {
-      ...resume,
-      resumed: true
-    };
+    return resume;
   }
 
-  logger.info('Creating new scan state.', {
-    targetRoot,
-    machineId,
-    sourceId,
-    forceNew: Boolean(options.forceNew)
-  });
   const scanState = await startNewGeneration(targetRoot, machineId, sourceId, options);
   return {
-    scanState,
-    resumed: false
+    scanState
   };
-}
-
-async function saveDiscoveredFolders(targetRoot, machineId, sourceId, scanId, parentRelativePath, childFolders, now = new Date()) {
-  const created = [];
-
-  for (const childFolder of childFolders) {
-    const relativePath = parentRelativePath === '.'
-      ? childFolder.name
-      : path.posix.join(parentRelativePath, childFolder.name);
-
-    const existing = await findCheckpointByRelativePath(targetRoot, machineId, sourceId, scanId, relativePath);
-    if (existing) {
-      created.push(existing);
-      continue;
-    }
-
-    const checkpoint = createFolderCheckpoint({
-      folderId: createFolderId(relativePath),
-      folderPath: childFolder.path,
-      relativePath,
-      status: 'pending',
-      startedAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-      completedAt: null
-    }, now);
-
-    await saveFolderCheckpoint(targetRoot, machineId, sourceId, scanId, checkpoint);
-    created.push(checkpoint);
-  }
-
-  return created;
-}
-
-async function updateFolderStatus(targetRoot, machineId, sourceId, scanId, checkpoint, status, metrics = {}, now = new Date()) {
-  const updated = createFolderCheckpoint({
-    ...checkpoint,
-    status,
-    filesSeen: metrics.filesSeen !== undefined ? metrics.filesSeen : checkpoint.filesSeen,
-    subfoldersSeen: metrics.subfoldersSeen !== undefined ? metrics.subfoldersSeen : checkpoint.subfoldersSeen,
-    nextChildIndex: metrics.nextChildIndex !== undefined ? metrics.nextChildIndex : checkpoint.nextChildIndex,
-    startedAt: checkpoint.startedAt || now.toISOString(),
-    updatedAt: now.toISOString(),
-    completedAt: status === 'done' ? now.toISOString() : null
-  }, now);
-
-  await saveFolderCheckpoint(targetRoot, machineId, sourceId, scanId, updated);
-  return updated;
 }
 
 async function markGenerationCompleted(targetRoot, machineId, sourceId, now = new Date()) {
@@ -159,27 +68,35 @@ async function markGenerationCompleted(targetRoot, machineId, sourceId, now = ne
   const completed = createScanState({
     ...state,
     status: 'completed',
-    resumeCursor: null,
     completedAt: now.toISOString(),
-    updatedAt: now.toISOString()
+    updatedAt: now.toISOString(),
+    resumeCursor: null
   }, now);
 
   await saveScanState(targetRoot, completed);
   return completed;
 }
 
-async function markGenerationPaused(targetRoot, machineId, sourceId, now = new Date()) {
+async function markGenerationPaused(targetRoot, machineId, sourceId, now = new Date(), resumeCursor = null) {
   const state = await loadScanState(targetRoot, machineId, sourceId);
   if (!state) {
     throw new Error(`Scan state not found: ${machineId}/${sourceId}`);
   }
 
+  const persistedCursor = resumeCursor
+    ? {
+        ...resumeCursor,
+        scanId: resumeCursor.scanId || state.activeGeneration,
+        updatedAt: now.toISOString()
+      }
+    : state.resumeCursor || null;
+
   const paused = createScanState({
     ...state,
     status: 'paused',
-    resumeCursor: state.resumeCursor || null,
     completedAt: null,
-    updatedAt: now.toISOString()
+    updatedAt: now.toISOString(),
+    resumeCursor: persistedCursor
   }, now);
 
   await saveScanState(targetRoot, paused);
@@ -191,7 +108,5 @@ module.exports = {
   getResumeState,
   markGenerationCompleted,
   markGenerationPaused,
-  saveDiscoveredFolders,
-  startNewGeneration,
-  updateFolderStatus
+  startNewGeneration
 };

@@ -6,8 +6,7 @@ const { ensureMachine } = require('./core/machineRegistry');
 const { registerSource } = require('./core/sourceRegistry');
 const { backupSource } = require('./core/backupCoordinator');
 const { restoreLogicalTree, restoreSource } = require('./core/restoreService');
-const { loadLocalConfig, saveLocalConfig } = require('./core/localConfig');
-const { loadLoggerConfig } = require('./core/loggerConfig');
+const { ensureLocalConfig, loadLocalConfig, saveLocalConfig } = require('./core/localConfig');
 const { addTarget, removeTarget, requireRegisteredTarget, setTargetCollapsed } = require('./core/targetRegistry');
 const { createTargetAvailabilityMonitor, normalizePlatform } = require('./core/targetAvailability');
 const { configureLogger, createLogger, getLogLevel } = require('./core/logger');
@@ -16,6 +15,8 @@ let mainWindow = null;
 const logger = createLogger('MainProcess', 'index.js');
 const activeBackupProgress = new Map();
 const activeBackups = new Map();
+let progressForwardTraceCount = 0;
+const PROGRESS_FORWARD_TRACE_LIMIT = 160;
 const appPlatform = normalizePlatform(process.platform);
 const targetAvailability = createTargetAvailabilityMonitor(appPlatform, {
   onChange: async () => {
@@ -50,12 +51,62 @@ function sendProgressToRenderer(payload) {
   mainWindow.webContents.send('app:backup-progress', payload);
 }
 
+function getRuntimeFlags() {
+  return {
+    traceProgressUi: String(process.env.MYBACKUP_TRACE_PROGRESS_UI || '1').trim() !== '0'
+  };
+}
+
+function summarizeProgressForTrace(payload) {
+  const workers = Object.values(payload.progress?.workers || {});
+  const summarizeWorker = (worker) => ({
+    id: worker.workerId,
+    pool: worker.pool,
+    state: worker.state,
+    sourceRelativePath: worker.sourceRelativePath || null,
+    logicalPath: worker.logicalPath || null,
+    lastAction: worker.lastAction || null,
+    copiedBytes: worker.copiedBytes || 0,
+    totalBytes: worker.totalBytes || 0
+  });
+  const summarizeQueue = (queue) => ({
+    depth: queue?.depth || 0,
+    pending: queue?.pending || 0,
+    active: queue?.active || 0,
+    waitingItems: (queue?.waitingItems || []).slice(0, 8),
+    activeItems: (queue?.activeItems || []).slice(0, 8),
+    feedItems: (queue?.feedItems || []).slice(0, 8),
+    handoffItems: (queue?.handoffItems || []).slice(0, 8)
+  });
+  return {
+    sequence: payload.trace?.sequence || null,
+    stage: 'main-forwarding',
+    event: payload.event ? {
+      type: payload.event.type,
+      pool: payload.event.pool || null,
+      workerId: payload.event.workerId || null,
+      sourceRelativePath: payload.event.sourceRelativePath || null
+    } : null,
+    status: payload.progress?.status || null,
+    hashWorkers: workers.filter((worker) => worker.pool === 'hash').map(summarizeWorker),
+    copyWorkers: workers.filter((worker) => worker.pool === 'copy').map(summarizeWorker),
+    invalidWorkers: workers.filter((worker) => worker.pool !== 'hash' && worker.pool !== 'copy').map(summarizeWorker),
+    hashQueue: summarizeQueue(payload.progress?.queues?.hash),
+    copyQueue: summarizeQueue(payload.progress?.queues?.copy)
+  };
+}
+
 function getAppDataRoot() {
   return app.getPath('userData');
 }
 
 function backupKey(targetRoot, machineId, sourceId) {
   return `${targetRoot}::${machineId}::${sourceId}`;
+}
+
+async function loadWorkerPoolsForBackup() {
+  const localConfig = await loadLocalConfig(getAppDataRoot());
+  return localConfig.workerPools;
 }
 
 async function buildDashboardState() {
@@ -72,7 +123,7 @@ async function buildDashboardState() {
   }));
 
   return {
-    logLevel: getLogLevel(),
+    logLevel: localConfig.logLevel || getLogLevel(),
     targets
   };
 }
@@ -111,6 +162,7 @@ async function ensureMachineForTarget(targetRoot) {
 
 function registerIpcHandlers() {
   ipcMain.handle('app:get-dashboard', async () => refreshDashboardState(false));
+  ipcMain.handle('app:get-runtime-flags', async () => getRuntimeFlags());
   ipcMain.handle('app:set-log-level', async (_event, input) => {
     const level = input && input.level ? input.level : 'info';
     configureLogger({ level });
@@ -199,11 +251,14 @@ function registerIpcHandlers() {
       throw new Error('Backup already running for this source.');
     }
 
+    const workerPools = await loadWorkerPoolsForBackup();
+
     logger.info('Backup requested.', {
       targetRoot,
       machineId: input.machineId,
       sourceId: input.sourceId,
-      forceNewScan: Boolean(input.forceNewScan)
+      forceNewScan: Boolean(input.forceNewScan),
+      workerPools
     });
     logToRenderer('info', 'Backup started.', {
       targetRoot,
@@ -223,17 +278,26 @@ function registerIpcHandlers() {
     try {
       const summary = await backupSource(targetRoot, input.machineId, input.sourceId, {
         forceNewScan: Boolean(input.forceNewScan),
+        initialHashWorkers: workerPools.hash,
+        maxHashWorkers: workerPools.hash,
+        initialCopyWorkers: workerPools.copy,
+        maxCopyWorkers: workerPools.copy,
         shouldPause: () => control.pauseRequested,
-        onProgress: ({ summary: progressSummary, progress, event }) => {
+        onProgress: ({ summary: progressSummary, progress, event, trace }) => {
           const payload = {
             targetRoot,
             machineId: input.machineId,
             sourceId: input.sourceId,
             summary: progressSummary,
             progress,
-            event
+            event,
+            trace
           };
           activeBackupProgress.set(key, payload);
+          if (getRuntimeFlags().traceProgressUi && progressForwardTraceCount < PROGRESS_FORWARD_TRACE_LIMIT) {
+            progressForwardTraceCount += 1;
+            logToRenderer('info', 'Progress trace: main forwarding payload.', summarizeProgressForTrace(payload));
+          }
           sendProgressToRenderer(payload);
         }
       });
@@ -343,30 +407,13 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  const localConfig = await loadLocalConfig(getAppDataRoot());
-  const loggerConfig = await loadLoggerConfig(getAppDataRoot(), {
-    appPath: app.getAppPath(),
-    cwd: process.cwd()
-  });
+  const localConfig = await ensureLocalConfig(getAppDataRoot());
   configureLogger({
-    level: loggerConfig.level || localConfig.logLevel || process.env.MYBACKUP_LOG_LEVEL || 'info',
-    moduleLevels: loggerConfig.moduleLevels,
+    level: localConfig.logLevel || process.env.MYBACKUP_LOG_LEVEL || 'info',
     sink: (record) => {
       logToRenderer(record.level, record.formatted, record.details);
     }
   });
-  if ((loggerConfig.sources || []).length > 0 || (loggerConfig.warnings || []).length > 0) {
-    logger.info('Logger configuration loaded.', {
-      sources: loggerConfig.sources,
-      moduleCount: Object.keys(loggerConfig.moduleLevels || {}).length,
-      warningCount: (loggerConfig.warnings || []).length
-    });
-    for (const warning of loggerConfig.warnings || []) {
-      logger.warn('Logger configuration warning.', {
-        warning
-      });
-    }
-  }
   logger.info('Application ready.', {
     logLevel: getLogLevel(),
     platform: appPlatform

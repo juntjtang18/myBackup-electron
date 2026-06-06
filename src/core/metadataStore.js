@@ -1,7 +1,6 @@
 const fs = require('fs-extra');
 const {
   configPath,
-  folderCheckpointPath,
   hashPath,
   machinePath,
   scanCurrentPath,
@@ -11,7 +10,6 @@ const {
 const { readJsonIfExists, writeJsonAtomic } = require('./jsonStore');
 const {
   validateAppConfig,
-  validateFolderCheckpoint,
   validateMachineRecord,
   validateScanState,
   validateSourceRecord
@@ -59,21 +57,6 @@ async function saveScanState(targetRoot, document) {
   await writeJsonAtomic(scanCurrentPath(targetRoot, document.machineId, document.sourceId), document);
 }
 
-async function loadFolderCheckpoint(targetRoot, machineId, sourceId, scanId, folderId) {
-  return readJsonIfExists(
-    folderCheckpointPath(targetRoot, machineId, sourceId, scanId, folderId),
-    validateFolderCheckpoint
-  );
-}
-
-async function saveFolderCheckpoint(targetRoot, machineId, sourceId, scanId, document) {
-  validateFolderCheckpoint(document);
-  await writeJsonAtomic(
-    folderCheckpointPath(targetRoot, machineId, sourceId, scanId, document.folderId),
-    document
-  );
-}
-
 function getTempRoot(targetRoot) {
   return tempRoot(targetRoot);
 }
@@ -83,13 +66,11 @@ module.exports = {
   hashPath,
   listHashRecords,
   loadAppConfig,
-  loadFolderCheckpoint,
   loadHashRecord,
   loadMachine,
   loadScanState,
   loadSource,
   saveAppConfig,
-  saveFolderCheckpoint,
   saveHashRecord,
   deleteHashRecord,
   saveMachine,

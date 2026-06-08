@@ -1,15 +1,13 @@
 const { createScanId } = require('./ids');
-const { loadScanState, saveScanState } = require('./metadataStore');
-const { createScanState } = require('./schema');
+const { createBackupScanState, loadBackupScanState, saveBackupScanState } = require('./backupSchema');
+const { normalizeCursor } = require('./cursor/cursorState');
 const { createLogger } = require('./logger');
 
 const logger = createLogger('ScanManager', 'scanManager.js');
 
 async function startNewGeneration(targetRoot, machineId, sourceId, options = {}) {
   const now = options.now || new Date();
-  const scanState = createScanState({
-    machineId,
-    sourceId,
+  const scanState = createBackupScanState({
     activeGeneration: options.scanId || createScanId(now),
     status: 'running',
     startedAt: now.toISOString(),
@@ -17,13 +15,14 @@ async function startNewGeneration(targetRoot, machineId, sourceId, options = {})
     updatedAt: now.toISOString()
   }, now);
 
-  await saveScanState(targetRoot, scanState);
+  await saveBackupScanState(options.appDataRoot || targetRoot, targetRoot, machineId, sourceId, scanState, now);
   return scanState;
 }
 
-async function getResumeState(targetRoot, machineId, sourceId) {
-  const state = await loadScanState(targetRoot, machineId, sourceId);
-  if (!state || state.status === 'completed') {
+async function getResumeState(targetRoot, machineId, sourceId, options = {}) {
+  const appDataRoot = options.appDataRoot || targetRoot;
+  const state = await loadBackupScanState(appDataRoot, targetRoot, machineId, sourceId);
+  if (!state || !state.activeGeneration || state.status === 'completed' || state.status === 'idle') {
     return null;
   }
 
@@ -41,7 +40,7 @@ async function getResumeState(targetRoot, machineId, sourceId) {
 }
 
 async function ensureScanState(targetRoot, machineId, sourceId, options = {}) {
-  const resume = await getResumeState(targetRoot, machineId, sourceId);
+  const resume = await getResumeState(targetRoot, machineId, sourceId, options);
   if (resume && !options.forceNew) {
     logger.info('Reusing resumable scan state.', {
       targetRoot,
@@ -59,13 +58,13 @@ async function ensureScanState(targetRoot, machineId, sourceId, options = {}) {
   };
 }
 
-async function markGenerationCompleted(targetRoot, machineId, sourceId, now = new Date()) {
-  const state = await loadScanState(targetRoot, machineId, sourceId);
+async function markGenerationCompleted(targetRoot, machineId, sourceId, now = new Date(), appDataRoot = targetRoot) {
+  const state = await loadBackupScanState(appDataRoot, targetRoot, machineId, sourceId);
   if (!state) {
     throw new Error(`Scan state not found: ${machineId}/${sourceId}`);
   }
 
-  const completed = createScanState({
+  const completed = createBackupScanState({
     ...state,
     status: 'completed',
     completedAt: now.toISOString(),
@@ -73,25 +72,25 @@ async function markGenerationCompleted(targetRoot, machineId, sourceId, now = ne
     resumeCursor: null
   }, now);
 
-  await saveScanState(targetRoot, completed);
+  await saveBackupScanState(appDataRoot, targetRoot, machineId, sourceId, completed, now);
   return completed;
 }
 
-async function markGenerationPaused(targetRoot, machineId, sourceId, now = new Date(), resumeCursor = null) {
-  const state = await loadScanState(targetRoot, machineId, sourceId);
+async function markGenerationPaused(targetRoot, machineId, sourceId, now = new Date(), resumeCursor = null, appDataRoot = targetRoot) {
+  const state = await loadBackupScanState(appDataRoot, targetRoot, machineId, sourceId);
   if (!state) {
     throw new Error(`Scan state not found: ${machineId}/${sourceId}`);
   }
 
   const persistedCursor = resumeCursor
-    ? {
+    ? normalizeCursor({
         ...resumeCursor,
         scanId: resumeCursor.scanId || state.activeGeneration,
         updatedAt: now.toISOString()
-      }
+      })
     : state.resumeCursor || null;
 
-  const paused = createScanState({
+  const paused = createBackupScanState({
     ...state,
     status: 'paused',
     completedAt: null,
@@ -99,7 +98,7 @@ async function markGenerationPaused(targetRoot, machineId, sourceId, now = new D
     resumeCursor: persistedCursor
   }, now);
 
-  await saveScanState(targetRoot, paused);
+  await saveBackupScanState(appDataRoot, targetRoot, machineId, sourceId, paused, now);
   return paused;
 }
 

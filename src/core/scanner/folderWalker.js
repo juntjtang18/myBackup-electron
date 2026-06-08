@@ -1,91 +1,116 @@
 const fs = require('fs-extra');
 const path = require('path');
-const { createFolderId } = require('../ids');
+const { createFolderHash, cursorMatchesFolder, normalizeRelativePath } = require('../cursor/cursorState');
 const { createLogger } = require('../logger');
 
 const logger = createLogger('FolderWalker', 'folderWalker.js');
 
-async function readChildFolders(folderPath, relativePath, ignoreMatcher = null) {
-  const entries = await fs.readdir(folderPath, { withFileTypes: true });
-  const childFolders = [];
+function createFolderDescriptor(sourceRoot, relativePath) {
+  const normalizedRelativePath = normalizeRelativePath(relativePath);
+  return {
+    folderHash: createFolderHash(normalizedRelativePath),
+    folderId: createFolderHash(normalizedRelativePath),
+    relativePath: normalizedRelativePath,
+    folderPath: normalizedRelativePath === '.'
+      ? path.resolve(sourceRoot)
+      : path.join(path.resolve(sourceRoot), ...normalizedRelativePath.split('/'))
+  };
+}
+
+async function listChildDirectories(folder, ignoreMatcher = null) {
+  const entries = await fs.readdir(folder.folderPath, { withFileTypes: true });
+  const directories = [];
 
   for (const entry of entries) {
     if (!entry.isDirectory()) {
       continue;
     }
 
-    const childRelativePath = relativePath === '.'
+    const relativePath = folder.relativePath === '.'
       ? entry.name
-      : path.posix.join(relativePath, entry.name);
-    if (ignoreMatcher && ignoreMatcher.shouldIgnore(childRelativePath, true)) {
+      : path.posix.join(folder.relativePath, entry.name);
+    if (ignoreMatcher && ignoreMatcher.shouldIgnore(relativePath, true)) {
       continue;
     }
 
-    childFolders.push({
+    directories.push({
       name: entry.name,
-      path: path.join(folderPath, entry.name),
-      relativePath: childRelativePath
+      relativePath,
+      folderPath: path.join(folder.folderPath, entry.name)
     });
   }
 
-  childFolders.sort((left, right) => left.name.localeCompare(right.name));
-  return childFolders;
+  directories.sort((left, right) => left.name.localeCompare(right.name));
+  return directories;
 }
 
-async function collectTraversal(folderPath, relativePath, ignoreMatcher, stack) {
-  stack.push({
-    folderId: createFolderId(relativePath),
-    folderPath,
-    relativePath
-  });
+async function* walkFoldersFromCursor(sourceRoot, cursor = null, options = {}) {
+  const startedAt = Date.now();
+  const ignoreMatcher = options.ignoreMatcher || null;
+  let cursorFound = !cursor;
 
-  const childFolders = await readChildFolders(folderPath, relativePath, ignoreMatcher);
-  for (const childFolder of childFolders) {
-    await collectTraversal(childFolder.path, childFolder.relativePath, ignoreMatcher, stack);
+  if (cursor) {
+    logger.info('Built resume traversal stack from cursor.', {
+      sourcePath: path.resolve(sourceRoot),
+      cursorRelativePath: normalizeRelativePath(cursor.relativePath),
+      cursorFolderHash: cursor.folderHash || null,
+      durationMs: Date.now() - startedAt
+    });
   }
+
+  async function* visit(folder) {
+    const current = {
+      folderHash: createFolderHash(folder.relativePath),
+      folderId: createFolderHash(folder.relativePath),
+      relativePath: normalizeRelativePath(folder.relativePath),
+      folderPath: folder.folderPath
+    };
+
+    let children = [];
+    try {
+      children = await listChildDirectories(current, ignoreMatcher);
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') {
+        throw error;
+      }
+    }
+
+    if (!cursorFound && cursorMatchesFolder(cursor, current)) {
+      cursorFound = true;
+      yield current;
+    } else if (cursorFound) {
+      yield current;
+    }
+
+    for (const child of children) {
+      yield* visit({
+        relativePath: child.relativePath,
+        folderPath: child.folderPath
+      });
+    }
+  }
+
+  yield* visit(createFolderDescriptor(sourceRoot, '.'));
 }
 
 async function buildFolderTraversalStack(sourcePath, ignoreMatcher = null, cursor = null) {
-  const startedAt = Date.now();
-  const allFolders = [];
-  await collectTraversal(sourcePath, '.', ignoreMatcher, allFolders);
-
+  const stack = [];
+  for await (const folder of walkFoldersFromCursor(sourcePath, cursor, { ignoreMatcher })) {
+    stack.push(folder);
+  }
   if (!cursor) {
     logger.info('Built folder traversal stack.', {
-      sourcePath,
-      folderCount: allFolders.length,
-      cursorRelativePath: null,
-      durationMs: Date.now() - startedAt
+      sourcePath: path.resolve(sourcePath),
+      folderCount: stack.length,
+      cursorRelativePath: null
     });
-    return allFolders;
   }
-
-  const cursorIndex = allFolders.findIndex((entry) => entry.relativePath === cursor.relativePath
-    && (!cursor.folderHash || entry.folderId === cursor.folderHash));
-
-  if (cursorIndex < 0) {
-    logger.warn('Resume cursor not found while rebuilding folder traversal stack.', {
-      sourcePath,
-      cursorRelativePath: cursor.relativePath,
-      cursorFolderHash: cursor.folderHash,
-      folderCount: allFolders.length,
-      durationMs: Date.now() - startedAt
-    });
-    return allFolders;
-  }
-
-  const stack = allFolders.slice(cursorIndex + 1);
-  logger.info('Built resume traversal stack from cursor.', {
-    sourcePath,
-    folderCount: allFolders.length,
-    cursorRelativePath: cursor.relativePath,
-    cursorFolderHash: cursor.folderHash,
-    resumeFolderCount: stack.length,
-    durationMs: Date.now() - startedAt
-  });
   return stack;
 }
 
 module.exports = {
-  buildFolderTraversalStack
+  buildFolderTraversalStack,
+  createFolderDescriptor,
+  listChildDirectories,
+  walkFoldersFromCursor
 };

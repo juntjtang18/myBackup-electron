@@ -2,10 +2,12 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs-extra');
 const { createFolderId, createMachineId, createScanId, createSourceId } = require('../src/core/ids');
+const { backupSchemaPath, legacyLocalConfigPath, schemaMigrationMarkerPath } = require('../src/core/paths');
 const {
   configPath,
   errorReportPath,
   hashPath,
+  machinePath,
   machineBackupRoot,
   mergedBackupRoot,
   scanCurrentPath,
@@ -22,18 +24,17 @@ const {
   validateSourceRecord
 } = require('../src/core/schema');
 const {
-  loadAppConfig,
-  loadHashRecord,
-  loadMachine,
-  loadScanState,
-  loadSource,
-  saveAppConfig,
-  saveHashRecord,
-  saveMachine,
-  saveScanState,
-  saveSource
-} = require('../src/core/metadataStore');
+  loadFileIndexRecord: loadHashRecord,
+  saveFileIndexRecord: saveHashRecord
+} = require('../src/core/fileIndex');
 const { ensureMachine, updateMachine } = require('../src/core/machineRegistry');
+const {
+  BACKUP_SCHEMA_VERSION,
+  ensureBackupSchema,
+  loadBackupScanState,
+  loadBackupSchema,
+  loadBackupSource
+} = require('../src/core/backupSchema');
 const { registerSource, updateSourceScanState } = require('../src/core/sourceRegistry');
 const { buildConflictPath, classifyMedia, planLogicalTarget } = require('../src/core/pathPlanner');
 const {
@@ -58,16 +59,14 @@ const { backupSource } = require('../src/core/backupCoordinator');
 const { createWorkScheduler } = require('../src/core/workScheduler');
 const { buildFolderTraversalStack } = require('../src/core/scanner/folderWalker');
 const { parseIgnoreFile, shouldIgnorePath, buildIgnoreRules } = require('../src/core/ignoreMatcher');
-const { readJsonIfExists } = require('../src/core/jsonStore');
+const { readJsonIfExists, writeJsonAtomic } = require('../src/core/jsonStore');
 const { createSourceSnapshot, loadSourceSnapshot, saveSourceSnapshot } = require('../src/core/sourceSnapshotStore');
 const { createTargetAvailabilityMonitor, checkTargetAvailability } = require('../src/core/targetAvailability');
 const { loadLoggerConfig, parseLoggerProperties } = require('../src/core/loggerConfig');
 const {
   createFolderHash,
-  loadResumeManifest,
-  resumeManifestPath,
   walkFoldersFromCursor
-} = require('../src/core/resume');
+} = require('../src/core/cursor');
 const {
   listHashRecords,
   restoreLogicalFile,
@@ -98,6 +97,38 @@ describe('metadata foundation', () => {
   function writeFixture(filePath, content) {
     fs.ensureDirSync(path.dirname(filePath));
     fs.writeFileSync(filePath, content);
+  }
+
+  async function saveLegacyAppConfig(targetRoot, document) {
+    await writeJsonAtomic(configPath(targetRoot), document);
+  }
+
+  async function loadLegacyAppConfig(targetRoot) {
+    return readJsonIfExists(configPath(targetRoot));
+  }
+
+  async function saveLegacyMachine(targetRoot, document) {
+    await writeJsonAtomic(machinePath(targetRoot, document.machineId), document);
+  }
+
+  async function loadLegacyMachine(targetRoot, machineId) {
+    return readJsonIfExists(machinePath(targetRoot, machineId));
+  }
+
+  async function saveLegacySource(targetRoot, document) {
+    await writeJsonAtomic(sourcePath(targetRoot, document.machineId, document.sourceId), document);
+  }
+
+  async function loadLegacySource(targetRoot, machineId, sourceId) {
+    return readJsonIfExists(sourcePath(targetRoot, machineId, sourceId));
+  }
+
+  async function saveLegacyScanState(targetRoot, document) {
+    await writeJsonAtomic(scanCurrentPath(targetRoot, document.machineId, document.sourceId), document);
+  }
+
+  async function loadLegacyScanState(targetRoot, machineId, sourceId) {
+    return readJsonIfExists(scanCurrentPath(targetRoot, machineId, sourceId));
   }
 
   test('creates stable ids for machine, source, scan, and folder', () => {
@@ -191,16 +222,16 @@ describe('metadata foundation', () => {
       origins: []
     }, new Date('2026-06-01T10:00:00Z'));
 
-    await saveAppConfig(tempRootPath, appConfig);
-    await saveMachine(tempRootPath, machine);
-    await saveSource(tempRootPath, source);
-    await saveScanState(tempRootPath, scanState);
+    await saveLegacyAppConfig(tempRootPath, appConfig);
+    await saveLegacyMachine(tempRootPath, machine);
+    await saveLegacySource(tempRootPath, source);
+    await saveLegacyScanState(tempRootPath, scanState);
     await saveHashRecord(tempRootPath, hashRecord);
 
-    expect(await loadAppConfig(tempRootPath)).toEqual(appConfig);
-    expect(await loadMachine(tempRootPath, machine.machineId)).toEqual(machine);
-    expect(await loadSource(tempRootPath, machine.machineId, source.sourceId)).toEqual(source);
-    expect(await loadScanState(tempRootPath, machine.machineId, source.sourceId)).toEqual(scanState);
+    expect(await loadLegacyAppConfig(tempRootPath)).toEqual(appConfig);
+    expect(await loadLegacyMachine(tempRootPath, machine.machineId)).toEqual(machine);
+    expect(await loadLegacySource(tempRootPath, machine.machineId, source.sourceId)).toEqual(source);
+    expect(await loadLegacyScanState(tempRootPath, machine.machineId, source.sourceId)).toEqual(scanState);
     expect(await loadHashRecord(tempRootPath, hashRecord.fileHash)).toEqual(hashRecord);
   });
 
@@ -327,8 +358,8 @@ describe('metadata foundation', () => {
       now: new Date('2026-06-02T09:00:00Z')
     });
 
-    const loadedConfig = await loadAppConfig(tempRootPath);
-    expect(loadedConfig.machineId).toBe(machine.machineId);
+    const schema = await loadBackupSchema(tempRootPath);
+    expect(schema.machine.machineId).toBe(machine.machineId);
     expect(machine.machineId).toBe('james-macbook-ffc2a3ac');
 
     const reused = await ensureMachine(tempRootPath, {
@@ -945,11 +976,11 @@ describe('metadata foundation', () => {
     );
     expect(await fs.readFile(targetFile, 'utf8')).toBe('alpha');
 
-    const scanState = await loadScanState(tempRootPath, machine.machineId, source.sourceId);
+    const scanState = await loadBackupScanState(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
     expect(scanState.status).toBe('completed');
     expect(scanState.activeGeneration).toBe(summary.scanId);
 
-    const updatedSource = await loadSource(tempRootPath, machine.machineId, source.sourceId);
+    const updatedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
     expect(updatedSource.lastCompletedScan).toBe(summary.scanId);
     expect(updatedSource.lastCompletedAt).toBe('2026-06-07T08:10:00.000Z');
   });
@@ -1059,9 +1090,7 @@ describe('metadata foundation', () => {
 
     const cursor = {
       folderHash: createFolderHash('a'),
-      relativePath: 'a',
-      folderPath: path.join(sourceRoot, 'a'),
-      status: 'done'
+      relativePath: 'a'
     };
 
     const folders = [];
@@ -1069,10 +1098,10 @@ describe('metadata foundation', () => {
       folders.push(folder.relativePath);
     }
 
-    expect(folders).toEqual(['a/a1', 'b']);
+    expect(folders).toEqual(['a', 'a/a1', 'b']);
   });
 
-  test('resumes paused backup using the new source cursor manifest', async () => {
+  test('resumes paused backup using the schema-backed source cursor', async () => {
     const sourceRoot = path.join(tempRootPath, 'resume-cursor-source');
     writeFixture(path.join(sourceRoot, 'a', 'one.txt'), 'one');
     writeFixture(path.join(sourceRoot, 'b', 'two.txt'), 'two');
@@ -1102,11 +1131,10 @@ describe('metadata foundation', () => {
     });
 
     expect(paused.status).toBe('paused');
-    const pausedManifest = await loadResumeManifest(tempRootPath, machine.machineId, source.sourceId);
-    expect(pausedManifest.status).toBe('paused');
-    expect(pausedManifest.cursor.relativePath).toBe('.');
-    expect(pausedManifest.cursor.status).toBe('done');
-    expect(await fs.pathExists(resumeManifestPath(tempRootPath, machine.machineId, source.sourceId))).toBe(true);
+    const pausedScanState = await loadBackupScanState(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(pausedScanState.status).toBe('paused');
+    expect(pausedScanState.resumeCursor.relativePath).toBe('.');
+    expect(pausedScanState.resumeCursor.folderHash).toBe(createFolderHash('.'));
 
     const completed = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
       now: new Date('2026-06-07T08:20:00Z')
@@ -1116,9 +1144,9 @@ describe('metadata foundation', () => {
     expect(completed.scanId).toBe(paused.scanId);
     expect(completed.filesCopied).toBe(2);
 
-    const completedManifest = await loadResumeManifest(tempRootPath, machine.machineId, source.sourceId);
-    expect(completedManifest.status).toBe('completed');
-    expect(completedManifest.cursor.relativePath).toBe('b');
+    const completedScanState = await loadBackupScanState(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(completedScanState.status).toBe('completed');
+    expect(completedScanState.resumeCursor).toBeNull();
 
     expect(
       await fs.readFile(
@@ -2002,6 +2030,114 @@ dist/**
     expect(context.sources).toHaveLength(2);
   });
 
+  test('migrates a legacy install into backup schema on first load', async () => {
+    const appDataRoot = path.join(tempRootPath, 'app-data');
+    const targetRoot = path.join(tempRootPath, 'legacy-target');
+    await fs.ensureDir(appDataRoot);
+    await fs.ensureDir(targetRoot);
+
+    await fs.writeJson(legacyLocalConfigPath(appDataRoot), {
+      targets: [
+        {
+          id: 'target-legacy',
+          path: targetRoot,
+          collapsed: true,
+          addedAt: '2026-06-09T09:00:00.000Z'
+        }
+      ]
+    });
+
+    const now = new Date('2026-06-09T09:10:00Z');
+    const machine = createMachineRecord({
+      machineId: 'legacy-machine-a',
+      displayName: 'Legacy Machine',
+      hostname: 'legacy-host',
+      platform: 'darwin'
+    }, now);
+    const appConfig = createAppConfig({ machineId: machine.machineId }, now);
+    const source = createSourceRecord({
+      machineId: machine.machineId,
+      sourcePath: '/Users/James/Documents',
+      mergeEnabled: false,
+      organizeMedia: false
+    }, now);
+    const scanState = createScanState({
+      machineId: machine.machineId,
+      sourceId: source.sourceId,
+      activeGeneration: '20260609-091000',
+      status: 'paused',
+      resumeCursor: {
+        scanId: '20260609-091000',
+        folderHash: 'docs-71ab8b6afb',
+        relativePath: 'docs',
+        folderPath: '/Users/James/Documents/docs',
+        status: 'scanning'
+      }
+    }, now);
+
+    await saveLegacyAppConfig(targetRoot, appConfig);
+    await saveLegacyMachine(targetRoot, machine);
+    await saveLegacySource(targetRoot, source);
+    await saveLegacyScanState(targetRoot, scanState);
+
+    const migrated = await ensureBackupSchema(appDataRoot, {
+      hostname: 'fallback-host',
+      displayName: 'Fallback Host',
+      platform: 'darwin',
+      seed: 'fallback-seed'
+    }, now);
+
+    expect(await fs.pathExists(backupSchemaPath(appDataRoot))).toBe(true);
+    expect(await fs.pathExists(schemaMigrationMarkerPath(appDataRoot))).toBe(true);
+    expect(await fs.readJson(schemaMigrationMarkerPath(appDataRoot))).toMatchObject({
+      mode: 'legacy-imported',
+      importedTargetCount: 1,
+      importedSourceCount: 1
+    });
+    expect(migrated.version).toBe(BACKUP_SCHEMA_VERSION);
+    expect(migrated.machine.machineId).toBe(machine.machineId);
+    expect(migrated.migration).toMatchObject({
+      mode: 'legacy-imported',
+      importedTargetCount: 1,
+      importedSourceCount: 1
+    });
+    expect(migrated.targets).toHaveLength(1);
+    expect(migrated.targets[0]).toMatchObject({
+      id: 'target-legacy',
+      path: targetRoot,
+      collapsed: true
+    });
+    expect(migrated.targets[0].sources).toHaveLength(1);
+    expect(migrated.targets[0].sources[0]).toMatchObject({
+      machineId: machine.machineId,
+      sourceId: source.sourceId,
+      sourcePath: source.sourcePath
+    });
+    expect(migrated.targets[0].sources[0].scanState).toMatchObject({
+      activeGeneration: '20260609-091000',
+      status: 'paused'
+    });
+    expect(migrated.targets[0].sources[0].scanState.resumeCursor).toMatchObject({
+      relativePath: 'docs',
+      folderHash: 'docs-71ab8b6afb'
+    });
+  });
+
+  test('rejects unsupported backup schema versions', async () => {
+    await fs.ensureDir(path.dirname(backupSchemaPath(tempRootPath)));
+    await fs.writeJson(backupSchemaPath(tempRootPath), {
+      version: BACKUP_SCHEMA_VERSION + 1,
+      machine: {
+        machineId: 'machine-a'
+      },
+      targets: []
+    });
+
+    await expect(loadBackupSchema(tempRootPath)).rejects.toThrow(
+      `Unsupported backup schema version: ${BACKUP_SCHEMA_VERSION + 1}`
+    );
+  });
+
   test('formats logger output and respects configured log level', () => {
     const events = [];
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -2173,7 +2309,7 @@ dist/**
       }
     );
 
-    expect(stack.map((entry) => entry.relativePath)).toEqual(['alpha', 'beta']);
+    expect(stack.map((entry) => entry.relativePath)).toEqual(['.', 'alpha', 'beta']);
     expect(events.some((entry) => entry.module === 'FolderWalker' && entry.message === 'Built resume traversal stack from cursor.')).toBe(true);
   });
 

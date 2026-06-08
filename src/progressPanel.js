@@ -5,8 +5,6 @@
     root.myBackupProgressPanel = factory();
   }
 }(typeof globalThis !== 'undefined' ? globalThis : window, function createProgressPanelModule() {
-  const POOLS = ['hash', 'copy'];
-
   function escapeHtml(value) {
     return String(value ?? '')
       .replaceAll('&', '&amp;')
@@ -288,7 +286,6 @@
             ${renderSummary(view.summary)}
             <div class="progress-pools">
               ${renderPoolPanel(view.pools.hash, safeKey)}
-              ${renderPoolPanel(view.pools.copy, safeKey)}
             </div>
           </div>
         </td>

@@ -1,7 +1,7 @@
 const path = require('path');
 const { toPosixPath } = require('./layout');
 const { restorePlainFile } = require('./plainFileStorage');
-const { listHashRecords } = require('./metadataStore');
+const { listFileIndexRecords } = require('./fileIndex');
 
 function getAllLogicalPaths(record) {
   const paths = [];
@@ -27,7 +27,7 @@ function isPathInsideRoot(logicalPath, logicalRoot) {
 
 async function restoreSource(targetRoot, input) {
   const destinationRoot = path.resolve(input.destinationRoot);
-  const records = await listHashRecords(targetRoot);
+  const records = await listFileIndexRecords(targetRoot);
   const summary = {
     machineId: input.machineId,
     sourceId: input.sourceId,
@@ -61,7 +61,7 @@ async function restoreSource(targetRoot, input) {
 async function restoreLogicalTree(targetRoot, input) {
   const logicalRoot = toPosixPath(input.logicalRoot).replace(/\/+$/, '');
   const destinationRoot = path.resolve(input.destinationRoot);
-  const records = await listHashRecords(targetRoot);
+  const records = await listFileIndexRecords(targetRoot);
   const restoredPaths = new Set();
   const summary = {
     logicalRoot,
@@ -98,7 +98,7 @@ async function restoreLogicalTree(targetRoot, input) {
 async function restoreLogicalFile(targetRoot, input) {
   const logicalPath = toPosixPath(input.logicalPath);
   const destinationPath = path.resolve(input.destinationPath);
-  const records = await listHashRecords(targetRoot);
+  const records = await listFileIndexRecords(targetRoot);
 
   for (const record of records) {
     for (const candidatePath of getAllLogicalPaths(record)) {
@@ -119,7 +119,7 @@ async function restoreLogicalFile(targetRoot, input) {
 
 module.exports = {
   getAllLogicalPaths,
-  listHashRecords,
+  listHashRecords: listFileIndexRecords,
   restoreLogicalFile,
   restoreLogicalTree,
   restoreSource

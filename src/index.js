@@ -2,12 +2,13 @@ process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || '16';
 
 const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const path = require('path');
-const { ensureMachine } = require('./core/machineRegistry');
+const os = require('os');
+const { ensureBackupSchema } = require('./core/backupSchema');
 const { registerSource } = require('./core/sourceRegistry');
 const { backupSource } = require('./core/backupCoordinator');
 const { restoreLogicalTree, restoreSource } = require('./core/restoreService');
 const { ensureLocalConfig, loadLocalConfig, saveLocalConfig } = require('./core/localConfig');
-const { addTarget, removeTarget, requireRegisteredTarget, setTargetCollapsed } = require('./core/targetRegistry');
+const { addTarget, listTargets, removeTarget, requireRegisteredTarget, setTargetCollapsed } = require('./core/targetRegistry');
 const { createTargetAvailabilityMonitor, normalizePlatform } = require('./core/targetAvailability');
 const { configureLogger, createLogger, getLogLevel } = require('./core/logger');
 
@@ -100,6 +101,20 @@ function getAppDataRoot() {
   return app.getPath('userData');
 }
 
+function getDefaultMachineInput() {
+  const hostname = os.hostname();
+  return {
+    hostname,
+    displayName: app.getName(),
+    platform: process.platform,
+    seed: `${hostname}-${process.platform}`
+  };
+}
+
+async function ensureAppSchema() {
+  return ensureBackupSchema(getAppDataRoot(), getDefaultMachineInput());
+}
+
 function backupKey(targetRoot, machineId, sourceId) {
   return `${targetRoot}::${machineId}::${sourceId}`;
 }
@@ -110,9 +125,11 @@ async function loadWorkerPoolsForBackup() {
 }
 
 async function buildDashboardState() {
+  await ensureAppSchema();
   const localConfig = await loadLocalConfig(getAppDataRoot());
-  const targets = await Promise.all((localConfig.targets || []).map(async (target) => {
-    const entry = await targetAvailability.buildTargetDashboardEntry(target);
+  const registeredTargets = await listTargets(getAppDataRoot());
+  const targets = await Promise.all(registeredTargets.map(async (target) => {
+    const entry = await targetAvailability.buildTargetDashboardEntry(target, getAppDataRoot());
     if (!entry.available) {
       logger.warn('Backup target is unavailable.', {
         targetRoot: target.path,
@@ -153,13 +170,6 @@ async function requireTargetRoot(input) {
   return requireRegisteredTarget(getAppDataRoot(), input && input.targetRoot);
 }
 
-async function ensureMachineForTarget(targetRoot) {
-  return ensureMachine(targetRoot, {
-    hostname: app.getName(),
-    displayName: app.getName()
-  });
-}
-
 function registerIpcHandlers() {
   ipcMain.handle('app:get-dashboard', async () => refreshDashboardState(false));
   ipcMain.handle('app:get-runtime-flags', async () => getRuntimeFlags());
@@ -183,7 +193,6 @@ function registerIpcHandlers() {
 
     const targetRoot = result.filePaths[0];
     await addTarget(getAppDataRoot(), targetRoot);
-    await ensureMachineForTarget(targetRoot);
     logger.info('Backup target added.', { targetRoot });
     logToRenderer('info', 'Backup target added.', { targetRoot });
     return refreshDashboardState(false);
@@ -214,9 +223,10 @@ function registerIpcHandlers() {
 
   ipcMain.handle('app:add-source', async (_event, input) => {
     const targetRoot = await requireTargetRoot(input);
-    const machine = await ensureMachineForTarget(targetRoot);
-    const source = await registerSource(targetRoot, {
-      machineId: machine.machineId,
+    const schema = await ensureAppSchema();
+    const source = await registerSource(getAppDataRoot(), {
+      targetRoot,
+      machineId: schema.machine.machineId,
       sourcePath: input.sourcePath,
       organizeMedia: Boolean(input.organizeMedia),
       mergeEnabled: Boolean(input.mergeEnabled),
@@ -277,6 +287,7 @@ function registerIpcHandlers() {
 
     try {
       const summary = await backupSource(targetRoot, input.machineId, input.sourceId, {
+        appDataRoot: getAppDataRoot(),
         forceNewScan: Boolean(input.forceNewScan),
         initialHashWorkers: workerPools.hash,
         maxHashWorkers: workerPools.hash,
@@ -408,6 +419,7 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   const localConfig = await ensureLocalConfig(getAppDataRoot());
+  await ensureAppSchema();
   configureLogger({
     level: localConfig.logLevel || process.env.MYBACKUP_LOG_LEVEL || 'info',
     sink: (record) => {

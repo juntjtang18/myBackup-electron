@@ -1,5 +1,5 @@
 const path = require('path');
-const { metadataRoot } = require('./layout');
+const { fileIndexRoot } = require('./paths');
 
 const SEGMENT_LENGTH = 3;
 const BUCKET_SEGMENT_COUNT = 5;
@@ -39,8 +39,7 @@ function bucketPath(targetRoot, fileHash) {
   }
 
   return path.join(
-    metadataRoot(targetRoot),
-    'hashes',
+    fileIndexRoot(targetRoot),
     segments[0],
     segments[1],
     segments[2],

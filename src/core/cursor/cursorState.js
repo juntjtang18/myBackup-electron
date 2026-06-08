@@ -12,24 +12,35 @@ function createFolderHash(relativePath) {
   return createFolderId(normalizeRelativePath(relativePath));
 }
 
-function createResumeCursor(input = {}, now = new Date()) {
+function createCursor(input = {}, now = new Date()) {
   const relativePath = normalizeRelativePath(input.relativePath);
   const updatedAt = input.updatedAt || now;
   return {
     scanId: input.scanId || input.backupId || null,
     folderHash: input.folderHash || createFolderHash(relativePath),
     relativePath,
-    folderPath: path.resolve(input.folderPath || '.'),
-    status: input.status || 'scanning',
     updatedAt: updatedAt.toISOString ? updatedAt.toISOString() : updatedAt
   };
 }
 
-function normalizeResumeCursor(cursor) {
+function normalizeCursor(cursor) {
   if (!cursor) {
     return null;
   }
-  return createResumeCursor(cursor, cursor.updatedAt || new Date());
+  return createCursor(cursor, cursor.updatedAt || new Date());
+}
+
+function hydrateCursor(sourcePath, cursor) {
+  const normalized = normalizeCursor(cursor);
+  if (!normalized) {
+    return null;
+  }
+  return {
+    ...normalized,
+    folderPath: normalized.relativePath === '.'
+      ? path.resolve(sourcePath)
+      : path.join(path.resolve(sourcePath), ...normalized.relativePath.split('/'))
+  };
 }
 
 function cursorMatchesFolder(cursor, folder) {
@@ -42,9 +53,10 @@ function cursorMatchesFolder(cursor, folder) {
 }
 
 module.exports = {
+  createCursor,
   createFolderHash,
-  createResumeCursor,
   cursorMatchesFolder,
-  normalizeResumeCursor,
+  hydrateCursor,
+  normalizeCursor,
   normalizeRelativePath
 };

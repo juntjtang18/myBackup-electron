@@ -16,20 +16,14 @@ const {
   markGenerationCompleted,
   markGenerationPaused
 } = require('./scanManager');
-const { loadSource } = require('./metadataStore');
+const { loadBackupSource } = require('./backupSchema');
 const { loadIgnoreMatcher } = require('./ignoreMatcher');
 const { createErrorReportWriter } = require('./errorReportStore');
 const { createSourceSnapshot, loadSourceSnapshot, saveSourceSnapshot } = require('./sourceSnapshotStore');
 const { updateSourceScanState } = require('./sourceRegistry');
 const { toPosixPath } = require('./layout');
 const { shortHash } = require('./ids');
-const {
-  completeResumeRun,
-  markResumeFolder,
-  pauseResumeRun,
-  saveResumeCursor,
-  startResumeRun
-} = require('./resume');
+const { openCursorRun, saveCursorFolder } = require('./cursor');
 const { createWorkScheduler } = require('./workScheduler');
 const { createBoundedQueue } = require('./pipeline/boundedQueue');
 const { createFixedWorkerPool } = require('./pipeline/fixedWorkerPool');
@@ -504,7 +498,8 @@ async function executeCopyOperation(targetRoot, machineId, source, plan, callbac
 }
 
 async function backupSourceLegacy(targetRoot, machineId, sourceId, options = {}) {
-  const source = await loadSource(targetRoot, machineId, sourceId);
+  const appDataRoot = options.appDataRoot || targetRoot;
+  const source = await loadBackupSource(appDataRoot, targetRoot, machineId, sourceId);
   if (!source) {
     throw new Error(`Source not found: ${machineId}/${sourceId}`);
   }
@@ -527,6 +522,7 @@ async function backupSourceLegacy(targetRoot, machineId, sourceId, options = {})
   await cleanupTempFiles(targetRoot);
 
   const stateBundle = await ensureScanState(targetRoot, machineId, sourceId, {
+    appDataRoot,
     forceNew: options.forceNewScan,
     now: options.now || new Date()
   });
@@ -698,7 +694,8 @@ async function backupSourceLegacy(targetRoot, machineId, sourceId, options = {})
   const errorReport = await createErrorReportWriter(targetRoot, machineId, sourceId, scanId);
   summary.reportPath = errorReport.reportPath;
   const ignoreMatcher = await loadIgnoreMatcher(source.sourcePath);
-  const resumeRun = await startResumeRun(targetRoot, machineId, sourceId, source.sourcePath, {
+  const resumeRun = await openCursorRun(targetRoot, machineId, sourceId, source.sourcePath, {
+    appDataRoot,
     backupId: scanId,
     forceNew: options.forceNewScan,
     ignoreMatcher,
@@ -714,7 +711,6 @@ async function backupSourceLegacy(targetRoot, machineId, sourceId, options = {})
       ? {
           relativePath: resumeRun.cursor.relativePath,
           folderHash: resumeRun.cursor.folderHash,
-          status: resumeRun.cursor.status
         }
       : null
   });
@@ -989,7 +985,6 @@ async function backupSourceLegacy(targetRoot, machineId, sourceId, options = {})
   }
 
   let activeResumeCursor = null;
-  let lastScheduledResumeCursor = resumeRun.cursor || null;
   let lastCompletedResumeCursor = resumeRun.cursor || null;
 
   try {
@@ -1009,9 +1004,7 @@ async function backupSourceLegacy(targetRoot, machineId, sourceId, options = {})
 
       activeResumeCursor = {
         folderHash: resumeFolder.folderHash,
-        folderPath: resumeFolder.folderPath,
-        relativePath: resumeFolder.relativePath,
-        status: 'scanning'
+        relativePath: resumeFolder.relativePath
       };
       logger.info('Processing folder from traversal stack.', {
         scanId,
@@ -1023,21 +1016,11 @@ async function backupSourceLegacy(targetRoot, machineId, sourceId, options = {})
         filesProcessed: summary.filesProcessed,
         filesCopied: summary.filesCopied
       });
-      lastScheduledResumeCursor = activeResumeCursor;
-      await saveResumeCursor(targetRoot, machineId, sourceId, resumeRun.backupId, activeResumeCursor, {
+      await saveCursorFolder(targetRoot, machineId, sourceId, resumeRun.backupId, activeResumeCursor, {
+        appDataRoot,
         status: 'running',
         now: options.now || new Date()
       });
-      await markResumeFolder(
-        targetRoot,
-        machineId,
-        sourceId,
-        resumeRun.backupId,
-        resumeFolder,
-        'scanning',
-        {},
-        options.now || new Date()
-      );
 
       let directories;
       let files;
@@ -1064,23 +1047,12 @@ async function backupSourceLegacy(targetRoot, machineId, sourceId, options = {})
           code: error.code,
           message: error.message
         });
-        await markResumeFolder(
-          targetRoot,
-          machineId,
-          sourceId,
-          resumeRun.backupId,
-          resumeFolder,
-          'failed',
-          {},
-          options.now || new Date()
-        );
         lastCompletedResumeCursor = {
           folderHash: resumeFolder.folderHash,
-          folderPath: resumeFolder.folderPath,
-          relativePath: resumeFolder.relativePath,
-          status: 'done'
+          relativePath: resumeFolder.relativePath
         };
-        await saveResumeCursor(targetRoot, machineId, sourceId, resumeRun.backupId, lastCompletedResumeCursor, {
+        await saveCursorFolder(targetRoot, machineId, sourceId, resumeRun.backupId, lastCompletedResumeCursor, {
+          appDataRoot,
           status: 'running',
           now: options.now || new Date()
         });
@@ -1100,19 +1072,6 @@ async function backupSourceLegacy(targetRoot, machineId, sourceId, options = {})
         files: files.length,
         directories: directories.length
       });
-      await markResumeFolder(
-        targetRoot,
-        machineId,
-        sourceId,
-        resumeRun.backupId,
-        resumeFolder,
-        'scanning',
-        {
-          filesSeen: files.length,
-          childrenSeen: directories.length
-        },
-        options.now || new Date()
-      );
       const fileStatsByRelativePath = new Map();
       const fileResults = [];
       const fileResultsByRelativePath = new Map();
@@ -1273,28 +1232,12 @@ async function backupSourceLegacy(targetRoot, machineId, sourceId, options = {})
         }
       }
 
-      await markResumeFolder(
-        targetRoot,
-        machineId,
-        sourceId,
-        resumeRun.backupId,
-        resumeFolder,
-        'done',
-        {
-          filesSeen: files.length,
-          filesDone: fileResults.filter(Boolean).length,
-          childrenSeen: directories.length,
-          childrenDone: directories.length
-        },
-        options.now || new Date()
-      );
       lastCompletedResumeCursor = {
         folderHash: resumeFolder.folderHash,
-        folderPath: resumeFolder.folderPath,
-        relativePath: resumeFolder.relativePath,
-        status: 'done'
+        relativePath: resumeFolder.relativePath
       };
-      await saveResumeCursor(targetRoot, machineId, sourceId, resumeRun.backupId, lastCompletedResumeCursor, {
+      await saveCursorFolder(targetRoot, machineId, sourceId, resumeRun.backupId, lastCompletedResumeCursor, {
+        appDataRoot,
         status: 'running',
         now: options.now || new Date()
       });
@@ -1332,15 +1275,7 @@ async function backupSourceLegacy(targetRoot, machineId, sourceId, options = {})
       && activeResumeCursor.relativePath === lastCompletedResumeCursor.relativePath
       ? lastCompletedResumeCursor
       : activeResumeCursor || lastCompletedResumeCursor;
-    await markGenerationPaused(targetRoot, machineId, sourceId, options.now || new Date(), pausedCursor);
-    await pauseResumeRun(
-      targetRoot,
-      machineId,
-      sourceId,
-      resumeRun.backupId,
-      pausedCursor,
-      options.now || new Date()
-    );
+    await markGenerationPaused(targetRoot, machineId, sourceId, options.now || new Date(), pausedCursor, appDataRoot);
     progress.status = 'paused';
     delete progress.pausePhase;
     emitProgress({ type: 'backup-paused' });
@@ -1356,22 +1291,13 @@ async function backupSourceLegacy(targetRoot, machineId, sourceId, options = {})
     };
   }
 
-  await markGenerationCompleted(targetRoot, machineId, sourceId, options.now || new Date());
-  await completeResumeRun(
-    targetRoot,
-    machineId,
-    sourceId,
-    resumeRun.backupId,
-    lastScheduledResumeCursor
-      ? { ...lastScheduledResumeCursor, status: 'done' }
-      : lastCompletedResumeCursor,
-    options.now || new Date()
-  );
+  await markGenerationCompleted(targetRoot, machineId, sourceId, options.now || new Date(), appDataRoot);
   await updateSourceScanState(
-    targetRoot,
+    appDataRoot,
     machineId,
     sourceId,
     {
+      targetRoot,
       lastCompletedScan: scanId,
       lastCompletedAt: (options.now || new Date()).toISOString()
     },
@@ -1400,7 +1326,8 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     return backupSourceLegacy(targetRoot, machineId, sourceId, options);
   }
 
-  const source = await loadSource(targetRoot, machineId, sourceId);
+  const appDataRoot = options.appDataRoot || targetRoot;
+  const source = await loadBackupSource(appDataRoot, targetRoot, machineId, sourceId);
   if (!source) {
     throw new Error(`Source not found: ${machineId}/${sourceId}`);
   }
@@ -1427,6 +1354,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   await cleanupTempFiles(targetRoot);
 
   const stateBundle = await ensureScanState(targetRoot, machineId, sourceId, {
+    appDataRoot,
     forceNew: options.forceNewScan,
     now
   });
@@ -1437,7 +1365,6 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   let paused = false;
   let pausePhase = null;
   let activeResumeCursor = null;
-  let lastScheduledResumeCursor = null;
   let lastCompletedResumeCursor = null;
   let firstCopyTaskLogged = false;
   let lastProgressEmitAt = 0;
@@ -1488,13 +1415,13 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   const errorReport = await createErrorReportWriter(targetRoot, machineId, sourceId, scanId);
   summary.reportPath = errorReport.reportPath;
   const ignoreMatcher = await loadIgnoreMatcher(source.sourcePath);
-  const resumeRun = await startResumeRun(targetRoot, machineId, sourceId, source.sourcePath, {
+  const resumeRun = await openCursorRun(targetRoot, machineId, sourceId, source.sourcePath, {
+    appDataRoot,
     backupId: scanId,
     forceNew: options.forceNewScan,
     ignoreMatcher,
     now
   });
-  lastScheduledResumeCursor = resumeRun.cursor || null;
   lastCompletedResumeCursor = resumeRun.cursor || null;
 
   logger.info('Resume run initialized.', {
@@ -1507,7 +1434,6 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       ? {
           relativePath: resumeRun.cursor.relativePath,
           folderHash: resumeRun.cursor.folderHash,
-          status: resumeRun.cursor.status
         }
       : null
   });
@@ -1896,9 +1822,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
 
       activeResumeCursor = {
         folderHash: resumeFolder.folderHash,
-        folderPath: resumeFolder.folderPath,
-        relativePath: resumeFolder.relativePath,
-        status: 'scanning'
+        relativePath: resumeFolder.relativePath
       };
       logger.info('Processing folder from traversal stack.', {
         scanId,
@@ -1910,12 +1834,11 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         filesProcessed: summary.filesProcessed,
         filesCopied: summary.filesCopied
       });
-      lastScheduledResumeCursor = activeResumeCursor;
-      await saveResumeCursor(targetRoot, machineId, sourceId, resumeRun.backupId, activeResumeCursor, {
+      await saveCursorFolder(targetRoot, machineId, sourceId, resumeRun.backupId, activeResumeCursor, {
+        appDataRoot,
         status: 'running',
         now
       });
-      await markResumeFolder(targetRoot, machineId, sourceId, resumeRun.backupId, resumeFolder, 'scanning', {}, now);
 
       let directories;
       let files;
@@ -1936,15 +1859,9 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         summary.errors += 1;
         progress.skippedFolders = summary.skippedFolders;
         progress.errors = summary.errors;
-        await markResumeFolder(targetRoot, machineId, sourceId, resumeRun.backupId, resumeFolder, 'failed', {}, now);
         emitProgress({ type: 'folder-skipped', relativePath: resumeFolder.relativePath }, true);
         continue;
       }
-
-      await markResumeFolder(targetRoot, machineId, sourceId, resumeRun.backupId, resumeFolder, 'scanning', {
-        filesSeen: files.length,
-        childrenSeen: directories.length
-      }, now);
 
       const folderFilePromises = [];
       for (const fileEntry of files) {
@@ -1990,20 +1907,13 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       }
 
       const folderResults = await Promise.all(folderFilePromises);
-      await markResumeFolder(targetRoot, machineId, sourceId, resumeRun.backupId, resumeFolder, 'done', {
-        filesSeen: files.length,
-        filesDone: folderResults.filter(Boolean).length,
-        childrenSeen: directories.length,
-        childrenDone: directories.length
-      }, now);
 
       lastCompletedResumeCursor = {
         folderHash: resumeFolder.folderHash,
-        folderPath: resumeFolder.folderPath,
-        relativePath: resumeFolder.relativePath,
-        status: 'done'
+        relativePath: resumeFolder.relativePath
       };
-      await saveResumeCursor(targetRoot, machineId, sourceId, resumeRun.backupId, lastCompletedResumeCursor, {
+      await saveCursorFolder(targetRoot, machineId, sourceId, resumeRun.backupId, lastCompletedResumeCursor, {
+        appDataRoot,
         status: 'running',
         now
       });
@@ -2045,8 +1955,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       && activeResumeCursor.relativePath === lastCompletedResumeCursor.relativePath
       ? lastCompletedResumeCursor
       : activeResumeCursor || lastCompletedResumeCursor;
-    await markGenerationPaused(targetRoot, machineId, sourceId, now, pausedCursor);
-    await pauseResumeRun(targetRoot, machineId, sourceId, resumeRun.backupId, pausedCursor, now);
+    await markGenerationPaused(targetRoot, machineId, sourceId, now, pausedCursor, appDataRoot);
     progress.status = 'paused';
     delete progress.pausePhase;
     emitProgress({ type: 'backup-paused' }, true);
@@ -2063,22 +1972,13 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     };
   }
 
-  await markGenerationCompleted(targetRoot, machineId, sourceId, now);
-  await completeResumeRun(
-    targetRoot,
-    machineId,
-    sourceId,
-    resumeRun.backupId,
-    lastScheduledResumeCursor
-      ? { ...lastScheduledResumeCursor, status: 'done' }
-      : lastCompletedResumeCursor,
-    now
-  );
+  await markGenerationCompleted(targetRoot, machineId, sourceId, now, appDataRoot);
   await updateSourceScanState(
-    targetRoot,
+    appDataRoot,
     machineId,
     sourceId,
     {
+      targetRoot,
       lastCompletedScan: scanId,
       lastCompletedAt: now.toISOString()
     },

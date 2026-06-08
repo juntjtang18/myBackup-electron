@@ -1,38 +1,35 @@
-const { loadSource, saveSource } = require('./metadataStore');
+const { registerBackupSource, updateBackupSource } = require('./backupSchema');
 const { createSourceRecord, validateSourceRecord } = require('./schema');
 
-async function registerSource(targetRoot, input, now = new Date()) {
+async function registerSource(appDataRoot, input, now = new Date()) {
+  const targetRoot = input.targetRoot || appDataRoot;
   const candidate = createSourceRecord(input, now);
-  const current = await loadSource(targetRoot, candidate.machineId, candidate.sourceId);
-
-  const merged = createSourceRecord({
-    ...current,
-    ...candidate,
-    createdAt: current ? current.createdAt : undefined,
-    lastCompletedScan: current ? current.lastCompletedScan : null,
-    lastCompletedAt: current ? current.lastCompletedAt : null,
-    updatedAt: now.toISOString()
+  const registered = await registerBackupSource(appDataRoot, {
+    ...input,
+    targetRoot,
+    machineId: candidate.machineId,
+    sourceId: candidate.sourceId
   }, now);
 
-  validateSourceRecord(merged);
-  await saveSource(targetRoot, merged);
-  return merged;
+  validateSourceRecord(registered);
+  return registered;
 }
 
-async function updateSourceScanState(targetRoot, machineId, sourceId, scanState, now = new Date()) {
-  const current = await loadSource(targetRoot, machineId, sourceId);
-  if (!current) {
-    throw new Error(`Source not found: ${machineId}/${sourceId}`);
-  }
+async function updateSourceScanState(appDataRoot, machineId, sourceId, scanState, now = new Date()) {
+  const targetRoot = scanState.targetRoot || appDataRoot;
+  const updated = await updateBackupSource(
+    appDataRoot,
+    targetRoot,
+    machineId,
+    sourceId,
+    (current) => ({
+      ...current,
+      lastCompletedScan: scanState.lastCompletedScan || current.lastCompletedScan,
+      lastCompletedAt: scanState.lastCompletedAt || current.lastCompletedAt
+    }),
+    now
+  );
 
-  const updated = createSourceRecord({
-    ...current,
-    lastCompletedScan: scanState.lastCompletedScan || current.lastCompletedScan,
-    lastCompletedAt: scanState.lastCompletedAt || current.lastCompletedAt,
-    updatedAt: now.toISOString()
-  }, now);
-
-  await saveSource(targetRoot, updated);
   return updated;
 }
 

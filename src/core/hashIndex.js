@@ -1,4 +1,4 @@
-const { deleteHashRecord, loadHashRecord, saveHashRecord } = require('./metadataStore');
+const { deleteFileIndexRecord, loadFileIndexRecord, saveFileIndexRecord } = require('./fileIndex');
 const { createHashRecord } = require('./schema');
 const { toPosixPath } = require('./layout');
 const { createLogger } = require('./logger');
@@ -183,11 +183,11 @@ function applyHashRecordUnregister(existing, input, now = new Date()) {
 
 async function registerHashRecord(targetRoot, input, now = new Date()) {
   return withRecordLock(input.fileHash, async () => {
-    const existing = await loadHashRecord(targetRoot, input.fileHash);
+    const existing = await loadFileIndexRecord(targetRoot, input.fileHash);
     const result = applyHashRecordRegistration(existing, input, now);
 
     if (result.status === 'deleted') {
-      await deleteHashRecord(targetRoot, input.fileHash);
+      await deleteFileIndexRecord(targetRoot, input.fileHash);
       return result;
     }
 
@@ -199,7 +199,7 @@ async function registerHashRecord(targetRoot, input, now = new Date()) {
       return result;
     }
 
-    await saveHashRecord(targetRoot, result.record);
+    await saveFileIndexRecord(targetRoot, result.record);
     logger.debug(result.status === 'created' ? 'Created hash record.' : 'Updated hash record.', {
       fileHash: input.fileHash,
       logicalPath: toPosixPath(input.logicalPath || ''),
@@ -211,16 +211,16 @@ async function registerHashRecord(targetRoot, input, now = new Date()) {
 }
 
 async function lookupHashRecord(targetRoot, fileHash) {
-  return loadHashRecord(targetRoot, fileHash);
+  return loadFileIndexRecord(targetRoot, fileHash);
 }
 
 async function unregisterHashRecord(targetRoot, input, now = new Date()) {
   return withRecordLock(input.fileHash, async () => {
-    const existing = await loadHashRecord(targetRoot, input.fileHash);
+    const existing = await loadFileIndexRecord(targetRoot, input.fileHash);
     const result = applyHashRecordUnregister(existing, input, now);
 
     if (result.status === 'deleted') {
-      await deleteHashRecord(targetRoot, input.fileHash);
+      await deleteFileIndexRecord(targetRoot, input.fileHash);
       return result;
     }
 
@@ -228,7 +228,7 @@ async function unregisterHashRecord(targetRoot, input, now = new Date()) {
       return result;
     }
 
-    await saveHashRecord(targetRoot, result.record);
+    await saveFileIndexRecord(targetRoot, result.record);
     return result;
   });
 }

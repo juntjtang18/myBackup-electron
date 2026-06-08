@@ -1,49 +1,24 @@
 const os = require('os');
+const { ensureBackupSchema, loadBackupMachine, saveBackupMachine } = require('./backupSchema');
 const {
-  loadAppConfig,
-  loadMachine,
-  saveAppConfig,
-  saveMachine
-} = require('./metadataStore');
-const {
-  createAppConfig,
   createMachineRecord,
-  validateAppConfig,
   validateMachineRecord
 } = require('./schema');
 
-async function ensureMachine(targetRoot, input = {}) {
-  const existingConfig = await loadAppConfig(targetRoot);
-
-  if (existingConfig) {
-    validateAppConfig(existingConfig);
-    const existingMachine = await loadMachine(targetRoot, existingConfig.machineId);
-    if (existingMachine) {
-      return existingMachine;
-    }
-  }
-
+async function ensureMachine(appDataRoot, input = {}) {
   const now = input.now || new Date();
-  const machine = createMachineRecord({
+  const schema = await ensureBackupSchema(appDataRoot, {
     machineId: input.machineId,
     displayName: input.displayName || os.hostname(),
     hostname: input.hostname || os.hostname(),
     platform: input.platform || os.platform(),
     seed: input.seed
   }, now);
-
-  const config = createAppConfig({
-    machineId: machine.machineId,
-    createdAt: existingConfig ? existingConfig.createdAt : undefined
-  }, now);
-
-  await saveMachine(targetRoot, machine);
-  await saveAppConfig(targetRoot, config);
-  return machine;
+  return schema.machine;
 }
 
-async function updateMachine(targetRoot, record, now = new Date()) {
-  const current = await loadMachine(targetRoot, record.machineId);
+async function updateMachine(appDataRoot, record, now = new Date()) {
+  const current = await loadBackupMachine(appDataRoot);
   const merged = createMachineRecord({
     ...current,
     ...record,
@@ -52,8 +27,7 @@ async function updateMachine(targetRoot, record, now = new Date()) {
   }, now);
 
   validateMachineRecord(merged);
-  await saveMachine(targetRoot, merged);
-  return merged;
+  return saveBackupMachine(appDataRoot, merged, now);
 }
 
 module.exports = {

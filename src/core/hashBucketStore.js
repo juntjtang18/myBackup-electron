@@ -1,6 +1,6 @@
 const fs = require('fs-extra');
 const path = require('path');
-const { hashPath, metadataRoot } = require('./layout');
+const { fileIndexRoot, legacyHashRecordPath } = require('./paths');
 const { readJsonIfExists, writeJsonAtomic } = require('./jsonStore');
 const { unpackHashRecord } = require('./hashRecordCodec');
 const {
@@ -20,7 +20,7 @@ function createEmptyBucket(prefix) {
 }
 
 async function readLegacyHashRecord(targetRoot, fileHash) {
-  const document = await readJsonIfExists(hashPath(targetRoot, fileHash));
+  const document = await readJsonIfExists(legacyHashRecordPath(targetRoot, fileHash));
   if (!document) {
     return null;
   }
@@ -70,8 +70,8 @@ async function saveHashRecord(targetRoot, record) {
   const bucket = await loadHashBucket(targetRoot, record.fileHash);
   bucket.records.set(recordSuffix(record.fileHash), record);
   await saveHashBucket(targetRoot, bucket);
-  if (await fs.pathExists(hashPath(targetRoot, record.fileHash))) {
-    await fs.remove(hashPath(targetRoot, record.fileHash));
+  if (await fs.pathExists(legacyHashRecordPath(targetRoot, record.fileHash))) {
+    await fs.remove(legacyHashRecordPath(targetRoot, record.fileHash));
   }
 }
 
@@ -80,11 +80,11 @@ async function deleteHashRecord(targetRoot, fileHash) {
   const suffix = recordSuffix(fileHash);
   bucket.records.delete(suffix);
   await saveHashBucket(targetRoot, bucket);
-  await fs.remove(hashPath(targetRoot, fileHash));
+  await fs.remove(legacyHashRecordPath(targetRoot, fileHash));
 }
 
 async function listHashRecords(targetRoot) {
-  const hashesRoot = path.join(metadataRoot(targetRoot), 'hashes');
+  const hashesRoot = fileIndexRoot(targetRoot);
   if (!(await fs.pathExists(hashesRoot))) {
     return [];
   }

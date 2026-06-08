@@ -1,12 +1,6 @@
-const path = require('path');
 const fs = require('fs-extra');
 const { readJsonIfExists, writeJsonAtomic } = require('./jsonStore');
-
-function getLocalConfigPath(appDataRoot) {
-  return path.join(path.resolve(appDataRoot), 'mybackup-ui.json');
-}
-
-const { normalizeTargets } = require('./targetConfig');
+const { appMetadataRoot, legacyLocalConfigPath, localConfigPath } = require('./paths');
 
 const DEFAULT_WORKER_POOLS = Object.freeze({
   hash: 6,
@@ -29,16 +23,17 @@ function normalizeWorkerPools(value = {}) {
 }
 
 async function loadLocalConfig(appDataRoot) {
-  const config = await readJsonIfExists(getLocalConfigPath(appDataRoot));
+  const config = await readJsonIfExists(localConfigPath(appDataRoot))
+    || await readJsonIfExists(legacyLocalConfigPath(appDataRoot));
   const base = config || {
+    targetRoot: null,
     logLevel: 'info',
     workerPools: DEFAULT_WORKER_POOLS,
     updatedAt: null
   };
   return {
-    logLevel: base.logLevel || 'info',
     targetRoot: base.targetRoot || null,
-    targets: normalizeTargets(base),
+    logLevel: base.logLevel || 'info',
     workerPools: normalizeWorkerPools(base.workerPools),
     updatedAt: base.updatedAt || null
   };
@@ -51,22 +46,30 @@ async function saveLocalConfig(appDataRoot, updates, now = new Date()) {
     ...updates,
     updatedAt: now.toISOString()
   };
-  await writeJsonAtomic(getLocalConfigPath(appDataRoot), nextConfig);
+  await fs.ensureDir(appMetadataRoot(appDataRoot));
+  await writeJsonAtomic(localConfigPath(appDataRoot), nextConfig);
   return nextConfig;
 }
 
 async function ensureLocalConfig(appDataRoot, now = new Date()) {
-  const configPath = getLocalConfigPath(appDataRoot);
+  const configPath = localConfigPath(appDataRoot);
   if (await fs.pathExists(configPath)) {
+    return loadLocalConfig(appDataRoot);
+  }
+  const legacyConfigPath = legacyLocalConfigPath(appDataRoot);
+  if (await fs.pathExists(legacyConfigPath)) {
+    const migrated = await loadLocalConfig(appDataRoot);
+    await saveLocalConfig(appDataRoot, migrated, now);
     return loadLocalConfig(appDataRoot);
   }
 
   const initialConfig = {
+    targetRoot: null,
     logLevel: 'info',
-    targets: [],
     workerPools: DEFAULT_WORKER_POOLS,
     updatedAt: now.toISOString()
   };
+  await fs.ensureDir(appMetadataRoot(appDataRoot));
   await writeJsonAtomic(configPath, initialConfig);
   return loadLocalConfig(appDataRoot);
 }
@@ -74,7 +77,7 @@ async function ensureLocalConfig(appDataRoot, now = new Date()) {
 module.exports = {
   DEFAULT_WORKER_POOLS,
   ensureLocalConfig,
-  getLocalConfigPath,
+  getLocalConfigPath: localConfigPath,
   loadLocalConfig,
   normalizeWorkerPools,
   saveLocalConfig

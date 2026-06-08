@@ -6,7 +6,7 @@ const {
 } = require('../src/progressPanel');
 
 describe('progress panel renderer', () => {
-  test('renders hash and copy workers into explicit separate panels', () => {
+  test('renders only the left hash panel', () => {
     const entry = {
       progress: {
         status: 'running',
@@ -61,23 +61,15 @@ describe('progress panel renderer', () => {
     });
 
     const hashPanelStart = html.indexOf('data-progress-pool="hash"');
-    const copyPanelStart = html.indexOf('data-progress-pool="copy"');
     expect(hashPanelStart).toBeGreaterThan(-1);
-    expect(copyPanelStart).toBeGreaterThan(hashPanelStart);
+    expect(html).not.toContain('data-progress-pool="copy"');
 
-    const hashPanelHtml = html.slice(hashPanelStart, copyPanelStart);
-    const copyPanelHtml = html.slice(copyPanelStart);
+    const hashPanelHtml = html.slice(hashPanelStart);
     expect(hashPanelHtml).toContain('hash-only.txt');
     expect(hashPanelHtml).toContain('hash-feed.txt');
     expect(hashPanelHtml).not.toContain('copy-only.txt');
     expect(hashPanelHtml).not.toContain('copy-handoff.txt');
     expect(hashPanelHtml).not.toContain('should-not-render-in-hash.txt');
-
-    expect(copyPanelHtml).toContain('copy-only.txt');
-    expect(copyPanelHtml).toContain('copy-handoff.txt');
-    expect(copyPanelHtml).not.toContain('hash-only.txt');
-    expect(copyPanelHtml).not.toContain('hash-feed.txt');
-    expect(copyPanelHtml).not.toContain('should-not-render-in-copy.txt');
   });
 
   test('normalizes missing or invalid pool data without sharing queues', () => {
@@ -99,7 +91,7 @@ describe('progress panel renderer', () => {
     expect(normalized.copyProgress.queue.feedItems).toEqual([]);
   });
 
-  test('does not render hash worker target logicalPath in the hash panel', () => {
+  test('does not render any copy worker content in the hash-only panel', () => {
     const entry = {
       progress: {
         workers: {
@@ -134,17 +126,16 @@ describe('progress panel renderer', () => {
       progressKey: '/backup-target::machine-a::source-a'
     });
     const hashPanelStart = html.indexOf('data-progress-pool="hash"');
-    const copyPanelStart = html.indexOf('data-progress-pool="copy"');
-    const hashPanelHtml = html.slice(hashPanelStart, copyPanelStart);
-    const copyPanelHtml = html.slice(copyPanelStart);
+    const hashPanelHtml = html.slice(hashPanelStart);
 
     expect(hashPanelHtml).not.toContain('documents/target-looking-copy-path.txt');
     expect(hashPanelHtml).not.toContain('copied');
+    expect(hashPanelHtml).not.toContain('documents/copy-panel-path.txt');
     expect(hashPanelHtml).toContain('idle');
-    expect(copyPanelHtml).toContain('documents/copy-panel-path.txt');
+    expect(html).not.toContain('data-progress-pool="copy"');
   });
 
-  test('pause state with indexed hash workers does not move copy workers into hash panel', () => {
+  test('pause state keeps the single panel hash-only', () => {
     const entry = {
       progress: {
         status: 'paused',
@@ -197,18 +188,14 @@ describe('progress panel renderer', () => {
       progressKey: '/backup-target::machine-a::source-a'
     });
     const hashPanelStart = html.indexOf('data-progress-pool="hash"');
-    const copyPanelStart = html.indexOf('data-progress-pool="copy"');
-    const hashPanelHtml = html.slice(hashPanelStart, copyPanelStart);
-    const copyPanelHtml = html.slice(copyPanelStart);
+    const hashPanelHtml = html.slice(hashPanelStart);
 
     expect(hashPanelHtml).toContain('indexed existing');
     expect(hashPanelHtml).toContain('indexed 5.3 KB / 5.3 KB');
     expect(hashPanelHtml).not.toContain('C1');
     expect(hashPanelHtml).not.toContain('Copy Workers');
     expect(hashPanelHtml).not.toContain('Copy Queue');
-    expect(copyPanelHtml).toContain('C1');
-    expect(copyPanelHtml).toContain('No copy backlog right now.');
-    expect(copyPanelHtml).not.toContain('indexed existing');
+    expect(html).not.toContain('data-progress-pool="copy"');
   });
 
   test('forces immediate rendering for short-lived copy events', () => {

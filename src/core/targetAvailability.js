@@ -119,9 +119,9 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function loadCurrentMachineContextWithReviveRetry(targetPath, platformLabel, availability) {
+async function loadCurrentMachineContextWithReviveRetry(targetPath, appDataRoot, platformLabel, availability) {
   const maxAttempts = 5;
-  let context = await loadCurrentMachineContext(targetPath);
+  let context = await loadCurrentMachineContext(targetPath, { appDataRoot });
   for (let attempt = 1; attempt < maxAttempts && (context.sources || []).length === 0 && availability.mountPath; attempt += 1) {
     logger.info(`${platformLabel} target revived; retrying source context load.`, {
       targetRoot: targetPath,
@@ -130,7 +130,7 @@ async function loadCurrentMachineContextWithReviveRetry(targetPath, platformLabe
       maxAttempts
     });
     await sleep(150 * attempt);
-    const retryContext = await loadCurrentMachineContext(targetPath);
+    const retryContext = await loadCurrentMachineContext(targetPath, { appDataRoot });
     if ((retryContext.sources || []).length > 0 || (!context.machine && retryContext.machine)) {
       context = retryContext;
     }
@@ -150,7 +150,7 @@ async function loadCurrentMachineContextWithReviveRetry(targetPath, platformLabe
   return context;
 }
 
-async function createAvailableTargetDashboardEntry(target, platform, mountedRoots, platformLabel) {
+async function createAvailableTargetDashboardEntry(target, appDataRoot, platform, mountedRoots, platformLabel) {
   const availability = checkTargetAvailability(target.path, mountedRoots, platform);
   if (!availability.available) {
     return {
@@ -166,7 +166,7 @@ async function createAvailableTargetDashboardEntry(target, platform, mountedRoot
   }
 
   try {
-    const context = await loadCurrentMachineContextWithReviveRetry(target.path, platformLabel, availability);
+    const context = await loadCurrentMachineContextWithReviveRetry(target.path, appDataRoot, platformLabel, availability);
     return {
       id: target.id,
       path: target.path,
@@ -356,8 +356,8 @@ function createDarwinTargetAvailabilityMonitor(options = {}) {
     await refreshMountedRoots();
   }
 
-  async function buildTargetDashboardEntry(target) {
-    return createAvailableTargetDashboardEntry(target, 'darwin', mountedRoots, 'macOS');
+  async function buildTargetDashboardEntry(target, appDataRoot) {
+    return createAvailableTargetDashboardEntry(target, appDataRoot, 'darwin', mountedRoots, 'macOS');
   }
 
   return {
@@ -475,8 +475,8 @@ function createLinuxTargetAvailabilityMonitor(options = {}) {
     await refreshMountedRoots();
   }
 
-  async function buildTargetDashboardEntry(target) {
-    return createAvailableTargetDashboardEntry(target, 'linux', mountedRoots, 'Linux');
+  async function buildTargetDashboardEntry(target, appDataRoot) {
+    return createAvailableTargetDashboardEntry(target, appDataRoot, 'linux', mountedRoots, 'Linux');
   }
 
   return {
@@ -602,8 +602,8 @@ function createWindowsTargetAvailabilityMonitor(options = {}) {
     await refreshMountedRoots();
   }
 
-  async function buildTargetDashboardEntry(target) {
-    return createAvailableTargetDashboardEntry(target, 'win32', mountedRoots, 'Windows');
+  async function buildTargetDashboardEntry(target, appDataRoot) {
+    return createAvailableTargetDashboardEntry(target, appDataRoot, 'win32', mountedRoots, 'Windows');
   }
 
   return {
@@ -633,11 +633,21 @@ function createTargetAvailabilityMonitor(platformInput, options = {}) {
   return createDarwinTargetAvailabilityMonitor(options);
 }
 
-async function buildTargetDashboardEntry(target, platform = process.platform, mountedRoots = new Set()) {
+async function buildTargetDashboardEntry(target, appDataRootOrPlatform, platformOrMountedRoots = process.platform, maybeMountedRoots = new Set()) {
+  let appDataRoot = appDataRootOrPlatform;
+  let platform = platformOrMountedRoots;
+  let mountedRoots = maybeMountedRoots;
+
+  if (typeof appDataRootOrPlatform === 'string' && (appDataRootOrPlatform === 'darwin' || appDataRootOrPlatform === 'linux' || appDataRootOrPlatform === 'win32')) {
+    appDataRoot = undefined;
+    platform = appDataRootOrPlatform;
+    mountedRoots = platformOrMountedRoots instanceof Set ? platformOrMountedRoots : new Set();
+  }
+
   const platformLabel = normalizePlatform(platform) === 'darwin'
     ? 'macOS'
     : (normalizePlatform(platform) === 'linux' ? 'Linux' : 'Windows');
-  return createAvailableTargetDashboardEntry(target, platform, mountedRoots, platformLabel);
+  return createAvailableTargetDashboardEntry(target, appDataRoot, platform, mountedRoots, platformLabel);
 }
 
 module.exports = {

@@ -11,6 +11,7 @@ const {
 } = require('./schema');
 const { normalizeCursor } = require('./cursor/cursorState');
 const {
+  backupSourcesPath,
   backupSchemaPath,
   configPath,
   legacyLocalConfigPath,
@@ -23,6 +24,7 @@ const { createTargetId, normalizeTargets } = require('./targetConfig');
 
 const BACKUP_SCHEMA_VERSION = 1;
 const SCHEMA_MIGRATION_VERSION = 1;
+const TARGET_SOURCE_CATALOG_VERSION = 1;
 
 function nowIso(now = new Date()) {
   return now.toISOString();
@@ -53,7 +55,14 @@ function createBackupTargetEntry(input, now = new Date()) {
     id: input.id || createTargetId(resolvedPath),
     path: resolvedPath,
     collapsed: Boolean(input.collapsed),
-    addedAt: input.addedAt || nowIso(now),
+    addedAt: input.addedAt || nowIso(now)
+  };
+}
+
+function createTargetSourceCatalog(input = {}, now = new Date()) {
+  return {
+    version: TARGET_SOURCE_CATALOG_VERSION,
+    updatedAt: input.updatedAt || nowIso(now),
     sources: Array.isArray(input.sources)
       ? input.sources.map((source) => createBackupSourceEntry(source, now))
       : []
@@ -98,6 +107,22 @@ function validateBackupSchema(document) {
   return document;
 }
 
+function validateTargetSourceCatalog(document) {
+  if (!document || typeof document !== 'object') {
+    throw new Error('Target source catalog must be an object.');
+  }
+  if (document.version !== TARGET_SOURCE_CATALOG_VERSION) {
+    throw new Error(`Unsupported target source catalog version: ${document.version}`);
+  }
+  if (!Array.isArray(document.sources)) {
+    throw new Error('Target source catalog sources must be an array.');
+  }
+  for (const source of document.sources) {
+    validateSourceRecord(source);
+  }
+  return document;
+}
+
 async function loadBackupSchema(appDataRoot) {
   return readJsonIfExists(backupSchemaPath(appDataRoot), validateBackupSchema);
 }
@@ -120,6 +145,19 @@ async function saveSchemaMigrationMarker(appDataRoot, marker, now = new Date()) 
     importedSourceCount: Number(marker.importedSourceCount || 0)
   };
   await writeJsonAtomic(schemaMigrationMarkerPath(appDataRoot), normalized);
+  return normalized;
+}
+
+async function loadTargetSourceCatalog(targetRoot) {
+  return readJsonIfExists(backupSourcesPath(targetRoot), validateTargetSourceCatalog);
+}
+
+async function saveTargetSourceCatalog(targetRoot, catalog, now = new Date()) {
+  const normalized = createTargetSourceCatalog({
+    ...catalog,
+    updatedAt: nowIso(now)
+  }, now);
+  await writeJsonAtomic(backupSourcesPath(targetRoot), normalized);
   return normalized;
 }
 
@@ -187,15 +225,53 @@ async function loadLegacyTargetSources(targetRoot, now = new Date()) {
   };
 }
 
+function mergeSourceEntries(existingSources = [], incomingSources = [], now = new Date()) {
+  const entries = new Map();
+  for (const source of existingSources) {
+    entries.set(`${source.machineId}:${source.sourceId}`, createBackupSourceEntry(source, now));
+  }
+  for (const source of incomingSources) {
+    entries.set(`${source.machineId}:${source.sourceId}`, createBackupSourceEntry(source, now));
+  }
+  return Array.from(entries.values()).sort((left, right) => left.sourcePath.localeCompare(right.sourcePath));
+}
+
+async function migrateEmbeddedTargetSources(appDataRoot, schema, now = new Date()) {
+  let changed = false;
+
+  for (const target of schema.targets || []) {
+    if (!Array.isArray(target.sources) || target.sources.length === 0) {
+      continue;
+    }
+    const currentCatalog = await loadTargetSourceCatalog(target.path);
+    const mergedSources = mergeSourceEntries(currentCatalog?.sources || [], target.sources, now);
+    await saveTargetSourceCatalog(target.path, { sources: mergedSources }, now);
+    changed = true;
+  }
+
+  if (!changed) {
+    return schema;
+  }
+
+  const normalizedSchema = createBackupSchema({
+    ...schema,
+    targets: (schema.targets || []).map((target) => createBackupTargetEntry(target, now)),
+    updatedAt: nowIso(now)
+  }, now);
+  await saveBackupSchema(appDataRoot, normalizedSchema, now);
+  return normalizedSchema;
+}
+
 async function ensureBackupSchema(appDataRoot, machineInput = {}, now = new Date()) {
   const existing = await loadBackupSchema(appDataRoot);
   if (existing) {
-    return existing;
+    return migrateEmbeddedTargetSources(appDataRoot, existing, now);
   }
 
   const legacyTargets = await loadLegacyTargets(appDataRoot);
   let migratedMachine = null;
   const migratedTargets = [];
+  const migratedTargetSources = [];
   let importedSourceCount = 0;
 
   for (const target of legacyTargets) {
@@ -203,10 +279,10 @@ async function ensureBackupSchema(appDataRoot, machineInput = {}, now = new Date
     if (!migratedMachine && legacy.machine) {
       migratedMachine = legacy.machine;
     }
-    migratedTargets.push(createBackupTargetEntry({
-      ...target,
-      sources: legacy.sources
-    }, now));
+    migratedTargets.push(createBackupTargetEntry(target, now));
+    if (legacy.sources.length > 0) {
+      migratedTargetSources.push({ targetRoot: target.path, sources: legacy.sources });
+    }
     importedSourceCount += legacy.sources.length;
   }
 
@@ -215,9 +291,11 @@ async function ensureBackupSchema(appDataRoot, machineInput = {}, now = new Date
     if (legacySelf.machine || (legacySelf.sources || []).length > 0) {
       migratedMachine = migratedMachine || legacySelf.machine;
       migratedTargets.push(createBackupTargetEntry({
-        path: appDataRoot,
-        sources: legacySelf.sources
+        path: appDataRoot
       }, now));
+      if (legacySelf.sources.length > 0) {
+        migratedTargetSources.push({ targetRoot: appDataRoot, sources: legacySelf.sources });
+      }
       importedSourceCount += legacySelf.sources.length;
     }
   }
@@ -234,6 +312,11 @@ async function ensureBackupSchema(appDataRoot, machineInput = {}, now = new Date
     migration
   }, now);
   await saveBackupSchema(appDataRoot, schema, now);
+  for (const targetSources of migratedTargetSources) {
+    await saveTargetSourceCatalog(targetSources.targetRoot, {
+      sources: targetSources.sources
+    }, now);
+  }
   await saveSchemaMigrationMarker(appDataRoot, migration, now);
   return schema;
 }
@@ -243,8 +326,8 @@ function findTarget(schema, targetRoot) {
   return (schema.targets || []).find((target) => target.path === resolvedPath) || null;
 }
 
-function findSource(target, machineId, sourceId) {
-  return (target?.sources || []).find((source) => (
+function findSource(sources, machineId, sourceId) {
+  return (sources || []).find((source) => (
     source.machineId === machineId && source.sourceId === sourceId
   )) || null;
 }
@@ -332,74 +415,79 @@ async function loadBackupSource(appDataRoot, targetRoot, machineId, sourceId) {
   if (!target) {
     return null;
   }
-  return findSource(target, machineId, sourceId);
+  const catalog = await loadTargetSourceCatalog(target.path);
+  return findSource(catalog?.sources || [], machineId, sourceId);
 }
 
 async function registerBackupSource(appDataRoot, input, now = new Date()) {
   const targetRoot = path.resolve(input.targetRoot || appDataRoot);
-  let registered = null;
   await mutateBackupSchema(appDataRoot, (schema) => {
-    let target = findTarget(schema, targetRoot);
-    if (!target) {
-      target = createBackupTargetEntry({ path: targetRoot }, now);
+    if (!findTarget(schema, targetRoot)) {
+      const target = createBackupTargetEntry({ path: targetRoot }, now);
       schema.targets.push(target);
     }
-
-    const candidate = createBackupSourceEntry(input, now);
-    const existing = findSource(target, candidate.machineId, candidate.sourceId);
-    const scanState = existing ? existing.scanState : createBackupScanState({}, now);
-    registered = createBackupSourceEntry({
-      ...existing,
-      ...candidate,
-      machineId: candidate.machineId,
-      sourceId: candidate.sourceId,
-      createdAt: existing ? existing.createdAt : candidate.createdAt,
-      lastCompletedScan: existing ? existing.lastCompletedScan : candidate.lastCompletedScan,
-      lastCompletedAt: existing ? existing.lastCompletedAt : candidate.lastCompletedAt,
-      scanState
-    }, now);
-
-    target.sources = (target.sources || []).filter((source) => !(
-      source.machineId === candidate.machineId && source.sourceId === candidate.sourceId
-    ));
-    target.sources.push(registered);
-    target.sources.sort((left, right) => left.sourcePath.localeCompare(right.sourcePath));
     return schema;
   }, now);
+
+  let registered = null;
+  const currentCatalog = await loadTargetSourceCatalog(targetRoot);
+  const draft = createTargetSourceCatalog(currentCatalog || {}, now);
+  const candidate = createBackupSourceEntry(input, now);
+  const existing = findSource(draft.sources, candidate.machineId, candidate.sourceId);
+  const scanState = existing ? existing.scanState : createBackupScanState({}, now);
+  registered = createBackupSourceEntry({
+    ...existing,
+    ...candidate,
+    machineId: candidate.machineId,
+    sourceId: candidate.sourceId,
+    createdAt: existing ? existing.createdAt : candidate.createdAt,
+    lastCompletedScan: existing ? existing.lastCompletedScan : candidate.lastCompletedScan,
+    lastCompletedAt: existing ? existing.lastCompletedAt : candidate.lastCompletedAt,
+    scanState
+  }, now);
+  draft.sources = draft.sources.filter((source) => !(
+    source.machineId === candidate.machineId && source.sourceId === candidate.sourceId
+  ));
+  draft.sources.push(registered);
+  draft.sources.sort((left, right) => left.sourcePath.localeCompare(right.sourcePath));
+  await saveTargetSourceCatalog(targetRoot, draft, now);
   return registered;
 }
 
 async function updateBackupSource(appDataRoot, targetRoot, machineId, sourceId, updater, now = new Date()) {
-  let updated = null;
-  await mutateBackupSchema(appDataRoot, (schema) => {
-    const target = findTarget(schema, targetRoot);
-    if (!target) {
-      throw new Error(`Unknown backup target: ${path.resolve(targetRoot)}`);
-    }
-    const existing = findSource(target, machineId, sourceId);
-    if (!existing) {
-      throw new Error(`Source not found: ${machineId}/${sourceId}`);
-    }
+  const resolvedTargetRoot = await requireBackupTarget(appDataRoot, targetRoot);
+  const currentCatalog = await loadTargetSourceCatalog(resolvedTargetRoot);
+  const draft = createTargetSourceCatalog(currentCatalog || {}, now);
+  const existing = findSource(draft.sources, machineId, sourceId);
+  if (!existing) {
+    throw new Error(`Source not found: ${machineId}/${sourceId}`);
+  }
 
-    const next = typeof updater === 'function' ? updater(existing) : { ...existing, ...updater };
-    updated = createBackupSourceEntry({
-      ...existing,
-      ...next,
-      machineId,
-      sourceId,
-      createdAt: existing.createdAt,
-      updatedAt: nowIso(now),
-      scanState: next.scanState || existing.scanState
-    }, now);
-
-    target.sources = target.sources.map((source) => (
-      source.machineId === machineId && source.sourceId === sourceId
-        ? updated
-        : source
-    ));
-    return schema;
+  const next = typeof updater === 'function' ? updater(existing) : { ...existing, ...updater };
+  const updated = createBackupSourceEntry({
+    ...existing,
+    ...next,
+    machineId,
+    sourceId,
+    createdAt: existing.createdAt,
+    updatedAt: nowIso(now),
+    scanState: next.scanState || existing.scanState
   }, now);
+
+  draft.sources = draft.sources.map((source) => (
+    source.machineId === machineId && source.sourceId === sourceId
+      ? updated
+      : source
+  ));
+  draft.sources.sort((left, right) => left.sourcePath.localeCompare(right.sourcePath));
+  await saveTargetSourceCatalog(resolvedTargetRoot, draft, now);
   return updated;
+}
+
+async function listTargetBackupSources(appDataRoot, targetRoot) {
+  const resolvedTargetRoot = await requireBackupTarget(appDataRoot, targetRoot);
+  const catalog = await loadTargetSourceCatalog(resolvedTargetRoot);
+  return (catalog?.sources || []).slice().sort((left, right) => left.sourcePath.localeCompare(right.sourcePath));
 }
 
 async function loadBackupScanState(appDataRoot, targetRoot, machineId, sourceId) {
@@ -432,10 +520,12 @@ module.exports = {
   createBackupTargetEntry,
   ensureBackupSchema,
   listBackupTargets,
+  listTargetBackupSources,
   loadBackupMachine,
   loadBackupScanState,
   loadBackupSchema,
   loadBackupSource,
+  loadTargetSourceCatalog,
   registerBackupSource,
   removeBackupTarget,
   requireBackupTarget,
@@ -443,6 +533,7 @@ module.exports = {
   saveBackupMachine,
   saveBackupScanState,
   saveBackupSchema,
+  saveTargetSourceCatalog,
   setBackupTargetCollapsed,
   updateBackupSource,
   validateBackupSchema

@@ -1,13 +1,13 @@
-const { ensureBackupSchema } = require('./backupSchema');
+const {
+  ensureBackupSchema,
+  listTargetBackupSources,
+  loadBackupMachine
+} = require('./backupSchema');
 
 async function listSourcesForMachine(targetRoot, machineId, options = {}) {
   const appDataRoot = options.appDataRoot || targetRoot;
-  const schema = await ensureBackupSchema(appDataRoot);
-  const target = (schema.targets || []).find((entry) => entry.path === targetRoot);
-  if (!target) {
-    return [];
-  }
-  return (target.sources || [])
+  const sources = await listTargetBackupSources(appDataRoot, targetRoot).catch(() => []);
+  return sources
     .filter((source) => source.machineId === machineId)
     .sort((left, right) => left.sourcePath.localeCompare(right.sourcePath));
 }
@@ -15,14 +15,15 @@ async function listSourcesForMachine(targetRoot, machineId, options = {}) {
 async function loadCurrentMachineContext(targetRoot, options = {}) {
   const appDataRoot = options.appDataRoot || targetRoot;
   const schema = await ensureBackupSchema(appDataRoot);
-  const target = (schema.targets || []).find((entry) => entry.path === targetRoot);
+  const machine = await loadBackupMachine(appDataRoot);
+  const sources = await listTargetBackupSources(appDataRoot, targetRoot).catch(() => []);
   return {
     appConfig: {
       ...schema,
-      machineId: schema.machine ? schema.machine.machineId : null
+      machineId: machine ? machine.machineId : null
     },
-    machine: schema.machine || null,
-    sources: target ? (target.sources || []).slice().sort((left, right) => left.sourcePath.localeCompare(right.sourcePath)) : []
+    machine: machine || null,
+    sources
   };
 }
 

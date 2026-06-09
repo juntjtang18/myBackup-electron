@@ -2,6 +2,7 @@ const path = require('path');
 
 const APP_METADATA_ROOT = '.mybackup';
 const TARGET_METADATA_ROOT = '.mybackup';
+const TARGET_SOURCES_FILE = '.backup_source.json';
 const BACKUPS_ROOT = 'Backups';
 const BACKUPS_MACHINES_ROOT = path.posix.join(BACKUPS_ROOT, 'Machines');
 const IMAGES_ROOT = 'Images';
@@ -37,6 +38,10 @@ function legacyLocalConfigPath(appDataRoot) {
 
 function resolveTargetRoot(targetRoot) {
   return path.resolve(targetRoot);
+}
+
+function backupSourcesPath(targetRoot) {
+  return path.join(resolveTargetRoot(targetRoot), TARGET_SOURCES_FILE);
 }
 
 function targetMetadataRoot(targetRoot) {
@@ -105,9 +110,11 @@ module.exports = {
   BACKUPS_MACHINES_ROOT,
   BACKUPS_ROOT,
   IMAGES_ROOT,
+  TARGET_SOURCES_FILE,
   TARGET_METADATA_ROOT,
   VIDEOS_ROOT,
   appMetadataRoot,
+  backupSourcesPath,
   backupSchemaPath,
   schemaMigrationMarkerPath,
   configPath,

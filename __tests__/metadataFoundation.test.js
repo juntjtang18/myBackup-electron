@@ -2,7 +2,7 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs-extra');
 const { createFolderId, createMachineId, createScanId, createSourceId } = require('../src/core/ids');
-const { backupSchemaPath, legacyLocalConfigPath, schemaMigrationMarkerPath } = require('../src/core/paths');
+const { backupSchemaPath, backupSourcesPath, legacyLocalConfigPath, schemaMigrationMarkerPath } = require('../src/core/paths');
 const {
   configPath,
   errorReportPath,
@@ -2107,17 +2107,19 @@ dist/**
       path: targetRoot,
       collapsed: true
     });
-    expect(migrated.targets[0].sources).toHaveLength(1);
-    expect(migrated.targets[0].sources[0]).toMatchObject({
+    expect(await fs.pathExists(backupSourcesPath(targetRoot))).toBe(true);
+    const migratedContext = await loadCurrentMachineContext(targetRoot, { appDataRoot });
+    expect(migratedContext.sources).toHaveLength(1);
+    expect(migratedContext.sources[0]).toMatchObject({
       machineId: machine.machineId,
       sourceId: source.sourceId,
       sourcePath: source.sourcePath
     });
-    expect(migrated.targets[0].sources[0].scanState).toMatchObject({
+    expect(migratedContext.sources[0].scanState).toMatchObject({
       activeGeneration: '20260609-091000',
       status: 'paused'
     });
-    expect(migrated.targets[0].sources[0].scanState.resumeCursor).toMatchObject({
+    expect(migratedContext.sources[0].scanState.resumeCursor).toMatchObject({
       relativePath: 'docs',
       folderHash: 'docs-71ab8b6afb'
     });

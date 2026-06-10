@@ -1,8 +1,8 @@
 const path = require('path');
 
-const APP_METADATA_ROOT = '.mybackup';
+const APP_METADATA_ROOT = 'data';
 const TARGET_METADATA_ROOT = '.mybackup';
-const TARGET_SOURCES_FILE = '.backup_source.json';
+const TARGET_SOURCES_FILE = 'backup_source.json';
 const BACKUPS_ROOT = 'Backups';
 const BACKUPS_MACHINES_ROOT = path.posix.join(BACKUPS_ROOT, 'Machines');
 const IMAGES_ROOT = 'Images';
@@ -17,11 +17,11 @@ function resolveAppDataRoot(appDataRoot) {
 }
 
 function appMetadataRoot(appDataRoot) {
-  return path.join(resolveAppDataRoot(appDataRoot), APP_METADATA_ROOT);
+  return resolveAppDataRoot(appDataRoot);
 }
 
 function backupSchemaPath(appDataRoot) {
-  return path.join(appMetadataRoot(appDataRoot), 'schema.json');
+  return path.join(appMetadataRoot(appDataRoot), 'backup_target.json');
 }
 
 function schemaMigrationMarkerPath(appDataRoot) {
@@ -41,7 +41,11 @@ function resolveTargetRoot(targetRoot) {
 }
 
 function backupSourcesPath(targetRoot) {
-  return path.join(resolveTargetRoot(targetRoot), TARGET_SOURCES_FILE);
+  return path.join(targetMetadataRoot(targetRoot), TARGET_SOURCES_FILE);
+}
+
+function legacyBackupSourcesPath(targetRoot) {
+  return path.join(resolveTargetRoot(targetRoot), '.backup_source.json');
 }
 
 function targetMetadataRoot(targetRoot) {
@@ -65,6 +69,10 @@ function sourceSnapshotPath(targetRoot, machineId, sourceId) {
 }
 
 function fileIndexRoot(targetRoot) {
+  return path.join(targetMetadataRoot(targetRoot), 'index');
+}
+
+function legacyFileIndexRoot(targetRoot) {
   return path.join(targetMetadataRoot(targetRoot), 'hashes');
 }
 
@@ -73,11 +81,11 @@ function fileIndexBucketPath(targetRoot, ...segments) {
 }
 
 function legacyHashRecordPath(targetRoot, fileHash) {
-  return fileIndexBucketPath(targetRoot, fileHash.slice(0, 2), fileHash.slice(2, 4), `${fileHash}.json`);
+  return path.join(legacyFileIndexRoot(targetRoot), fileHash.slice(0, 2), fileHash.slice(2, 4), `${fileHash}.json`);
 }
 
 function hashPath(targetRoot, fileHash) {
-  return legacyHashRecordPath(targetRoot, fileHash);
+  return fileIndexBucketPath(targetRoot, fileHash.slice(0, 2), fileHash.slice(2, 4), `${fileHash}.json`);
 }
 
 function scanCurrentPath(targetRoot, machineId, sourceId) {
@@ -122,6 +130,8 @@ module.exports = {
   fileIndexBucketPath,
   fileIndexRoot,
   hashPath,
+  legacyBackupSourcesPath,
+  legacyFileIndexRoot,
   legacyHashRecordPath,
   legacyLocalConfigPath,
   localConfigPath,

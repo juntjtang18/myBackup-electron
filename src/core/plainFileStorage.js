@@ -1,9 +1,10 @@
 const path = require('path');
 const fs = require('fs-extra');
 const crypto = require('crypto');
+const { once } = require('events');
 const { getTempRoot } = require('./metadataStore');
 const { resolveTargetRoot, toPosixPath } = require('./layout');
-const { hashFile } = require('./hashService');
+const { createPauseCancelledResult, hashFile, isPauseCancelledResult } = require('./hashService');
 
 function resolveLogicalPath(targetRoot, logicalPath) {
   return path.join(resolveTargetRoot(targetRoot), ...toPosixPath(logicalPath).split('/'));
@@ -12,6 +13,11 @@ function resolveLogicalPath(targetRoot, logicalPath) {
 function createTempFilePath(targetRoot, jobId, logicalPath) {
   const extension = path.extname(logicalPath || '');
   return path.join(getTempRoot(targetRoot), `${jobId}${extension || '.tmp'}`);
+}
+
+function createStagingTempPath(targetRoot, tempKey, extensionSource = '') {
+  const extension = path.extname(extensionSource || '');
+  return path.join(getTempRoot(targetRoot), `${tempKey}${extension || '.tmp'}`);
 }
 
 async function verifyStoredPlainFile(targetRoot, contentRef, expectedHash, expectedSize) {
@@ -36,14 +42,23 @@ async function verifyStoredPlainFile(targetRoot, contentRef, expectedHash, expec
 async function writePlainFile(targetRoot, input) {
   const absoluteDestination = resolveLogicalPath(targetRoot, input.logicalPath);
   const tempPath = createTempFilePath(targetRoot, input.jobId, input.logicalPath);
+  const shouldAbort = typeof input.shouldAbort === 'function' ? input.shouldAbort : () => false;
 
   await fs.ensureDir(path.dirname(absoluteDestination));
   await fs.ensureDir(path.dirname(tempPath));
   const sourceStat = await fs.stat(input.sourcePath);
   const expectedSize = input.expectedSize !== undefined ? input.expectedSize : sourceStat.size;
 
+  if (shouldAbort()) {
+    return createPauseCancelledResult();
+  }
+
   if (input.expectedHash && typeof input.onProgress !== 'function') {
     await fs.copyFile(input.sourcePath, tempPath);
+    if (shouldAbort()) {
+      await fs.remove(tempPath);
+      return createPauseCancelledResult();
+    }
     const copiedBytes = (await fs.stat(tempPath)).size;
     if (copiedBytes !== expectedSize) {
       await fs.remove(tempPath);
@@ -77,19 +92,24 @@ async function writePlainFile(targetRoot, input) {
   const writeStream = fs.createWriteStream(tempPath, {
     flags: 'w'
   });
+  readStream.on('error', () => {});
+  writeStream.on('error', () => {});
 
   let copiedBytes = 0;
+  let aborted = false;
+  try {
+    for await (const chunk of readStream) {
+      if (shouldAbort()) {
+        aborted = true;
+        readStream.destroy();
+        break;
+      }
 
-  await new Promise((resolve, reject) => {
-    function fail(error) {
-      readStream.destroy();
-      writeStream.destroy();
-      reject(error);
-    }
-
-    readStream.on('data', (chunk) => {
       copiedBytes += chunk.length;
       hasher.update(chunk);
+      if (!writeStream.write(chunk)) {
+        await once(writeStream, 'drain');
+      }
       if (typeof input.onProgress === 'function') {
         input.onProgress({
           phase: 'copy',
@@ -98,12 +118,26 @@ async function writePlainFile(targetRoot, input) {
           logicalPath: toPosixPath(input.logicalPath)
         });
       }
-    });
-    readStream.on('error', fail);
-    writeStream.on('error', fail);
-    writeStream.on('close', resolve);
-    readStream.pipe(writeStream);
-  });
+    }
+
+    if (!aborted) {
+      await new Promise((resolve, reject) => {
+        writeStream.on('error', reject);
+        writeStream.end(resolve);
+      });
+    }
+  } catch (error) {
+    await fs.remove(tempPath);
+    readStream.destroy();
+    writeStream.destroy();
+    throw error;
+  }
+
+  if (aborted) {
+    writeStream.destroy();
+    await fs.remove(tempPath);
+    return createPauseCancelledResult();
+  }
 
   const actualHash = hasher.digest('hex');
   if (copiedBytes !== expectedSize) {
@@ -125,6 +159,118 @@ async function writePlainFile(targetRoot, input) {
       type: 'plain',
       path: toPosixPath(input.logicalPath)
     }
+  };
+}
+
+async function stageFileWhileHashing(targetRoot, input) {
+  const tempPath = createStagingTempPath(targetRoot, input.tempKey, input.extension || input.sourcePath);
+  const shouldAbort = typeof input.shouldAbort === 'function' ? input.shouldAbort : () => false;
+  const sourceStat = await fs.stat(input.sourcePath);
+  const expectedSize = input.expectedSize !== undefined ? input.expectedSize : sourceStat.size;
+  await fs.ensureDir(path.dirname(tempPath));
+  const hasher = crypto.createHash('sha256');
+  const readStream = fs.createReadStream(input.sourcePath, {
+    highWaterMark: input.chunkSize || 1024 * 1024
+  });
+  const writeStream = fs.createWriteStream(tempPath, {
+    flags: 'w'
+  });
+
+  if (shouldAbort()) {
+    return createPauseCancelledResult();
+  }
+
+  let copiedBytes = 0;
+  let aborted = false;
+  try {
+    for await (const chunk of readStream) {
+      if (shouldAbort()) {
+        aborted = true;
+        readStream.destroy();
+        break;
+      }
+
+      copiedBytes += chunk.length;
+      hasher.update(chunk);
+      if (!writeStream.write(chunk)) {
+        await once(writeStream, 'drain');
+      }
+      if (typeof input.onProgress === 'function') {
+        input.onProgress({
+          phase: 'stage',
+          copiedBytes,
+          totalBytes: expectedSize
+        });
+        if (shouldAbort()) {
+          aborted = true;
+          readStream.destroy();
+          break;
+        }
+      }
+    }
+
+    if (!aborted) {
+      await new Promise((resolve, reject) => {
+        writeStream.on('error', reject);
+        writeStream.end(resolve);
+      });
+    }
+  } catch (error) {
+    await fs.remove(tempPath);
+    readStream.destroy();
+    writeStream.destroy();
+    throw error;
+  }
+
+  if (aborted) {
+    writeStream.destroy();
+    await fs.remove(tempPath);
+    return createPauseCancelledResult();
+  }
+
+  if (copiedBytes !== expectedSize) {
+    await fs.remove(tempPath);
+    throw new Error(`Copied file size mismatch for staging ${input.sourcePath}`);
+  }
+
+  await fs.utimes(tempPath, sourceStat.atime, sourceStat.mtime);
+
+  return {
+    tempPath,
+    fileHash: hasher.digest('hex'),
+    size: copiedBytes,
+    mtimeMs: sourceStat.mtimeMs
+  };
+}
+
+async function discardStagedFile(staged) {
+  if (!staged || !staged.tempPath) {
+    return;
+  }
+  await fs.remove(staged.tempPath);
+}
+
+async function finalizeStagedFile(targetRoot, staged, logicalPath) {
+  const destination = resolveLogicalPath(targetRoot, logicalPath);
+  await fs.ensureDir(path.dirname(destination));
+  if (await fs.pathExists(destination)) {
+    const existingHash = await hashFile(destination);
+    if (existingHash === staged.fileHash) {
+      await fs.remove(staged.tempPath);
+      return {
+        type: 'plain',
+        path: toPosixPath(logicalPath)
+      };
+    }
+
+    await fs.remove(staged.tempPath);
+    throw new Error(`Destination already exists with different content for ${logicalPath}`);
+  }
+
+  await fs.move(staged.tempPath, destination, { overwrite: false });
+  return {
+    type: 'plain',
+    path: toPosixPath(logicalPath)
   };
 }
 
@@ -179,9 +325,14 @@ async function cleanupTempFiles(targetRoot) {
 module.exports = {
   cleanupTempFiles,
   createTempFilePath,
+  createStagingTempPath,
+  discardStagedFile,
   finalizePlainFile,
+  finalizeStagedFile,
+  isPauseCancelledResult,
   resolveLogicalPath,
   restorePlainFile,
+  stageFileWhileHashing,
   verifyStoredPlainFile,
   writePlainFile
 };

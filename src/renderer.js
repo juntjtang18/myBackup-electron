@@ -126,13 +126,11 @@ function summarizeQueue(queue) {
     pending: queue?.pending || 0,
     active: queue?.active || 0,
     waitingItems: (queue?.waitingItems || []).slice(0, 5),
-    activeItems: (queue?.activeItems || []).slice(0, 5),
-    feedItems: (queue?.feedItems || []).slice(0, 5),
-    handoffItems: (queue?.handoffItems || []).slice(0, 5)
+    activeItems: (queue?.activeItems || []).slice(0, 5)
   };
 }
 
-function traceProgressRenderSplit(key, payload) {
+function traceProgressRender(key, payload) {
   if (!payload?.progress || state.progressPayloadTraceCount >= PROGRESS_TRACE_LOG_LIMIT) {
     return;
   }
@@ -151,11 +149,9 @@ function traceProgressRenderSplit(key, payload) {
       sourceRelativePath: payload.event.sourceRelativePath || null
     } : null,
     status: payload.progress.status || null,
-    hashWorkers: workers.filter((worker) => worker.pool === 'hash').map(summarizeProgressWorker),
-    copyWorkers: workers.filter((worker) => worker.pool === 'copy').map(summarizeProgressWorker),
-    invalidWorkers: workers.filter((worker) => worker.pool !== 'hash' && worker.pool !== 'copy').map(summarizeProgressWorker),
-    hashQueue: summarizeQueue(payload.progress.queues?.hash),
-    copyQueue: summarizeQueue(payload.progress.queues?.copy)
+    fileWorkers: workers.filter((worker) => worker.pool === 'file').map(summarizeProgressWorker),
+    invalidWorkers: workers.filter((worker) => worker.pool !== 'file').map(summarizeProgressWorker),
+    fileQueue: summarizeQueue(payload.progress.queues?.file)
   });
 }
 
@@ -166,41 +162,23 @@ function traceProgressPanelRendered(key, entry, html) {
 
   state.progressRenderTraceCount += 1;
   const normalized = window.myBackupProgressPanel.normalizeProgress(entry);
-  const hashPanelStart = html.indexOf('data-progress-pool="hash"');
-  const copyPanelStart = html.indexOf('data-progress-pool="copy"');
-  const hashPanelHtml = hashPanelStart >= 0 && copyPanelStart > hashPanelStart
-    ? html.slice(hashPanelStart, copyPanelStart)
-    : '';
-  const copyPanelHtml = copyPanelStart >= 0 ? html.slice(copyPanelStart) : '';
+  const filePanelStart = html.indexOf('data-progress-pool="file"');
+  const filePanelHtml = filePanelStart >= 0 ? html.slice(filePanelStart) : '';
 
   appendLog('info', 'Progress trace: renderer generated panels.', {
     key,
     traceIndex: state.progressRenderTraceCount,
     sequence: entry.trace?.sequence || null,
     status: normalized.summary.status,
-    hashWorkerCount: normalized.hashProgress.workers.length,
-    copyWorkerCount: normalized.copyProgress.workers.length,
-    hashQueueCounts: {
-      waiting: normalized.hashProgress.queue.waitingItems.length,
-      active: normalized.hashProgress.queue.activeItems.length,
-      feed: normalized.hashProgress.queue.feedItems.length,
-      handoff: normalized.hashProgress.queue.handoffItems.length
-    },
-    copyQueueCounts: {
-      waiting: normalized.copyProgress.queue.waitingItems.length,
-      active: normalized.copyProgress.queue.activeItems.length,
-      feed: normalized.copyProgress.queue.feedItems.length,
-      handoff: normalized.copyProgress.queue.handoffItems.length
+    fileWorkerCount: normalized.fileProgress?.workers.length || 0,
+    fileQueueCounts: {
+      waiting: normalized.fileProgress?.queue.waitingItems.length || 0,
+      active: normalized.fileProgress?.queue.activeItems.length || 0
     },
     htmlChecks: {
-      hasHashPanel: hashPanelStart >= 0,
-      hasCopyPanel: copyPanelStart >= 0,
-      hashPanelContainsCopyQueueLabel: hashPanelHtml.includes('Copy Queue'),
-      hashPanelContainsCopyWorkerId: /C\d+/.test(hashPanelHtml),
-      hashPanelContainsHandoffLabel: hashPanelHtml.includes('Hashed, awaiting copy'),
-      copyPanelContainsHashQueueLabel: copyPanelHtml.includes('Hash Queue'),
-      copyPanelContainsHashWorkerId: /H\d+/.test(copyPanelHtml),
-      copyPanelContainsFeedLabel: copyPanelHtml.includes('Awaiting hash')
+      hasFilePanel: filePanelStart >= 0,
+      filePanelContainsWorkerId: /W\d+/.test(filePanelHtml),
+      filePanelContainsQueueLabel: filePanelHtml.includes('Queue')
     }
   });
 }
@@ -863,12 +841,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         eventPool: payload.event?.pool || null,
         status: payload.progress?.status || null,
         workerCount: Object.keys(payload.progress?.workers || {}).length,
-        hashQueueDepth: payload.progress?.queues?.hash?.depth || 0,
-        copyQueueDepth: payload.progress?.queues?.copy?.depth || 0
+        fileQueueDepth: payload.progress?.queues?.file?.depth || 0
       });
     }
     state.backupProgress[key] = payload;
-    traceProgressRenderSplit(key, payload);
+    traceProgressRender(key, payload);
     if (payload.progress && payload.progress.status !== 'running' && payload.progress.status !== 'pausing') {
       delete state.pauseRequests[key];
       delete state.lastProgressTraceAt[key];

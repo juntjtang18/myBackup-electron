@@ -1,5 +1,5 @@
 const path = require('path');
-const { fileIndexRoot } = require('./paths');
+const { fileIndexRoot, legacyFileIndexRoot } = require('./paths');
 
 const SEGMENT_LENGTH = 3;
 const BUCKET_SEGMENT_COUNT = 5;
@@ -32,6 +32,18 @@ function rebuildHash(prefix, suffix) {
 }
 
 function bucketPath(targetRoot, fileHash) {
+  return bucketPathForExtension(targetRoot, fileHash, '.index', fileIndexRoot);
+}
+
+function currentLegacyBucketPath(targetRoot, fileHash) {
+  return bucketPathForExtension(targetRoot, fileHash, '.indx', fileIndexRoot);
+}
+
+function legacyBucketPath(targetRoot, fileHash) {
+  return bucketPathForExtension(targetRoot, fileHash, '.indx', legacyFileIndexRoot);
+}
+
+function bucketPathForExtension(targetRoot, fileHash, extension, rootResolver) {
   const prefix = bucketPrefix(fileHash);
   const segments = [];
   for (let index = 0; index < BUCKET_SEGMENT_COUNT; index += 1) {
@@ -39,12 +51,12 @@ function bucketPath(targetRoot, fileHash) {
   }
 
   return path.join(
-    fileIndexRoot(targetRoot),
+    rootResolver(targetRoot),
     segments[0],
     segments[1],
     segments[2],
     segments[3],
-    `${segments[4]}.indx`
+    `${segments[4]}${extension}`
   );
 }
 
@@ -59,6 +71,8 @@ module.exports = {
   bucketKey,
   bucketPath,
   bucketPrefix,
+  currentLegacyBucketPath,
+  legacyBucketPath,
   rebuildHash,
   recordSuffix,
   sampleHashForBucket

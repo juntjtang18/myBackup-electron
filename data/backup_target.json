@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "machine": {
+    "schemaVersion": 1,
+    "machineId": "macbook-pro.local-e98619af",
+    "displayName": "mybackup-electron",
+    "hostname": "MacBook-Pro.local",
+    "platform": "darwin",
+    "createdAt": "2026-06-10T06:30:28.970Z",
+    "updatedAt": "2026-06-10T06:30:28.970Z"
+  },
+  "targets": [
+    {
+      "id": "97938548d6f4",
+      "path": "/Volumes/5T/Backup",
+      "collapsed": false,
+      "addedAt": "2026-06-04T02:48:14.252Z"
+    }
+  ],
+  "migration": {
+    "version": 1,
+    "migratedAt": "2026-06-10T06:30:28.970Z",
+    "mode": "fresh",
+    "importedTargetCount": 0,
+    "importedSourceCount": 0
+  },
+  "createdAt": "2026-06-10T06:30:28.970Z",
+  "updatedAt": "2026-06-10T06:35:34.338Z"
+}

@@ -1,12 +1,14 @@
 const fs = require('fs-extra');
 const path = require('path');
-const { fileIndexRoot, legacyHashRecordPath } = require('./paths');
+const { fileIndexRoot, hashPath, legacyFileIndexRoot, legacyHashRecordPath } = require('./paths');
 const { readJsonIfExists, writeJsonAtomic } = require('./jsonStore');
 const { unpackHashRecord } = require('./hashRecordCodec');
 const {
   bucketKey,
   bucketPath,
   bucketPrefix,
+  currentLegacyBucketPath,
+  legacyBucketPath,
   recordSuffix,
   sampleHashForBucket
 } = require('./hashBucketLayout');
@@ -20,7 +22,8 @@ function createEmptyBucket(prefix) {
 }
 
 async function readLegacyHashRecord(targetRoot, fileHash) {
-  const document = await readJsonIfExists(legacyHashRecordPath(targetRoot, fileHash));
+  const document = await readJsonIfExists(hashPath(targetRoot, fileHash))
+    || await readJsonIfExists(legacyHashRecordPath(targetRoot, fileHash));
   if (!document) {
     return null;
   }
@@ -30,7 +33,9 @@ async function readLegacyHashRecord(targetRoot, fileHash) {
 
 async function loadHashBucket(targetRoot, fileHash) {
   const prefix = bucketPrefix(fileHash);
-  const document = await readJsonIfExists(bucketPath(targetRoot, fileHash));
+  const document = await readJsonIfExists(bucketPath(targetRoot, fileHash))
+    || await readJsonIfExists(currentLegacyBucketPath(targetRoot, fileHash))
+    || await readJsonIfExists(legacyBucketPath(targetRoot, fileHash));
   if (!document) {
     return createEmptyBucket(prefix);
   }
@@ -40,10 +45,18 @@ async function loadHashBucket(targetRoot, fileHash) {
 
 async function saveHashBucket(targetRoot, bucket) {
   const bucketFilePath = bucketPath(targetRoot, sampleHashForBucket(bucket.prefix));
+  const currentLegacyBucketFilePath = currentLegacyBucketPath(targetRoot, sampleHashForBucket(bucket.prefix));
+  const oldBucketFilePath = legacyBucketPath(targetRoot, sampleHashForBucket(bucket.prefix));
 
   if (bucket.records.size === 0) {
     if (await fs.pathExists(bucketFilePath)) {
       await fs.remove(bucketFilePath);
+    }
+    if (await fs.pathExists(currentLegacyBucketFilePath)) {
+      await fs.remove(currentLegacyBucketFilePath);
+    }
+    if (await fs.pathExists(oldBucketFilePath)) {
+      await fs.remove(oldBucketFilePath);
     }
     return;
   }
@@ -53,6 +66,12 @@ async function saveHashBucket(targetRoot, bucket) {
     Array.from(bucket.records.values())
   );
   await writeJsonAtomic(bucketFilePath, packed, { compact: true });
+  if (await fs.pathExists(currentLegacyBucketFilePath)) {
+    await fs.remove(currentLegacyBucketFilePath);
+  }
+  if (await fs.pathExists(oldBucketFilePath)) {
+    await fs.remove(oldBucketFilePath);
+  }
 }
 
 async function loadHashRecord(targetRoot, fileHash) {
@@ -70,6 +89,9 @@ async function saveHashRecord(targetRoot, record) {
   const bucket = await loadHashBucket(targetRoot, record.fileHash);
   bucket.records.set(recordSuffix(record.fileHash), record);
   await saveHashBucket(targetRoot, bucket);
+  if (await fs.pathExists(hashPath(targetRoot, record.fileHash))) {
+    await fs.remove(hashPath(targetRoot, record.fileHash));
+  }
   if (await fs.pathExists(legacyHashRecordPath(targetRoot, record.fileHash))) {
     await fs.remove(legacyHashRecordPath(targetRoot, record.fileHash));
   }
@@ -80,17 +102,26 @@ async function deleteHashRecord(targetRoot, fileHash) {
   const suffix = recordSuffix(fileHash);
   bucket.records.delete(suffix);
   await saveHashBucket(targetRoot, bucket);
+  await fs.remove(hashPath(targetRoot, fileHash));
   await fs.remove(legacyHashRecordPath(targetRoot, fileHash));
 }
 
 async function listHashRecords(targetRoot) {
-  const hashesRoot = fileIndexRoot(targetRoot);
-  if (!(await fs.pathExists(hashesRoot))) {
-    return [];
-  }
-
   const records = [];
   const seen = new Set();
+  const roots = [];
+  const currentRoot = fileIndexRoot(targetRoot);
+  const legacyRoot = legacyFileIndexRoot(targetRoot);
+
+  if (await fs.pathExists(currentRoot)) {
+    roots.push(currentRoot);
+  }
+  if (legacyRoot !== currentRoot && await fs.pathExists(legacyRoot)) {
+    roots.push(legacyRoot);
+  }
+  if (roots.length === 0) {
+    return [];
+  }
 
   async function walk(currentPath) {
     const entries = await fs.readdir(currentPath, { withFileTypes: true });
@@ -105,7 +136,7 @@ async function listHashRecords(targetRoot) {
         continue;
       }
 
-      if (entry.name.endsWith('.indx')) {
+      if (entry.name.endsWith('.index') || entry.name.endsWith('.indx')) {
         const document = await readJsonIfExists(entryPath);
         if (!document) {
           continue;
@@ -138,7 +169,9 @@ async function listHashRecords(targetRoot) {
     }
   }
 
-  await walk(hashesRoot);
+  for (const root of roots) {
+    await walk(root);
+  }
   records.sort((left, right) => left.fileHash.localeCompare(right.fileHash));
   return records;
 }

@@ -15,6 +15,7 @@ const {
   backupSchemaPath,
   configPath,
   legacyLocalConfigPath,
+  legacyBackupSourcesPath,
   machinePath,
   scanCurrentPath,
   schemaMigrationMarkerPath,
@@ -149,7 +150,8 @@ async function saveSchemaMigrationMarker(appDataRoot, marker, now = new Date()) 
 }
 
 async function loadTargetSourceCatalog(targetRoot) {
-  return readJsonIfExists(backupSourcesPath(targetRoot), validateTargetSourceCatalog);
+  return readJsonIfExists(backupSourcesPath(targetRoot), validateTargetSourceCatalog)
+    || readJsonIfExists(legacyBackupSourcesPath(targetRoot), validateTargetSourceCatalog);
 }
 
 async function saveTargetSourceCatalog(targetRoot, catalog, now = new Date()) {

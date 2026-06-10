@@ -38,6 +38,7 @@
 
   function normalizeQueue(queue, pool) {
     const isHash = pool === 'hash';
+    const isFile = pool === 'file';
     const normalized = {
       depth: Number(queue?.depth || 0),
       pending: Number(queue?.pending || 0),
@@ -45,7 +46,7 @@
       waitingItems: Array.isArray(queue?.waitingItems) ? queue.waitingItems : [],
       activeItems: Array.isArray(queue?.activeItems) ? queue.activeItems : [],
       feedItems: isHash && Array.isArray(queue?.feedItems) ? queue.feedItems : [],
-      handoffItems: !isHash && Array.isArray(queue?.handoffItems) ? queue.handoffItems : []
+      handoffItems: !isHash && !isFile && Array.isArray(queue?.handoffItems) ? queue.handoffItems : []
     };
     return normalized;
   }
@@ -62,7 +63,7 @@
       pool,
       state: worker.state || 'idle',
       sourceRelativePath: worker.sourceRelativePath || null,
-      logicalPath: pool === 'copy' ? (worker.logicalPath || null) : null,
+      logicalPath: (pool === 'copy' || pool === 'file') ? (worker.logicalPath || null) : null,
       lastAction: worker.lastAction || null,
       copiedBytes: Number(worker.copiedBytes || 0),
       totalBytes: Number(worker.totalBytes || 0),
@@ -85,6 +86,35 @@
 
   function createProgressViewModel(entry) {
     const progress = entry?.progress || {};
+    const hasFilePool = Object.values(progress.workers || {}).some((worker) => worker?.pool === 'file')
+      || Boolean(progress.queues?.file);
+    if (hasFilePool) {
+      return {
+        summary: {
+          status: progress.status || 'running',
+          pausePhase: progress.pausePhase || null,
+          filesProcessed: Number(progress.filesProcessed || 0),
+          filesCopied: Number(progress.filesCopied || 0),
+          throughputBytesPerSecond: Number(
+            progress.throughputBytesPerSecond
+            || progress.copyThroughputBytesPerSecond
+            || progress.hashThroughputBytesPerSecond
+            || 0
+          )
+        },
+        pools: {
+          file: {
+            pool: 'file',
+            title: 'Workers',
+            queueTitle: 'Queue',
+            emptyWorkersText: 'No workers active.',
+            emptyQueueText: 'No backlog right now.',
+            workers: normalizeWorkers(progress.workers, 'file'),
+            queue: normalizeQueue(progress.queues?.file, 'file')
+          }
+        }
+      };
+    }
     return {
       summary: {
         status: progress.status || 'running',
@@ -119,6 +149,23 @@
 
   function normalizeProgress(entry) {
     const view = createProgressViewModel(entry);
+    if (view.pools.file) {
+      return {
+        summary: view.summary,
+        fileProgress: {
+          workers: view.pools.file.workers.map((worker, index) => ({ worker, slot: index + 1 })),
+          queue: view.pools.file.queue
+        },
+        hashProgress: {
+          workers: [],
+          queue: normalizeQueue(null, 'hash')
+        },
+        copyProgress: {
+          workers: [],
+          queue: normalizeQueue(null, 'copy')
+        }
+      };
+    }
     return {
       summary: view.summary,
       hashProgress: {
@@ -133,7 +180,7 @@
   }
 
   function formatWorkerLabel(pool, workerId) {
-    const prefix = pool === 'hash' ? 'H' : 'C';
+    const prefix = pool === 'hash' ? 'H' : (pool === 'copy' ? 'C' : 'W');
     const id = String(workerId || '');
     const match = id.match(/(\d+)$/);
     return match ? `${prefix}${match[1]}` : `${prefix}`;
@@ -169,10 +216,15 @@
     return worker.logicalPath || worker.sourceRelativePath || worker.lastAction || (worker.state === 'idle' ? 'idle' : worker.state);
   }
 
+  function fileWorkerDisplayName(worker) {
+    return worker.sourceRelativePath || worker.logicalPath || worker.lastAction || (worker.state === 'idle' ? 'idle' : worker.state);
+  }
+
   function renderWorkerLine(pool, worker) {
     const isHash = pool === 'hash';
+    const isFile = pool === 'file';
     const percent = workerProgress(worker);
-    const displayName = isHash ? hashWorkerDisplayName(worker) : copyWorkerDisplayName(worker);
+    const displayName = isHash ? hashWorkerDisplayName(worker) : (isFile ? fileWorkerDisplayName(worker) : copyWorkerDisplayName(worker));
     const byteLabel = isHash ? hashWorkerByteLabel(worker) : 'copied';
     const isIdle = worker.state === 'idle' && !worker.sourceRelativePath && (!worker.logicalPath || isHash);
     return `
@@ -212,6 +264,12 @@
   }
 
   function queueSections(pool, queue) {
+    if (pool === 'file') {
+      return [
+        { title: 'Waiting', items: queue.waitingItems || [], waiting: true },
+        { title: 'Processing', items: queue.activeItems || [] }
+      ].filter((section) => section.items.length > 0);
+    }
     if (pool === 'hash') {
       return [
         { title: 'Awaiting hash', items: queue.feedItems || [] },
@@ -257,15 +315,19 @@
   }
 
   function renderSummary(summary) {
-    const hashThroughput = Math.round((summary.hashThroughputBytesPerSecond / (1024 * 1024)) * 10) / 10;
-    const copyThroughput = Math.round((summary.copyThroughputBytesPerSecond / (1024 * 1024)) * 10) / 10;
+    const throughput = Number(
+      summary.throughputBytesPerSecond
+      || summary.copyThroughputBytesPerSecond
+      || summary.hashThroughputBytesPerSecond
+      || 0
+    );
+    const throughputMb = Math.round((throughput / (1024 * 1024)) * 10) / 10;
     return `
       <div class="progress-summary">
         <span><strong>Status</strong> ${escapeHtml(summary.status)}${summary.pausePhase ? ` (${escapeHtml(summary.pausePhase)})` : ''}</span>
         <span><strong>Files</strong> ${summary.filesProcessed}</span>
         <span><strong>Copied</strong> ${summary.filesCopied}</span>
-        <span><strong>Hash</strong> ${hashThroughput} MB/s</span>
-        <span><strong>Copy</strong> ${copyThroughput} MB/s</span>
+        <span><strong>Speed</strong> ${throughputMb} MB/s</span>
       </div>
     `;
   }
@@ -285,7 +347,7 @@
           <div class="source-progress-panel" id="progress-panel-${safeKey}">
             ${renderSummary(view.summary)}
             <div class="progress-pools">
-              ${renderPoolPanel(view.pools.hash, safeKey)}
+              ${renderPoolPanel(view.pools.file || view.pools.hash, safeKey)}
             </div>
           </div>
         </td>
@@ -300,7 +362,8 @@
       || eventType === 'backup-completed'
       || eventType === 'backup-started'
       || eventType === 'copy-progress'
-      || (eventPool === 'copy' && (eventType === 'task-started' || eventType === 'task-completed'))
+      || eventType === 'file-progress'
+      || ((eventPool === 'copy' || eventPool === 'file') && (eventType === 'task-started' || eventType === 'task-completed'))
       || payload?.progress?.status === 'paused';
   }
 

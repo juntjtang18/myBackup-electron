@@ -1,0 +1,9 @@
+{
+  "targetRoot": "/Volumes/5T/Backup",
+  "logLevel": "off",
+  "workerPools": {
+    "hash": 6,
+    "copy": 6
+  },
+  "updatedAt": "2026-06-10T06:47:34.335Z"
+}

@@ -86,7 +86,7 @@ async function restoreLogicalTree(targetRoot, input) {
       }
 
       const restorePath = path.join(destinationRoot, ...toPosixPath(relativePath).split('/'));
-      await restorePlainFile(targetRoot, { type: 'plain', path: logicalPath }, restorePath);
+      await restorePlainFile(targetRoot, record.content, restorePath);
       restoredPaths.add(logicalPath);
       summary.restoredFiles += 1;
     }
@@ -106,7 +106,7 @@ async function restoreLogicalFile(targetRoot, input) {
         continue;
       }
 
-      await restorePlainFile(targetRoot, { type: 'plain', path: candidatePath }, destinationPath);
+      await restorePlainFile(targetRoot, record.content, destinationPath);
       return {
         logicalPath,
         restored: true

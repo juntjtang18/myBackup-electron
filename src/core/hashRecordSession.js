@@ -1,5 +1,5 @@
 const fs = require('fs-extra');
-const { hashPath } = require('./layout');
+const { hashPath, legacyHashRecordPath } = require('./layout');
 const {
   bucketKey,
   loadHashBucket,
@@ -112,7 +112,10 @@ function createHashRecordSession(targetRoot) {
 
       if (bucket.legacyDeletes.size > 0) {
         await Promise.all(Array.from(bucket.legacyDeletes).map((fileHash) => (
-          fs.remove(hashPath(targetRoot, fileHash)).then(() => {
+          Promise.allSettled([
+            fs.remove(hashPath(targetRoot, fileHash)),
+            fs.remove(legacyHashRecordPath(targetRoot, fileHash))
+          ]).then(() => {
             deletes += 1;
           })
         )));

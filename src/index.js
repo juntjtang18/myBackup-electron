@@ -75,9 +75,7 @@ function summarizeProgressForTrace(payload) {
     pending: queue?.pending || 0,
     active: queue?.active || 0,
     waitingItems: (queue?.waitingItems || []).slice(0, 8),
-    activeItems: (queue?.activeItems || []).slice(0, 8),
-    feedItems: (queue?.feedItems || []).slice(0, 8),
-    handoffItems: (queue?.handoffItems || []).slice(0, 8)
+    activeItems: (queue?.activeItems || []).slice(0, 8)
   });
   return {
     sequence: payload.trace?.sequence || null,
@@ -89,16 +87,14 @@ function summarizeProgressForTrace(payload) {
       sourceRelativePath: payload.event.sourceRelativePath || null
     } : null,
     status: payload.progress?.status || null,
-    hashWorkers: workers.filter((worker) => worker.pool === 'hash').map(summarizeWorker),
-    copyWorkers: workers.filter((worker) => worker.pool === 'copy').map(summarizeWorker),
-    invalidWorkers: workers.filter((worker) => worker.pool !== 'hash' && worker.pool !== 'copy').map(summarizeWorker),
-    hashQueue: summarizeQueue(payload.progress?.queues?.hash),
-    copyQueue: summarizeQueue(payload.progress?.queues?.copy)
+    fileWorkers: workers.filter((worker) => worker.pool === 'file').map(summarizeWorker),
+    invalidWorkers: workers.filter((worker) => worker.pool !== 'file').map(summarizeWorker),
+    fileQueue: summarizeQueue(payload.progress?.queues?.file)
   };
 }
 
 function getAppDataRoot() {
-  return app.getPath('userData');
+  return path.resolve(__dirname, '..', 'data');
 }
 
 function getDefaultMachineInput() {

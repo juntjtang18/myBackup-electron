@@ -14,7 +14,79 @@
       "id": "97938548d6f4",
       "path": "/Volumes/5T/Backup",
       "collapsed": false,
-      "addedAt": "2026-06-04T02:48:14.252Z"
+      "addedAt": "2026-06-04T02:48:14.252Z",
+      "sources": [
+        {
+          "schemaVersion": 1,
+          "machineId": "mybackup-electron-c52ee58e",
+          "sourceId": "documents-0cf0ec50",
+          "sourcePath": "/Users/James/Documents",
+          "organizeMedia": false,
+          "mergeEnabled": true,
+          "mergeKey": "documents",
+          "watchEnabled": true,
+          "backupIntervalMinutes": null,
+          "baselineAt": "2026-06-13T06:14:20.702Z",
+          "watchState": {
+            "dirtyRef": "watch/documents-0cf0ec50.dirty.json",
+            "needsRescan": false,
+            "lastEventAt": null
+          },
+          "cursor": {
+            "relativePath": null,
+            "status": null,
+            "updatedAt": null
+          },
+          "sourceSizeBytes": 6988655022,
+          "backupSizeBytes": 6988655022,
+          "lastCompletedAt": "2026-06-13T16:53:17.073Z",
+          "createdAt": "2026-06-02T04:18:46.753Z",
+          "updatedAt": "2026-06-13T16:53:17.073Z",
+          "scanState": {
+            "status": "completed",
+            "activeGeneration": "20260610-064603",
+            "startedAt": "2026-06-10T06:46:03.869Z",
+            "completedAt": "2026-06-10T06:47:36.186Z",
+            "updatedAt": "2026-06-10T06:47:36.186Z",
+            "resumeCursor": null
+          }
+        },
+        {
+          "schemaVersion": 1,
+          "machineId": "mybackup-electron-c52ee58e",
+          "sourceId": "documents-214492f7",
+          "sourcePath": "/Users/James/My Cloud/Documents",
+          "organizeMedia": false,
+          "mergeEnabled": false,
+          "mergeKey": null,
+          "watchEnabled": true,
+          "backupIntervalMinutes": null,
+          "baselineAt": "2026-06-13T06:36:58.178Z",
+          "watchState": {
+            "dirtyRef": "watch/documents-214492f7.dirty.json",
+            "needsRescan": false,
+            "lastEventAt": null
+          },
+          "cursor": {
+            "relativePath": null,
+            "status": null,
+            "updatedAt": null
+          },
+          "sourceSizeBytes": 6148,
+          "backupSizeBytes": 6148,
+          "lastCompletedAt": "2026-06-13T16:24:20.545Z",
+          "createdAt": "2026-06-02T02:53:05.666Z",
+          "updatedAt": "2026-06-13T16:24:20.545Z",
+          "scanState": {
+            "status": "completed",
+            "activeGeneration": "20260602-032015",
+            "startedAt": "2026-06-02T03:20:15.252Z",
+            "completedAt": "2026-06-02T03:21:01.506Z",
+            "updatedAt": "2026-06-02T03:21:01.506Z",
+            "resumeCursor": null
+          }
+        }
+      ]
     }
   ],
   "migration": {
@@ -25,5 +97,5 @@
     "importedSourceCount": 0
   },
   "createdAt": "2026-06-10T06:30:28.970Z",
-  "updatedAt": "2026-06-10T06:35:34.338Z"
+  "updatedAt": "2026-06-13T16:53:17.073Z"
 }

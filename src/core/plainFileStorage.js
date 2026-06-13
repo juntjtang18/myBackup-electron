@@ -20,6 +20,13 @@ function createStagingTempPath(targetRoot, tempKey, extensionSource = '') {
   return path.join(getTempRoot(targetRoot), `${tempKey}${extension || '.tmp'}`);
 }
 
+async function applySourceTimes(targetPath, sourceTimes) {
+  if (!sourceTimes || !sourceTimes.atime || !sourceTimes.mtime) {
+    return;
+  }
+  await fs.utimes(targetPath, sourceTimes.atime, sourceTimes.mtime);
+}
+
 async function verifyStoredPlainFile(targetRoot, contentRef, expectedHash, expectedSize) {
   const absolutePath = resolveLogicalPath(targetRoot, contentRef.path);
   if (!(await fs.pathExists(absolutePath))) {
@@ -37,6 +44,14 @@ async function verifyStoredPlainFile(targetRoot, contentRef, expectedHash, expec
   }
 
   return true;
+}
+
+async function statStoredPlainFile(targetRoot, logicalPath) {
+  const absolutePath = resolveLogicalPath(targetRoot, logicalPath);
+  if (!(await fs.pathExists(absolutePath))) {
+    return null;
+  }
+  return fs.stat(absolutePath);
 }
 
 async function writePlainFile(targetRoot, input) {
@@ -78,6 +93,10 @@ async function writePlainFile(targetRoot, input) {
       tempPath,
       finalPath: absoluteDestination,
       expectedHash: input.expectedHash,
+      sourceTimes: {
+        atime: sourceStat.atime,
+        mtime: sourceStat.mtime
+      },
       content: {
         type: 'plain',
         path: toPosixPath(input.logicalPath)
@@ -155,6 +174,10 @@ async function writePlainFile(targetRoot, input) {
     tempPath,
     finalPath: absoluteDestination,
     expectedHash: input.expectedHash || actualHash,
+    sourceTimes: {
+      atime: sourceStat.atime,
+      mtime: sourceStat.mtime
+    },
     content: {
       type: 'plain',
       path: toPosixPath(input.logicalPath)
@@ -239,7 +262,11 @@ async function stageFileWhileHashing(targetRoot, input) {
     tempPath,
     fileHash: hasher.digest('hex'),
     size: copiedBytes,
-    mtimeMs: sourceStat.mtimeMs
+    mtimeMs: sourceStat.mtimeMs,
+    sourceTimes: {
+      atime: sourceStat.atime,
+      mtime: sourceStat.mtime
+    }
   };
 }
 
@@ -268,6 +295,7 @@ async function finalizeStagedFile(targetRoot, staged, logicalPath) {
   }
 
   await fs.move(staged.tempPath, destination, { overwrite: false });
+  await applySourceTimes(destination, staged.sourceTimes);
   return {
     type: 'plain',
     path: toPosixPath(logicalPath)
@@ -293,6 +321,7 @@ async function finalizePlainFile(targetRoot, pendingWrite) {
   }
 
   await fs.move(pendingWrite.tempPath, destination, { overwrite: false });
+  await applySourceTimes(destination, pendingWrite.sourceTimes);
   return {
     type: 'plain',
     path: pendingWrite.content.path
@@ -333,6 +362,7 @@ module.exports = {
   resolveLogicalPath,
   restorePlainFile,
   stageFileWhileHashing,
+  statStoredPlainFile,
   verifyStoredPlainFile,
   writePlainFile
 };

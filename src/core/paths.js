@@ -95,10 +95,6 @@ function sourcePath(targetRoot, machineId, sourceId) {
   return path.join(targetMetadataRoot(targetRoot), 'sources', machineId, `${sourceId}.json`);
 }
 
-function sourceSnapshotPath(targetRoot, machineId, sourceId) {
-  return path.join(targetMetadataRoot(targetRoot), 'source-state', machineId, `${sourceId}.json`);
-}
-
 function fileIndexRoot(targetRoot) {
   return path.join(targetMetadataRoot(targetRoot), 'index');
 }
@@ -177,7 +173,6 @@ module.exports = {
   runStateRoot,
   scanCurrentPath,
   sourcePath,
-  sourceSnapshotPath,
   targetMetadataRoot,
   tempRoot,
   toPosixPath,

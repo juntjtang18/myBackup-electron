@@ -24,6 +24,12 @@ function progressKey(targetRoot, machineId, sourceId) {
   return `${targetRoot}::${machineId}::${sourceId}`;
 }
 
+function clearBackupUiState(key) {
+  delete state.backupProgress[key];
+  delete state.pauseRequests[key];
+  delete state.lastProgressTraceAt[key];
+}
+
 function progressKeyFromPayload(payload) {
   return progressKey(payload.targetRoot, payload.machineId, payload.sourceId);
 }
@@ -190,6 +196,25 @@ function formatTimestamp(value) {
 
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return '-';
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let current = bytes / 1024;
+  let unitIndex = 0;
+  while (current >= 1024 && unitIndex < units.length - 1) {
+    current /= 1024;
+    unitIndex += 1;
+  }
+  const rounded = current >= 10 ? current.toFixed(0) : current.toFixed(1);
+  return `${rounded} ${units[unitIndex]}`;
 }
 
 function formatLogEntryPlain(entry) {
@@ -365,26 +390,45 @@ function renderTargetSourcesTable(target) {
     const activeProgress = state.backupProgress[key];
     const pauseRequested = state.pauseRequests[key];
     const isPausing = activeProgress?.progress?.status === 'pausing';
+    const pausedCursor = source.cursor?.status === 'paused';
+    const missingSourceSize = source.sourceSizeBytes === null || source.sourceSizeBytes === undefined;
+    const requiresFullBackup = !source.baselineAt
+      || missingSourceSize
+      || Boolean(source.watchState?.needsRescan);
+    const sourceStatus = activeProgress
+      ? (isPausing ? 'pausing' : (activeProgress.progress?.status || 'running'))
+      : (pausedCursor ? 'paused' : (requiresFullBackup ? 'full backup required' : 'ready'));
     const restoreDisabled = Boolean(activeProgress);
     const backupLabel = activeProgress
       ? (pauseRequested || isPausing ? 'Pausing...' : 'Pause')
-      : (source.scanStatus === 'paused' ? 'Resume' : 'Backup');
-    const backupClass = activeProgress ? 'btn-outline-warning' : 'btn-outline-primary';
+      : (pausedCursor ? 'Resume' : (requiresFullBackup ? 'Full Backup' : 'Backup Changes'));
+    const backupClass = activeProgress
+      ? 'btn-outline-warning'
+      : (requiresFullBackup ? 'btn-outline-warning' : 'btn-outline-primary');
     const mergedRoot = source.mergeEnabled ? source.mergeKey : source.targetSubdir;
+    const sourceSizeLabel = source.sourceSizeBytes === null || source.sourceSizeBytes === undefined
+      ? '-'
+      : formatBytes(source.sourceSizeBytes);
+    const backupSizeLabel = source.backupSizeBytes === null || source.backupSizeBytes === undefined
+      ? '-'
+      : formatBytes(source.backupSizeBytes);
 
     return `
       <tr>
         <td>
           <div class="path-cell">${escapeHtml(source.sourcePath)}</div>
+          <div class="small muted mt-1">Source Size: ${escapeHtml(sourceSizeLabel)}</div>
           <div class="mt-2">
             ${source.mergeEnabled ? '<span class="tag tag-merge">Merge</span>' : ''}
             ${source.organizeMedia ? '<span class="tag tag-media">Media</span>' : ''}
           </div>
         </td>
-        <td><div class="path-cell">${escapeHtml(mergedRoot)}</div></td>
         <td>
-          <span class="scan-badge ${scanBadgeClass(source.scanStatus)}">${escapeHtml(source.scanStatus || 'idle')}</span>
-          <div class="small muted mt-1">${escapeHtml(source.activeGeneration || '-')}</div>
+          <div class="path-cell">${escapeHtml(mergedRoot)}</div>
+          <div class="small muted mt-1">Backed Up: ${escapeHtml(backupSizeLabel)}</div>
+        </td>
+        <td>
+          <span class="scan-badge ${scanBadgeClass(sourceStatus)}">${escapeHtml(sourceStatus)}</span>
         </td>
         <td><div class="small">${escapeHtml(formatTimestamp(source.lastCompletedAt))}</div></td>
         <td>
@@ -401,6 +445,13 @@ function renderTargetSourcesTable(target) {
 
   return `
     <table class="source-table">
+      <colgroup>
+        <col class="source-col-source">
+        <col class="source-col-target">
+        <col class="source-col-status">
+        <col class="source-col-completed">
+        <col class="source-col-actions">
+      </colgroup>
       <thead>
         <tr>
           <th>Source</th>
@@ -722,7 +773,12 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
     try {
       state.pauseRequests[key] = true;
       renderSources();
-      await window.myBackup.pauseBackup({ targetRoot, machineId, sourceId });
+      const response = await window.myBackup.pauseBackup({ targetRoot, machineId, sourceId });
+      if (!response || response.accepted !== true) {
+        clearBackupUiState(key);
+        await refreshDashboard();
+        renderSources();
+      }
     } catch (error) {
       delete state.pauseRequests[key];
       appendLog('error', error.message || 'Failed to pause backup.');
@@ -755,20 +811,22 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
       progressPanelLoaded: Boolean(window.myBackupProgressPanel)
     });
     renderSources();
+    const forceNewScan = !source?.baselineAt
+      || source?.sourceSizeBytes === null
+      || source?.sourceSizeBytes === undefined
+      || Boolean(source?.watchState?.needsRescan);
     const result = await window.myBackup.runBackup({
       targetRoot,
       machineId,
       sourceId,
-      forceNewScan: source && source.scanStatus !== 'paused'
+      forceNewScan
     });
-    delete state.backupProgress[key];
-    delete state.pauseRequests[key];
+    clearBackupUiState(key);
     state.dashboard = result.dashboard;
     renderDashboard();
     appendLog('info', result.summary.status === 'paused' ? 'Backup paused.' : 'Backup summary.', result.summary);
   } catch (error) {
-    delete state.backupProgress[key];
-    delete state.pauseRequests[key];
+    clearBackupUiState(key);
     renderSources();
     appendLog('error', error.message || 'Backup failed.');
   }
@@ -844,12 +902,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         fileQueueDepth: payload.progress?.queues?.file?.depth || 0
       });
     }
-    state.backupProgress[key] = payload;
-    traceProgressRender(key, payload);
-    if (payload.progress && payload.progress.status !== 'running' && payload.progress.status !== 'pausing') {
-      delete state.pauseRequests[key];
-      delete state.lastProgressTraceAt[key];
+    const status = payload.progress?.status || null;
+    const isTerminal = status === 'paused' || status === 'completed';
+    if (isTerminal) {
+      clearBackupUiState(key);
+    } else {
+      state.backupProgress[key] = payload;
     }
+    traceProgressRender(key, payload);
     if (payload.event?.type === 'backup-pausing' && payload.event?.phase) {
       appendLog('info', `Backup pausing: ${payload.event.phase}.`, payload.progress?.queues || null);
     }

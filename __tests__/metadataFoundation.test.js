@@ -6,9 +6,7 @@ const {
   backupSchemaPath,
   backupSourcesPath,
   dirtyStatePath,
-  legacyLocalConfigPath,
   runStatePath,
-  schemaMigrationMarkerPath
 } = require('../src/core/paths');
 const {
   configPath,
@@ -25,7 +23,6 @@ const {
   createAppConfig,
   createHashRecord,
   createMachineRecord,
-  createScanState,
   createSourceRecord,
   validateHashRecord,
   validateSourceRecord
@@ -39,18 +36,13 @@ const {
   BACKUP_SCHEMA_VERSION,
   ensureBackupSchema,
   loadBackupSchema,
-  loadBackupSource
+  loadBackupSource,
+  updateBackupSource
 } = require('../src/core/backupSchema');
 const { createTargetId } = require('../src/core/targetConfig');
-const { loadLegacyBackupScanState } = require('../src/core/legacy/scanStateStore');
-const { registerSource, updateSourceScanState } = require('../src/core/sourceRegistry');
+const { registerSource } = require('../src/core/sourceRegistry');
 const { buildConflictPath, classifyMedia, planLogicalTarget } = require('../src/core/pathPlanner');
-const {
-  ensureScanState,
-  getResumeState,
-  markGenerationCompleted,
-  startNewGeneration
-} = require('../src/core/legacy/scanManager');
+const { resolveTargetMapping } = require('../src/core/pathMapper');
 const { hashFile } = require('../src/core/hashService');
 const { lookupHashRecord, registerHashRecord } = require('../src/core/hashIndex');
 const { packHashRecord, unpackHashRecord } = require('../src/core/hashRecordCodec');
@@ -64,11 +56,9 @@ const {
   writePlainFile
 } = require('../src/core/plainFileStorage');
 const { backupSource } = require('../src/core/backupCoordinator');
-const { createWorkScheduler } = require('../src/core/legacy/workScheduler');
 const { buildFolderTraversalStack } = require('../src/core/scanner/folderWalker');
 const { parseIgnoreFile, shouldIgnorePath, buildIgnoreRules } = require('../src/core/ignoreMatcher');
 const { readJsonIfExists, writeJsonAtomic } = require('../src/core/jsonStore');
-const { createSourceSnapshot, loadSourceSnapshot, saveSourceSnapshot } = require('../src/core/sourceSnapshotStore');
 const {
   createRunState,
   ensureRunState,
@@ -147,14 +137,6 @@ describe('metadata foundation', () => {
     return readJsonIfExists(sourcePath(targetRoot, machineId, sourceId));
   }
 
-  async function saveLegacyScanState(targetRoot, document) {
-    await writeJsonAtomic(scanCurrentPath(targetRoot, document.machineId, document.sourceId), document);
-  }
-
-  async function loadLegacyScanState(targetRoot, machineId, sourceId) {
-    return readJsonIfExists(scanCurrentPath(targetRoot, machineId, sourceId));
-  }
-
   test('creates stable ids for machine, source, scan, and folder', () => {
     expect(createMachineId('James-MacBook', 'fixed-seed')).toBe('james-macbook-09167cea');
     expect(createSourceId('/Users/James/Documents')).toBe('documents-0cf0ec50');
@@ -228,7 +210,7 @@ describe('metadata foundation', () => {
     expect(validateHashRecord(blockRecord).content.type).toBe('blocks');
   });
 
-  test('persists all step-1 metadata documents atomically', async () => {
+  test('persists all current metadata documents atomically', async () => {
     const appConfig = createAppConfig({ machineId: 'machine-a' }, new Date('2026-06-01T10:00:00Z'));
     const machine = createMachineRecord({
       machineId: 'machine-a',
@@ -240,11 +222,6 @@ describe('metadata foundation', () => {
       sourcePath: '/Users/James/Documents',
       mergeEnabled: true,
       mergeKey: 'documents'
-    }, new Date('2026-06-01T10:00:00Z'));
-    const scanState = createScanState({
-      machineId: 'machine-a',
-      sourceId: source.sourceId,
-      activeGeneration: '20260601-100000'
     }, new Date('2026-06-01T10:00:00Z'));
     const hashRecord = createHashRecord({
       fileHash: 'c'.repeat(64),
@@ -260,13 +237,11 @@ describe('metadata foundation', () => {
     await saveLegacyAppConfig(tempRootPath, appConfig);
     await saveLegacyMachine(tempRootPath, machine);
     await saveLegacySource(tempRootPath, source);
-    await saveLegacyScanState(tempRootPath, scanState);
     await saveHashRecord(tempRootPath, hashRecord);
 
     expect(await loadLegacyAppConfig(tempRootPath)).toEqual(appConfig);
     expect(await loadLegacyMachine(tempRootPath, machine.machineId)).toEqual(machine);
     expect(await loadLegacySource(tempRootPath, machine.machineId, source.sourceId)).toEqual(source);
-    expect(await loadLegacyScanState(tempRootPath, machine.machineId, source.sourceId)).toEqual(scanState);
     expect(await loadHashRecord(tempRootPath, hashRecord.fileHash)).toEqual(hashRecord);
   });
 
@@ -697,7 +672,7 @@ describe('metadata foundation', () => {
     expect(updated.hostname).toBe('James-MacBook');
   });
 
-  test('registers and updates source records while preserving scan state', async () => {
+  test('registers and updates source records while preserving completion state', async () => {
     const machine = await ensureMachine(tempRootPath, {
       hostname: 'backup-host',
       displayName: 'Backup Host',
@@ -713,10 +688,17 @@ describe('metadata foundation', () => {
       mergeEnabled: false
     }, new Date('2026-06-02T09:10:00Z'));
 
-    const scanned = await updateSourceScanState(tempRootPath, machine.machineId, first.sourceId, {
-      lastCompletedScan: '20260602-100000',
-      lastCompletedAt: '2026-06-02T10:00:00Z'
-    }, new Date('2026-06-02T10:00:00Z'));
+    const scanned = await updateBackupSource(
+      tempRootPath,
+      tempRootPath,
+      machine.machineId,
+      first.sourceId,
+      (current) => ({
+        ...current,
+        lastCompletedAt: '2026-06-02T10:00:00Z'
+      }),
+      new Date('2026-06-02T10:00:00Z')
+    );
 
     const updated = await registerSource(tempRootPath, {
       machineId: machine.machineId,
@@ -801,97 +783,17 @@ describe('metadata foundation', () => {
 
     expect(buildConflictPath('documents/taxes/2024.pdf', 'machine-b', 'documents-abc12345'))
       .toBe('documents/taxes/2024 [machine-b-documents-abc12345].pdf');
-  });
 
-  test('starts a new scan generation with scan state only', async () => {
-    const machine = await ensureMachine(tempRootPath, {
-      hostname: 'scan-host',
-      seed: 'scan-seed',
-      now: new Date('2026-06-05T08:00:00Z')
+    expect(resolveTargetMapping({
+      machineId: 'machine-b',
+      source: mergedSource,
+      sourceRelativePath: 'taxes/2024.pdf'
+    })).toMatchObject({
+      logicalPath: 'documents/taxes/2024.pdf',
+      sourceTargetRoot: 'documents',
+      mappingMode: 'merge',
+      decided: true
     });
-    const source = await registerSource(tempRootPath, {
-      machineId: machine.machineId,
-      sourcePath: '/Users/James/Documents',
-      mergeEnabled: false,
-      organizeMedia: false
-    }, new Date('2026-06-05T08:05:00Z'));
-
-    const scanState = await startNewGeneration(
-      tempRootPath,
-      machine.machineId,
-      source.sourceId,
-      { now: new Date('2026-06-05T08:10:00Z'), scanId: '20260605-081000' }
-    );
-
-    expect(scanState.activeGeneration).toBe('20260605-081000');
-    expect(scanState.status).toBe('running');
-  });
-
-  test('resumes incomplete scan state and resets with a forced new generation', async () => {
-    const machine = await ensureMachine(tempRootPath, {
-      hostname: 'resume-host',
-      seed: 'resume-seed',
-      now: new Date('2026-06-05T09:00:00Z')
-    });
-    const source = await registerSource(tempRootPath, {
-      machineId: machine.machineId,
-      sourcePath: '/Users/James/Documents',
-      mergeEnabled: false,
-      organizeMedia: false
-    }, new Date('2026-06-05T09:05:00Z'));
-
-    const first = await ensureScanState(tempRootPath, machine.machineId, source.sourceId, {
-      now: new Date('2026-06-05T09:10:00Z'),
-      scanId: '20260605-091000'
-    });
-
-    const resumed = await ensureScanState(tempRootPath, machine.machineId, source.sourceId, {
-      now: new Date('2026-06-05T09:20:00Z')
-    });
-
-    expect(resumed.scanState.activeGeneration).toBe(first.scanState.activeGeneration);
-
-    const forced = await ensureScanState(tempRootPath, machine.machineId, source.sourceId, {
-      now: new Date('2026-06-05T09:30:00Z'),
-      scanId: '20260605-093000',
-      forceNew: true
-    });
-
-    expect(forced.scanState.activeGeneration).toBe('20260605-093000');
-    expect(forced.scanState.activeGeneration).not.toBe(first.scanState.activeGeneration);
-  });
-
-  test('marks a generation completed and stops resume selection', async () => {
-    const machine = await ensureMachine(tempRootPath, {
-      hostname: 'complete-host',
-      seed: 'complete-seed',
-      now: new Date('2026-06-05T11:00:00Z')
-    });
-    const source = await registerSource(tempRootPath, {
-      machineId: machine.machineId,
-      sourcePath: '/Users/James/Documents',
-      mergeEnabled: false,
-      organizeMedia: false
-    }, new Date('2026-06-05T11:05:00Z'));
-
-    await startNewGeneration(tempRootPath, machine.machineId, source.sourceId, {
-      now: new Date('2026-06-05T11:10:00Z'),
-      scanId: '20260605-111000'
-    });
-
-    const resumeBefore = await getResumeState(tempRootPath, machine.machineId, source.sourceId);
-    expect(resumeBefore.scanState.activeGeneration).toBe('20260605-111000');
-
-    const completed = await markGenerationCompleted(
-      tempRootPath,
-      machine.machineId,
-      source.sourceId,
-      new Date('2026-06-05T11:20:00Z')
-    );
-
-    expect(completed.status).toBe('completed');
-    expect(completed.completedAt).toBe('2026-06-05T11:20:00.000Z');
-    expect(await getResumeState(tempRootPath, machine.machineId, source.sourceId)).toBeNull();
   });
 
   test('hashes a file and creates the first hash index record', async () => {
@@ -1060,6 +962,27 @@ describe('metadata foundation', () => {
     await finalizePlainFile(tempRootPath, pendingWrite);
   });
 
+  test('preserves source mtime on finalized plain files', async () => {
+    const sourceFile = path.join(tempRootPath, 'fixtures', 'mtime.txt');
+    writeFixture(sourceFile, 'mtime content');
+    const sourceMtime = new Date('2026-06-13T03:04:05.000Z');
+    fs.utimesSync(sourceFile, sourceMtime, sourceMtime);
+    const expectedHash = await hashFile(sourceFile);
+
+    const pendingWrite = await writePlainFile(tempRootPath, {
+      sourcePath: sourceFile,
+      logicalPath: 'Backups/Machines/machine-a/source-a/mtime.txt',
+      expectedHash,
+      expectedSize: Buffer.byteLength('mtime content'),
+      jobId: 'job-mtime'
+    });
+
+    const contentRef = await finalizePlainFile(tempRootPath, pendingWrite);
+    const targetStat = await fs.stat(path.join(tempRootPath, contentRef.path));
+
+    expect(Math.abs(targetStat.mtimeMs - sourceMtime.getTime())).toBeLessThanOrEqual(2);
+  });
+
   test('finalizePlainFile treats an identical existing destination as success', async () => {
     const sourceFile = path.join(tempRootPath, 'fixtures', 'dup.txt');
     writeFixture(sourceFile, 'duplicate content');
@@ -1099,20 +1022,6 @@ describe('metadata foundation', () => {
 
     pathExistsSpy.mockRestore();
     readJsonSpy.mockRestore();
-  });
-
-  test('persists source snapshot state for incremental backup decisions', async () => {
-    const snapshot = createSourceSnapshot('machine-a', 'source-a', null, new Date('2026-06-09T10:00:00Z'));
-    snapshot.files['docs/a.txt'] = {
-      size: 12,
-      mtimeMs: 1234,
-      fileHash: 'd'.repeat(64),
-      logicalPath: 'Backups/Machines/machine-a/source-a/docs/a.txt',
-      updatedAt: '2026-06-09T10:00:00Z'
-    };
-
-    await saveSourceSnapshot(tempRootPath, snapshot);
-    await expect(loadSourceSnapshot(tempRootPath, 'machine-a', 'source-a')).resolves.toEqual(snapshot);
   });
 
   test('detects unavailable backup targets on startup', async () => {
@@ -1161,11 +1070,11 @@ describe('metadata foundation', () => {
             mergeEnabled: false,
             mergeKey: null,
             organizeMedia: false,
-            lastCompletedScan: '20260605-090000',
             lastCompletedAt: '2026-06-05T09:05:00.000Z',
-            scanState: {
+            cursor: {
+              relativePath: 'docs',
               status: 'paused',
-              activeGeneration: '20260605-090000'
+              updatedAt: '2026-06-05T09:05:00.000Z'
             }
           }
         ]
@@ -1216,9 +1125,7 @@ describe('metadata foundation', () => {
     expect(entry.sources[0]).toMatchObject({
       machineId: 'machine-a',
       sourceId: 'documents-0cf0ec50',
-      sourcePath: '/Users/James/Documents',
-      scanStatus: 'paused',
-      activeGeneration: '20260605-090000'
+      sourcePath: '/Users/James/Documents'
     });
   });
 
@@ -1299,6 +1206,8 @@ describe('metadata foundation', () => {
 
     const updatedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
     expect(updatedSource.lastCompletedAt).toBe('2026-06-07T08:10:00.000Z');
+    expect(updatedSource.sourceSizeBytes).toBe(9);
+    expect(updatedSource.backupSizeBytes).toBe(9);
   });
 
   test('pauses a backup run at a folder boundary and preserves resumable scan state', async () => {
@@ -1604,6 +1513,53 @@ describe('metadata foundation', () => {
         'utf8'
       )
     ).toBe('beta-v2');
+  });
+
+  test('legacy source without total size forces a full backup even when baseline exists', async () => {
+    const sourceRoot = path.join(tempRootPath, 'legacy-size-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'legacy-size-host',
+      seed: 'legacy-size-seed',
+      now: new Date('2026-06-11T09:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-11T09:05:00Z'));
+
+    await updateBackupSource(
+      tempRootPath,
+      tempRootPath,
+      machine.machineId,
+      source.sourceId,
+      (current) => ({
+        ...current,
+        baselineAt: '2026-06-10T08:00:00.000Z',
+        sourceSizeBytes: null,
+        backupSizeBytes: null,
+        watchState: {
+          ...(current.watchState || {}),
+          needsRescan: false
+        }
+      }),
+      new Date('2026-06-11T09:06:00Z')
+    );
+
+    const summary = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-11T09:10:00Z'),
+      forceNewScan: false
+    });
+
+    expect(summary.filesCopied).toBe(1);
+    const runState = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
+    expect(runState.mode).toBe('full');
+    const updatedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(updatedSource.sourceSizeBytes).toBe(5);
+    expect(updatedSource.backupSizeBytes).toBe(5);
   });
 
   test('parses .mbignore rules for directory, glob, and negation matching', () => {
@@ -2105,6 +2061,7 @@ dist/**
     expect(summary.filesProcessed).toBe(fileNames.length);
     expect(summary.filesCopied).toBe(1);
     expect(summary.filesIndexed).toBe(fileNames.length - 1);
+    expect(summary.copiedBytes).toBe(Buffer.byteLength('same-gif-content') * fileNames.length);
 
     const sharedHash = await hashFile(path.join(sourceRoot, 'sametime', fileNames[0]));
     const record = await lookupHashRecord(tempRootPath, sharedHash);
@@ -2417,114 +2374,13 @@ dist/**
       organizeMedia: true
     }, new Date('2026-06-08T13:06:00Z'));
 
-    await startNewGeneration(tempRootPath, machine.machineId, sourceB.sourceId, {
-      now: new Date('2026-06-08T13:10:00Z'),
-      scanId: '20260608-131000'
-    });
-
     const listed = await listSourcesForMachine(tempRootPath, machine.machineId);
     expect(listed.map((entry) => entry.sourceId)).toEqual([sourceA.sourceId, sourceB.sourceId]);
-    expect(listed[1].scanState.activeGeneration).toBe('20260608-131000');
 
     const context = await loadCurrentMachineContext(tempRootPath);
     expect(context.appConfig.machineId).toBe(machine.machineId);
     expect(context.machine.machineId).toBe(machine.machineId);
     expect(context.sources).toHaveLength(2);
-  });
-
-  test('migrates a legacy install into backup schema on first load', async () => {
-    const appDataRoot = path.join(tempRootPath, 'app-data');
-    const targetRoot = path.join(tempRootPath, 'legacy-target');
-    await fs.ensureDir(appDataRoot);
-    await fs.ensureDir(targetRoot);
-
-    await fs.writeJson(legacyLocalConfigPath(appDataRoot), {
-      targets: [
-        {
-          id: 'target-legacy',
-          path: targetRoot,
-          collapsed: true,
-          addedAt: '2026-06-09T09:00:00.000Z'
-        }
-      ]
-    });
-
-    const now = new Date('2026-06-09T09:10:00Z');
-    const machine = createMachineRecord({
-      machineId: 'legacy-machine-a',
-      displayName: 'Legacy Machine',
-      hostname: 'legacy-host',
-      platform: 'darwin'
-    }, now);
-    const appConfig = createAppConfig({ machineId: machine.machineId }, now);
-    const source = createSourceRecord({
-      machineId: machine.machineId,
-      sourcePath: '/Users/James/Documents',
-      mergeEnabled: false,
-      organizeMedia: false
-    }, now);
-    const scanState = createScanState({
-      machineId: machine.machineId,
-      sourceId: source.sourceId,
-      activeGeneration: '20260609-091000',
-      status: 'paused',
-      resumeCursor: {
-        scanId: '20260609-091000',
-        folderHash: 'docs-71ab8b6afb',
-        relativePath: 'docs',
-        folderPath: '/Users/James/Documents/docs',
-        status: 'scanning'
-      }
-    }, now);
-
-    await saveLegacyAppConfig(targetRoot, appConfig);
-    await saveLegacyMachine(targetRoot, machine);
-    await saveLegacySource(targetRoot, source);
-    await saveLegacyScanState(targetRoot, scanState);
-
-    const migrated = await ensureBackupSchema(appDataRoot, {
-      hostname: 'fallback-host',
-      displayName: 'Fallback Host',
-      platform: 'darwin',
-      seed: 'fallback-seed'
-    }, now);
-
-    expect(await fs.pathExists(backupSchemaPath(appDataRoot))).toBe(true);
-    expect(await fs.pathExists(schemaMigrationMarkerPath(appDataRoot))).toBe(true);
-    expect(await fs.readJson(schemaMigrationMarkerPath(appDataRoot))).toMatchObject({
-      mode: 'legacy-imported',
-      importedTargetCount: 1,
-      importedSourceCount: 1
-    });
-    expect(migrated.version).toBe(BACKUP_SCHEMA_VERSION);
-    expect(migrated.machine.machineId).toBe(machine.machineId);
-    expect(migrated.migration).toMatchObject({
-      mode: 'legacy-imported',
-      importedTargetCount: 1,
-      importedSourceCount: 1
-    });
-    expect(migrated.targets).toHaveLength(1);
-    expect(migrated.targets[0]).toMatchObject({
-      id: 'target-legacy',
-      path: targetRoot,
-      collapsed: true
-    });
-    expect(await fs.pathExists(backupSourcesPath(targetRoot))).toBe(false);
-    const migratedContext = await loadCurrentMachineContext(targetRoot, { appDataRoot });
-    expect(migratedContext.sources).toHaveLength(1);
-    expect(migratedContext.sources[0]).toMatchObject({
-      machineId: machine.machineId,
-      sourceId: source.sourceId,
-      sourcePath: source.sourcePath
-    });
-    expect(migratedContext.sources[0].scanState).toMatchObject({
-      activeGeneration: '20260609-091000',
-      status: 'paused'
-    });
-    expect(migratedContext.sources[0].scanState.resumeCursor).toMatchObject({
-      relativePath: 'docs',
-      folderHash: 'docs-71ab8b6afb'
-    });
   });
 
   test('rejects unsupported backup schema versions', async () => {
@@ -2642,42 +2498,6 @@ dist/**
     expect(config.sources.some((entry) => entry.endsWith('mybackup-logging.properties'))).toBe(true);
   });
 
-  test('logs resumable scan reuse when ensureScanState resumes an active generation', async () => {
-    const events = [];
-    configureLogger({
-      level: 'info',
-      sink: (record) => events.push(record),
-      moduleLevels: {}
-    });
-
-    const machine = await ensureMachine(tempRootPath, {
-      hostname: 'resume-log-host',
-      seed: 'resume-log-seed',
-      now: new Date('2026-06-10T09:00:00Z')
-    });
-    const source = await registerSource(tempRootPath, {
-      machineId: machine.machineId,
-      sourcePath: '/Users/James/Documents',
-      mergeEnabled: false,
-      organizeMedia: false
-    }, new Date('2026-06-10T09:05:00Z'));
-
-    await ensureScanState(tempRootPath, machine.machineId, source.sourceId, {
-      now: new Date('2026-06-10T09:10:00Z'),
-      scanId: '20260610-091000'
-    });
-
-    events.length = 0;
-
-    const resumed = await ensureScanState(tempRootPath, machine.machineId, source.sourceId, {
-      now: new Date('2026-06-10T09:20:00Z')
-    });
-
-    expect(resumed.scanState.activeGeneration).toBe('20260610-091000');
-    expect(events.some((entry) => entry.module === 'ScanManager' && entry.message === 'Loaded resumable scan state.')).toBe(true);
-    expect(events.some((entry) => entry.module === 'ScanManager' && entry.message === 'Reusing resumable scan state.')).toBe(true);
-  });
-
   test('builds a resume traversal stack from the source root cursor', async () => {
     const events = [];
     configureLogger({
@@ -2717,101 +2537,4 @@ dist/**
     expect(events.some((entry) => entry.module === 'FolderWalker' && entry.message === 'Built resume traversal stack from cursor.')).toBe(true);
   });
 
-  test('keeps a trial worker when throughput improves enough', async () => {
-    const scheduler = createWorkScheduler({
-      processTask: async (payload) => {
-        await new Promise((resolve) => setTimeout(resolve, payload.delayMs));
-        return { bytesProcessed: payload.bytes };
-      },
-      initialWorkers: 1,
-      maxWorkers: 2,
-      backlogFactor: 1,
-      trialWindowMs: 60,
-      throughputImprovementThreshold: 1.15,
-      idleWaitMs: 2
-    });
-
-    const tasks = Array.from({ length: 12 }, () => (
-      scheduler.push({ bytes: 100, delayMs: 25 })
-    ));
-
-    await Promise.all(tasks);
-    await scheduler.closeAndDrain();
-
-    const snapshot = scheduler.snapshot();
-    expect(snapshot.acceptedWorkers).toBe(2);
-    expect(snapshot.scalingLocked).toBe(false);
-    expect(snapshot.completedTasks).toBe(12);
-  });
-
-  test('rolls back a trial worker and locks scaling when throughput does not improve enough', async () => {
-    let concurrentTasks = 0;
-    const scheduler = createWorkScheduler({
-      processTask: async (payload) => {
-        concurrentTasks += 1;
-        const delayMs = concurrentTasks > 1 ? payload.contendedDelayMs : payload.baseDelayMs;
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-        concurrentTasks -= 1;
-        return { bytesProcessed: payload.bytes };
-      },
-      initialWorkers: 1,
-      maxWorkers: 2,
-      backlogFactor: 1,
-      trialWindowMs: 80,
-      throughputImprovementThreshold: 1.15,
-      idleWaitMs: 2
-    });
-
-    const tasks = Array.from({ length: 12 }, () => (
-      scheduler.push({ bytes: 100, baseDelayMs: 20, contendedDelayMs: 60 })
-    ));
-
-    await Promise.all(tasks);
-    await scheduler.closeAndDrain();
-
-    const snapshot = scheduler.snapshot();
-    expect(snapshot.acceptedWorkers).toBe(1);
-    expect(snapshot.scalingLocked).toBe(true);
-    expect(snapshot.completedTasks).toBe(12);
-  });
-
-  test('exposes queued item previews through snapshot', async () => {
-    let releaseFirstTask;
-    const firstTaskGate = new Promise((resolve) => {
-      releaseFirstTask = resolve;
-    });
-    const scheduler = createWorkScheduler({
-      processTask: async (payload) => {
-        if (payload.id === 1) {
-          await firstTaskGate;
-        }
-        return { bytesProcessed: payload.bytes };
-      },
-      initialWorkers: 1,
-      maxWorkers: 1,
-      summarizePayload: (payload) => ({
-        id: payload.id,
-        totalBytes: payload.bytes
-      })
-    });
-
-    const tasks = [
-      scheduler.push({ id: 1, bytes: 100 }),
-      scheduler.push({ id: 2, bytes: 200 }),
-      scheduler.push({ id: 3, bytes: 300 })
-    ];
-
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    const snapshot = scheduler.snapshot();
-    expect(snapshot.queueDepth).toBe(2);
-    expect(snapshot.pendingTasks).toBe(3);
-    expect(snapshot.queuedItems).toEqual([
-      { id: 2, totalBytes: 200 },
-      { id: 3, totalBytes: 300 }
-    ]);
-
-    releaseFirstTask();
-    await Promise.all(tasks);
-    await scheduler.closeAndDrain();
-  });
 });

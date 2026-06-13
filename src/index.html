@@ -371,8 +371,15 @@
     .source-table {
       width: 100%;
       border-collapse: collapse;
+      table-layout: fixed;
       font-size: 0.84rem;
     }
+
+    .source-col-source { width: 40%; }
+    .source-col-target { width: 22%; }
+    .source-col-status { width: 120px; }
+    .source-col-completed { width: 150px; }
+    .source-col-actions { width: 280px; }
 
     .source-table th,
     .source-table td {
@@ -414,6 +421,7 @@
       font-size: 0.76rem;
       line-height: 1.35;
       overflow-wrap: anywhere;
+      min-width: 0;
     }
 
     .scan-badge {
@@ -451,13 +459,15 @@
     .actions-row {
       display: flex;
       gap: 6px;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       justify-content: flex-end;
+      align-items: center;
     }
 
     .actions-row .btn {
       font-size: 0.74rem;
       padding: 4px 10px;
+      white-space: nowrap;
     }
 
     .muted { color: var(--muted); }
@@ -816,8 +826,14 @@
       .app-frame { padding-left: 16px; padding-right: 16px; }
       .log-dock-inner { padding: 0 16px; }
       .progress-pools { grid-template-columns: 1fr; }
+      .source-col-source,
+      .source-col-target,
+      .source-col-status,
+      .source-col-completed,
+      .source-col-actions { width: auto; }
       .source-table th:nth-child(4),
       .source-table td:nth-child(4) { display: none; }
+      .actions-row { flex-wrap: wrap; }
       .worker-line { grid-template-columns: 38px minmax(0, 1fr) 120px; }
       .worker-bytes { grid-column: 3; }
     }

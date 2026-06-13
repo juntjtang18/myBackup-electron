@@ -1,11 +1,14 @@
 const fs = require('fs-extra');
-const { buildConflictPath, classifyMedia, planLogicalTarget } = require('./pathPlanner');
+const { buildConflictPath } = require('./pathPlanner');
+const { resolveTargetMapping } = require('./pathMapper');
 const { shortHash } = require('./ids');
+const { hashFile } = require('./hashService');
 const {
   discardStagedFile,
   finalizeStagedFile,
   resolveLogicalPath,
   stageFileWhileHashing,
+  statStoredPlainFile,
   verifyStoredPlainFile
 } = require('./plainFileStorage');
 const { createLogger } = require('./logger');
@@ -60,13 +63,8 @@ function createInFlightHashCoordinator() {
   };
 }
 
-function isSnapshotUnchanged(cachedEntry, stats) {
-  return Boolean(
-    cachedEntry
-    && cachedEntry.size === stats.size
-    && cachedEntry.mtimeMs === stats.mtimeMs
-    && cachedEntry.fileHash
-  );
+function isMtimeWithinTolerance(sourceMtimeMs, targetMtimeMs, toleranceMs) {
+  return Math.abs(Number(sourceMtimeMs || 0) - Number(targetMtimeMs || 0)) <= toleranceMs;
 }
 
 async function chooseLogicalPath(
@@ -79,13 +77,13 @@ async function chooseLogicalPath(
   timestamp,
   options = {}
 ) {
-  const desiredPath = planLogicalTarget({
+  const desiredPath = resolveTargetMapping({
     machineId,
     source,
     sourceRelativePath,
     kind,
     timestamp
-  });
+  }).logicalPath;
 
   const desiredAbsolutePath = resolveLogicalPath(targetRoot, desiredPath);
   if (!(await fs.pathExists(desiredAbsolutePath))) {
@@ -142,32 +140,41 @@ async function processFileTask(input) {
     sourceRelativePath,
     stats,
     now = new Date(),
-    sourceSnapshotCache,
     hashSession,
     inFlightHashes,
     shouldAbort,
     onProgress,
-    chunkSize
+    chunkSize,
+    mtimeToleranceMs = 2000
   } = input;
 
-  const cachedEntry = sourceSnapshotCache ? sourceSnapshotCache.get(sourceRelativePath) : null;
-  const kind = classifyMedia(sourceFilePath);
+  const mapping = resolveTargetMapping({
+    machineId,
+    source,
+    sourceRelativePath,
+    filePath: sourceFilePath,
+    timestamp: new Date(stats.mtimeMs)
+  });
+  const kind = mapping.kind;
+  const targetStat = await statStoredPlainFile(targetRoot, mapping.logicalPath);
+  const canSkipByTargetStat = !source.mergeEnabled;
 
-  if (isSnapshotUnchanged(cachedEntry, stats)) {
-    logger.debug('Skipped unchanged file from snapshot.', {
+  if (canSkipByTargetStat
+    && targetStat
+    && targetStat.size === stats.size
+    && isMtimeWithinTolerance(stats.mtimeMs, targetStat.mtimeMs, mtimeToleranceMs)) {
+    logger.debug('Skipped unchanged file from mapped target stat.', {
       sourceRelativePath,
-      fileHash: cachedEntry.fileHash
+      logicalPath: mapping.logicalPath,
+      targetSize: targetStat.size,
+      targetMtimeMs: targetStat.mtimeMs,
+      sourceMtimeMs: stats.mtimeMs,
+      mtimeToleranceMs
     });
     return {
-      action: 'skipped-snapshot',
-      fileHash: cachedEntry.fileHash,
-      logicalPath: cachedEntry.logicalPath || planLogicalTarget({
-        machineId,
-        source,
-        sourceRelativePath,
-        kind,
-        timestamp: new Date(stats.mtimeMs)
-      }),
+      action: 'skipped-target-stat',
+      fileHash: null,
+      logicalPath: mapping.logicalPath,
       sourceRelativePath,
       bytesProcessed: 0
     };
@@ -191,24 +198,17 @@ async function processFileTask(input) {
     return null;
   }
 
-  const allowOverwriteExisting = Boolean(
-    !source.mergeEnabled &&
-    cachedEntry &&
-    cachedEntry.logicalPath &&
-    cachedEntry.fileHash &&
-    cachedEntry.fileHash !== staged.fileHash
-  );
+  const allowOverwriteExisting = !source.mergeEnabled;
 
-  const logicalPath = allowOverwriteExisting
-    ? cachedEntry.logicalPath
-    : await chooseLogicalPath(
+  const logicalPath = await chooseLogicalPath(
       targetRoot,
       source,
       machineId,
       sourceRelativePath,
       staged.fileHash,
       kind,
-      new Date(stats.mtimeMs)
+      new Date(stats.mtimeMs),
+      { allowOverwriteExisting }
     );
 
   while (true) {
@@ -258,16 +258,19 @@ async function processFileTask(input) {
     }
 
     try {
-      if (allowOverwriteExisting && cachedEntry.fileHash) {
-        await hashSession.unregister({
-          fileHash: cachedEntry.fileHash,
-          logicalPath,
-          origin: {
-            machineId,
-            sourceId: source.sourceId,
-            sourceRelativePath
-          }
-        }, now);
+      if (allowOverwriteExisting && targetStat) {
+        const existingHash = await hashFile(resolveLogicalPath(targetRoot, logicalPath));
+        if (existingHash) {
+          await hashSession.unregister({
+            fileHash: existingHash,
+            logicalPath,
+            origin: {
+              machineId,
+              sourceId: source.sourceId,
+              sourceRelativePath
+            }
+          }, now);
+        }
         await fs.remove(resolveLogicalPath(targetRoot, logicalPath));
       }
 

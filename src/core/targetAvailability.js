@@ -6,7 +6,7 @@ const fse = require('fs-extra');
 const { app, powerMonitor } = require('electron');
 const { loadCurrentMachineContext } = require('./sourceCatalog');
 const { createLogger } = require('./logger');
-const { getSourceTargetRoot } = require('./pathPlanner');
+const { resolveTargetMapping } = require('./pathMapper');
 
 const execFileAsync = promisify(execFile);
 const VOLUME_ROOT = '/Volumes';
@@ -101,11 +101,16 @@ function checkTargetAvailability(targetPath, mountedRoots = new Set(), platform 
 }
 
 function mapSourceDashboardEntry(source) {
+  const targetRoot = resolveTargetMapping({
+    machineId: source.machineId,
+    source,
+    sourceRelativePath: ''
+  }).sourceTargetRoot;
   return {
     machineId: source.machineId,
     sourceId: source.sourceId,
     sourcePath: source.sourcePath,
-    targetSubdir: getSourceTargetRoot(source.machineId, source),
+    targetSubdir: targetRoot,
     mergeEnabled: source.mergeEnabled,
     mergeKey: source.mergeKey,
     organizeMedia: source.organizeMedia,
@@ -122,9 +127,9 @@ function mapSourceDashboardEntry(source) {
       status: null,
       updatedAt: null
     },
-    lastCompletedAt: source.lastCompletedAt,
-    scanStatus: source.scanState ? source.scanState.status : null,
-    activeGeneration: source.scanState ? source.scanState.activeGeneration : null
+    sourceSizeBytes: source.sourceSizeBytes ?? null,
+    backupSizeBytes: source.backupSizeBytes ?? null,
+    lastCompletedAt: source.lastCompletedAt
   };
 }
 

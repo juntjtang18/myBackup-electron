@@ -5,7 +5,6 @@ const { cleanupTempFiles } = require('./plainFileStorage');
 const { loadBackupSchema, loadBackupSource, updateBackupSource } = require('./backupSchema');
 const { loadIgnoreMatcher } = require('./ignoreMatcher');
 const { createErrorReportWriter } = require('./errorReportStore');
-const { createSourceSnapshot, loadSourceSnapshot, saveSourceSnapshot } = require('./sourceSnapshotStore');
 const { toPosixPath } = require('./layout');
 const { createFolderHash } = require('./cursor');
 const { createFileQueue } = require('./engine/fileQueue');
@@ -33,6 +32,9 @@ function determineBackupMode(source, options) {
     return 'full';
   }
   if (!source.baselineAt) {
+    return 'full';
+  }
+  if (source.sourceSizeBytes === null || source.sourceSizeBytes === undefined) {
     return 'full';
   }
   if (source.watchState && source.watchState.needsRescan) {
@@ -131,9 +133,6 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   }
 
   const ignoreMatcher = await loadIgnoreMatcher(source.sourcePath);
-  const loadedSourceSnapshot = await loadSourceSnapshot(targetRoot, machineId, sourceId);
-  const sourceSnapshot = createSourceSnapshot(machineId, sourceId, loadedSourceSnapshot, now);
-  const sourceSnapshotCache = new Map(Object.entries(sourceSnapshot.files || {}));
   let errorReport = null;
   const hashRecordSession = createHashRecordSession(targetRoot);
   const inFlightHashes = createFileTaskHashCoordinator();
@@ -147,6 +146,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     foldersProcessed: 0,
     filesProcessed: 0,
     filesCopied: 0,
+    copiedBytes: 0,
     filesIndexed: 0,
     hashTaskDurationMs: 0,
     copyTaskDurationMs: 0,
@@ -168,6 +168,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     foldersProcessed: 0,
     filesProcessed: 0,
     filesCopied: 0,
+    copiedBytes: 0,
     filesIndexed: 0,
     throughputBytesPerSecond: 0,
     hashThroughputBytesPerSecond: 0,
@@ -198,6 +199,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   let lastProgressEmitAt = 0;
   let firstFileTaskLogged = false;
   const completedDirtyFolders = new Set();
+  let discoveredSourceBytes = 0;
 
   if (mode === 'full') {
     const existingRunState = !options.forceNewScan
@@ -364,6 +366,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       return;
     }
     summary.filesProcessed += 1;
+    summary.copiedBytes += result.bytesProcessed || 0;
     if (result.action === 'copied') {
       summary.filesCopied += 1;
     } else if (result.action === 'indexed-existing' || result.action === 'indexed-alias') {
@@ -375,19 +378,9 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
 
     progress.filesProcessed = summary.filesProcessed;
     progress.filesCopied = summary.filesCopied;
+    progress.copiedBytes = summary.copiedBytes;
     progress.filesIndexed = summary.filesIndexed;
     progress.conflicts = summary.conflicts;
-
-    if (result.fileHash && result.logicalPath) {
-      sourceSnapshot.files[result.sourceRelativePath] = {
-        size: stats.size,
-        mtimeMs: stats.mtimeMs,
-        fileHash: result.fileHash,
-        logicalPath: result.logicalPath,
-        updatedAt: nowIso(now)
-      };
-      sourceSnapshotCache.set(result.sourceRelativePath, sourceSnapshot.files[result.sourceRelativePath]);
-    }
   }
 
   async function handleFileError(error, fileItem) {
@@ -414,6 +407,9 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   }
 
   async function enqueueFile(fileItem) {
+    if (mode === 'full' && fileItem.stats && typeof fileItem.stats.size === 'number') {
+      discoveredSourceBytes += fileItem.stats.size;
+    }
     let resolveFile;
     let rejectFile;
     const done = new Promise((resolve, reject) => {
@@ -453,11 +449,11 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           sourceRelativePath: item.sourceRelativePath,
           stats: item.stats,
           now: item.now,
-          sourceSnapshotCache,
           hashSession: hashRecordSession,
           inFlightHashes,
           chunkSize: options.stageChunkSize,
           shouldAbort: shouldStopForPause,
+          mtimeToleranceMs: options.mtimeToleranceMs,
           onProgress: (stageProgress) => {
             const workerKey = `file:${worker.id}`;
             progress.workers[workerKey] = {
@@ -718,9 +714,6 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     await hashRecordSession.flush();
   }
 
-  sourceSnapshot.updatedAt = nowIso(now);
-  await saveSourceSnapshot(targetRoot, sourceSnapshot);
-
   if (paused) {
     const pausedFolder = activeFolder
       && lastCompletedFolder
@@ -774,9 +767,15 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     completedAt: nowIso(now)
   }, now);
 
+  const backupSizeBytes = mode === 'full'
+    ? discoveredSourceBytes
+    : (source.backupSizeBytes ?? source.sourceSizeBytes ?? null);
+
   await updateSourceRuntimeState(appDataRoot, targetRoot, machineId, sourceId, (current) => ({
     lastCompletedAt: nowIso(now),
     baselineAt: mode === 'full' && !current.baselineAt ? nowIso(now) : current.baselineAt,
+    sourceSizeBytes: mode === 'full' ? discoveredSourceBytes : current.sourceSizeBytes ?? null,
+    backupSizeBytes: mode === 'full' ? backupSizeBytes : current.backupSizeBytes ?? null,
     cursor: {
       relativePath: null,
       status: null,

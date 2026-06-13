@@ -15,23 +15,6 @@ async function registerSource(appDataRoot, input, now = new Date()) {
   return registered;
 }
 
-async function updateSourceScanState(appDataRoot, machineId, sourceId, scanState, now = new Date()) {
-  const targetRoot = scanState.targetRoot || appDataRoot;
-  const updated = await updateBackupSource(
-    appDataRoot,
-    targetRoot,
-    machineId,
-    sourceId,
-    (current) => ({
-      ...current,
-      lastCompletedAt: scanState.lastCompletedAt || current.lastCompletedAt
-    }),
-    now
-  );
-
-  return updated;
-}
-
 async function updateSourceWatchState(appDataRoot, machineId, sourceId, updater, now = new Date(), options = {}) {
   const targets = await listBackupTargets(appDataRoot);
   const updates = [];
@@ -78,6 +61,5 @@ async function updateSourceWatchState(appDataRoot, machineId, sourceId, updater,
 
 module.exports = {
   registerSource,
-  updateSourceScanState,
   updateSourceWatchState
 };

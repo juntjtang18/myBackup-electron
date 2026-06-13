@@ -95,6 +95,7 @@
           pausePhase: progress.pausePhase || null,
           filesProcessed: Number(progress.filesProcessed || 0),
           filesCopied: Number(progress.filesCopied || 0),
+          copiedBytes: Number(progress.copiedBytes || 0),
           throughputBytesPerSecond: Number(
             progress.throughputBytesPerSecond
             || progress.copyThroughputBytesPerSecond
@@ -121,6 +122,7 @@
         pausePhase: progress.pausePhase || null,
         filesProcessed: Number(progress.filesProcessed || 0),
         filesCopied: Number(progress.filesCopied || 0),
+        copiedBytes: Number(progress.copiedBytes || 0),
         hashThroughputBytesPerSecond: Number(progress.hashThroughputBytesPerSecond || 0),
         copyThroughputBytesPerSecond: Number(progress.copyThroughputBytesPerSecond || 0)
       },
@@ -327,6 +329,7 @@
         <span><strong>Status</strong> ${escapeHtml(summary.status)}${summary.pausePhase ? ` (${escapeHtml(summary.pausePhase)})` : ''}</span>
         <span><strong>Files</strong> ${summary.filesProcessed}</span>
         <span><strong>Copied</strong> ${summary.filesCopied}</span>
+        <span><strong>Bytes</strong> ${formatBytes(summary.copiedBytes || 0)}</span>
         <span><strong>Speed</strong> ${throughputMb} MB/s</span>
       </div>
     `;

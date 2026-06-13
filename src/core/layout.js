@@ -15,7 +15,6 @@ const {
   resolveTargetRoot,
   scanCurrentPath,
   sourcePath,
-  sourceSnapshotPath,
   targetMetadataRoot,
   tempRoot,
   toPosixPath
@@ -39,7 +38,6 @@ module.exports = {
   resolveTargetRoot,
   scanCurrentPath,
   sourcePath,
-  sourceSnapshotPath,
   tempRoot,
   toPosixPath
 };

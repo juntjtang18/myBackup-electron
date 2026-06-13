@@ -101,6 +101,12 @@ function createSourceRecord(input, now = new Date()) {
       status: input.cursor?.status || null,
       updatedAt: input.cursor?.updatedAt || null
     },
+    sourceSizeBytes: input.sourceSizeBytes === undefined || input.sourceSizeBytes === null
+      ? null
+      : Number(input.sourceSizeBytes),
+    backupSizeBytes: input.backupSizeBytes === undefined || input.backupSizeBytes === null
+      ? null
+      : Number(input.backupSizeBytes),
     lastCompletedAt: input.lastCompletedAt || null,
     createdAt: input.createdAt || nowIso(now),
     updatedAt: input.updatedAt || nowIso(now)
@@ -238,6 +244,8 @@ function validateSourceRecord(record) {
   assertNullableString(record.cursor.relativePath, 'cursor.relativePath');
   assertNullableString(record.cursor.status, 'cursor.status');
   assertNullableString(record.cursor.updatedAt, 'cursor.updatedAt');
+  assertNullableNonNegativeInteger(record.sourceSizeBytes, 'sourceSizeBytes');
+  assertNullableNonNegativeInteger(record.backupSizeBytes, 'backupSizeBytes');
   return record;
 }
 

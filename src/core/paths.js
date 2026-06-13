@@ -24,6 +24,37 @@ function backupSchemaPath(appDataRoot) {
   return path.join(appMetadataRoot(appDataRoot), 'backup_target.json');
 }
 
+function watchStateRoot(appDataRoot) {
+  return path.join(appMetadataRoot(appDataRoot), 'watch');
+}
+
+function dirtyStatePath(appDataRoot, dirtyRefOrSourceId) {
+  const reference = String(dirtyRefOrSourceId || '').trim();
+  if (!reference) {
+    throw new Error('dirty state reference is required.');
+  }
+  const relativePath = reference.endsWith('.json')
+    ? reference
+    : path.join('watch', `${reference}.dirty.json`);
+  return path.join(appMetadataRoot(appDataRoot), relativePath);
+}
+
+function runStateRoot(appDataRoot) {
+  return path.join(appMetadataRoot(appDataRoot), 'run');
+}
+
+function runStatePath(appDataRoot, targetId, sourceId) {
+  const normalizedTargetId = String(targetId || '').trim();
+  const normalizedSourceId = String(sourceId || '').trim();
+  if (!normalizedTargetId) {
+    throw new Error('targetId is required.');
+  }
+  if (!normalizedSourceId) {
+    throw new Error('sourceId is required.');
+  }
+  return path.join(runStateRoot(appDataRoot), normalizedTargetId, `${normalizedSourceId}.run.json`);
+}
+
 function schemaMigrationMarkerPath(appDataRoot) {
   return path.join(appMetadataRoot(appDataRoot), 'schema-migration.json');
 }
@@ -124,6 +155,7 @@ module.exports = {
   appMetadataRoot,
   backupSourcesPath,
   backupSchemaPath,
+  dirtyStatePath,
   schemaMigrationMarkerPath,
   configPath,
   errorReportPath,
@@ -141,10 +173,13 @@ module.exports = {
   mergedBackupRoot,
   resolveAppDataRoot,
   resolveTargetRoot,
+  runStatePath,
+  runStateRoot,
   scanCurrentPath,
   sourcePath,
   sourceSnapshotPath,
   targetMetadataRoot,
   tempRoot,
-  toPosixPath
+  toPosixPath,
+  watchStateRoot
 };

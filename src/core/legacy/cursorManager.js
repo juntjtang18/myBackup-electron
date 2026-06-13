@@ -1,11 +1,11 @@
-const { loadBackupScanState, saveBackupScanState } = require('../backupSchema');
-const { createCursor, hydrateCursor, normalizeCursor } = require('./cursorState');
+const { loadLegacyBackupScanState, saveLegacyBackupScanState } = require('./scanStateStore');
+const { createCursor, hydrateCursor, normalizeCursor } = require('../cursor/cursorState');
 const { walkFoldersFromCursor } = require('../scanner/folderWalker');
 
 async function openCursorRun(targetRoot, machineId, sourceId, sourcePath, options = {}) {
   const appDataRoot = options.appDataRoot || targetRoot;
   const backupId = options.backupId || null;
-  const scanState = await loadBackupScanState(appDataRoot, targetRoot, machineId, sourceId);
+  const scanState = await loadLegacyBackupScanState(appDataRoot, targetRoot, machineId, sourceId);
   const persistedCursor = (!options.forceNew
     && scanState
     && (!backupId || scanState.activeGeneration === backupId)
@@ -26,7 +26,7 @@ async function openCursorRun(targetRoot, machineId, sourceId, sourcePath, option
 async function saveCursor(targetRoot, machineId, sourceId, backupId, cursor, options = {}) {
   const appDataRoot = options.appDataRoot || targetRoot;
   const now = options.now || new Date();
-  const scanState = await loadBackupScanState(appDataRoot, targetRoot, machineId, sourceId);
+  const scanState = await loadLegacyBackupScanState(appDataRoot, targetRoot, machineId, sourceId);
   if (!scanState) {
     throw new Error(`Scan state not found: ${machineId}/${sourceId}`);
   }
@@ -49,7 +49,7 @@ async function saveCursor(targetRoot, machineId, sourceId, backupId, cursor, opt
     nextScanState.status = options.status;
   }
 
-  await saveBackupScanState(appDataRoot, targetRoot, machineId, sourceId, nextScanState, now);
+  await saveLegacyBackupScanState(appDataRoot, targetRoot, machineId, sourceId, nextScanState, now);
   return nextScanState;
 }
 

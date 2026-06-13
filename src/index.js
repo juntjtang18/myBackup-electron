@@ -10,6 +10,7 @@ const { restoreLogicalTree, restoreSource } = require('./core/restoreService');
 const { ensureLocalConfig, loadLocalConfig, saveLocalConfig } = require('./core/localConfig');
 const { addTarget, listTargets, removeTarget, requireRegisteredTarget, setTargetCollapsed } = require('./core/targetRegistry');
 const { createTargetAvailabilityMonitor, normalizePlatform } = require('./core/targetAvailability');
+const { createWatchService } = require('./core/watch/watchService');
 const { configureLogger, createLogger, getLogLevel } = require('./core/logger');
 
 let mainWindow = null;
@@ -19,6 +20,7 @@ const activeBackups = new Map();
 let progressForwardTraceCount = 0;
 const PROGRESS_FORWARD_TRACE_LIMIT = 160;
 const appPlatform = normalizePlatform(process.platform);
+let watchService = null;
 const targetAvailability = createTargetAvailabilityMonitor(appPlatform, {
   onChange: async () => {
     await refreshDashboardState(true);
@@ -238,6 +240,9 @@ function registerIpcHandlers() {
       sourceId: source.sourceId,
       sourcePath: source.sourcePath
     });
+    if (watchService) {
+      await watchService.refresh();
+    }
     return buildDashboardState();
   });
 
@@ -434,6 +439,14 @@ app.whenReady().then(async () => {
     mountedRoots: Array.from(targetAvailability.getMountedRoots())
   });
   targetAvailability.start();
+  watchService = createWatchService(appPlatform, {
+    appDataRoot: getAppDataRoot()
+  });
+  await watchService.bootstrap();
+  await watchService.start();
+  logger.info('Source watch service bootstrapped.', {
+    platform: appPlatform
+  });
   createWindow();
   await refreshDashboardState(true);
 
@@ -447,5 +460,11 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
+  }
+});
+
+app.on('before-quit', async () => {
+  if (watchService) {
+    await watchService.stop();
   }
 });

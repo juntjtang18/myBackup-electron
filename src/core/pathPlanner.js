@@ -42,6 +42,13 @@ function buildConflictPath(logicalPath, machineId, sourceId) {
   return path.posix.join(directory, `${basename} [${suffix}]${extension}`);
 }
 
+function getSourceTargetRoot(machineId, source) {
+  if (source.mergeEnabled) {
+    return source.mergeKey;
+  }
+  return path.posix.join('Backups', 'Machines', machineId, source.sourceId);
+}
+
 function planLogicalTarget(input) {
   const machineId = input.machineId;
   const source = input.source;
@@ -60,16 +67,13 @@ function planLogicalTarget(input) {
     return path.posix.join(mediaRoot, dayParts.year, dayParts.day, machineId, source.sourceId, fileName);
   }
 
-  if (source.mergeEnabled) {
-    return path.posix.join(source.targetSubdir, sourceRelativePath);
-  }
-
-  return path.posix.join(source.targetSubdir, sourceRelativePath);
+  return path.posix.join(getSourceTargetRoot(machineId, source), sourceRelativePath);
 }
 
 module.exports = {
   buildConflictPath,
   classifyMedia,
   getDayParts,
+  getSourceTargetRoot,
   planLogicalTarget
 };

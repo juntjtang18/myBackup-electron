@@ -6,6 +6,7 @@ const fse = require('fs-extra');
 const { app, powerMonitor } = require('electron');
 const { loadCurrentMachineContext } = require('./sourceCatalog');
 const { createLogger } = require('./logger');
+const { getSourceTargetRoot } = require('./pathPlanner');
 
 const execFileAsync = promisify(execFile);
 const VOLUME_ROOT = '/Volumes';
@@ -104,11 +105,23 @@ function mapSourceDashboardEntry(source) {
     machineId: source.machineId,
     sourceId: source.sourceId,
     sourcePath: source.sourcePath,
-    targetSubdir: source.targetSubdir,
+    targetSubdir: getSourceTargetRoot(source.machineId, source),
     mergeEnabled: source.mergeEnabled,
     mergeKey: source.mergeKey,
     organizeMedia: source.organizeMedia,
-    lastCompletedScan: source.lastCompletedScan,
+    watchEnabled: source.watchEnabled,
+    backupIntervalMinutes: source.backupIntervalMinutes,
+    baselineAt: source.baselineAt,
+    watchState: source.watchState || {
+      dirtyRef: null,
+      needsRescan: false,
+      lastEventAt: null
+    },
+    cursor: source.cursor || {
+      relativePath: null,
+      status: null,
+      updatedAt: null
+    },
     lastCompletedAt: source.lastCompletedAt,
     scanStatus: source.scanState ? source.scanState.status : null,
     activeGeneration: source.scanState ? source.scanState.activeGeneration : null

@@ -1,13 +1,17 @@
-const { createScanId } = require('./ids');
-const { createBackupScanState, loadBackupScanState, saveBackupScanState } = require('./backupSchema');
-const { normalizeCursor } = require('./cursor/cursorState');
-const { createLogger } = require('./logger');
+const { createScanId } = require('../ids');
+const {
+  createLegacyScanState,
+  loadLegacyBackupScanState,
+  saveLegacyBackupScanState
+} = require('./scanStateStore');
+const { normalizeCursor } = require('../cursor/cursorState');
+const { createLogger } = require('../logger');
 
 const logger = createLogger('ScanManager', 'scanManager.js');
 
 async function startNewGeneration(targetRoot, machineId, sourceId, options = {}) {
   const now = options.now || new Date();
-  const scanState = createBackupScanState({
+  const scanState = createLegacyScanState({
     activeGeneration: options.scanId || createScanId(now),
     status: 'running',
     startedAt: now.toISOString(),
@@ -15,13 +19,13 @@ async function startNewGeneration(targetRoot, machineId, sourceId, options = {})
     updatedAt: now.toISOString()
   }, now);
 
-  await saveBackupScanState(options.appDataRoot || targetRoot, targetRoot, machineId, sourceId, scanState, now);
+  await saveLegacyBackupScanState(options.appDataRoot || targetRoot, targetRoot, machineId, sourceId, scanState, now);
   return scanState;
 }
 
 async function getResumeState(targetRoot, machineId, sourceId, options = {}) {
   const appDataRoot = options.appDataRoot || targetRoot;
-  const state = await loadBackupScanState(appDataRoot, targetRoot, machineId, sourceId);
+  const state = await loadLegacyBackupScanState(appDataRoot, targetRoot, machineId, sourceId);
   if (!state || !state.activeGeneration || state.status === 'completed' || state.status === 'idle') {
     return null;
   }
@@ -59,12 +63,12 @@ async function ensureScanState(targetRoot, machineId, sourceId, options = {}) {
 }
 
 async function markGenerationCompleted(targetRoot, machineId, sourceId, now = new Date(), appDataRoot = targetRoot) {
-  const state = await loadBackupScanState(appDataRoot, targetRoot, machineId, sourceId);
+  const state = await loadLegacyBackupScanState(appDataRoot, targetRoot, machineId, sourceId);
   if (!state) {
     throw new Error(`Scan state not found: ${machineId}/${sourceId}`);
   }
 
-  const completed = createBackupScanState({
+  const completed = createLegacyScanState({
     ...state,
     status: 'completed',
     completedAt: now.toISOString(),
@@ -72,12 +76,12 @@ async function markGenerationCompleted(targetRoot, machineId, sourceId, now = ne
     resumeCursor: null
   }, now);
 
-  await saveBackupScanState(appDataRoot, targetRoot, machineId, sourceId, completed, now);
+  await saveLegacyBackupScanState(appDataRoot, targetRoot, machineId, sourceId, completed, now);
   return completed;
 }
 
 async function markGenerationPaused(targetRoot, machineId, sourceId, now = new Date(), resumeCursor = null, appDataRoot = targetRoot) {
-  const state = await loadBackupScanState(appDataRoot, targetRoot, machineId, sourceId);
+  const state = await loadLegacyBackupScanState(appDataRoot, targetRoot, machineId, sourceId);
   if (!state) {
     throw new Error(`Scan state not found: ${machineId}/${sourceId}`);
   }
@@ -90,7 +94,7 @@ async function markGenerationPaused(targetRoot, machineId, sourceId, now = new D
       })
     : state.resumeCursor || null;
 
-  const paused = createBackupScanState({
+  const paused = createLegacyScanState({
     ...state,
     status: 'paused',
     completedAt: null,
@@ -98,7 +102,7 @@ async function markGenerationPaused(targetRoot, machineId, sourceId, now = new D
     resumeCursor: persistedCursor
   }, now);
 
-  await saveBackupScanState(appDataRoot, targetRoot, machineId, sourceId, paused, now);
+  await saveLegacyBackupScanState(appDataRoot, targetRoot, machineId, sourceId, paused, now);
   return paused;
 }
 

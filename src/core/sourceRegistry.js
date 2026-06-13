@@ -1,4 +1,4 @@
-const { registerBackupSource, updateBackupSource } = require('./backupSchema');
+const { listBackupTargets, registerBackupSource, updateBackupSource } = require('./backupSchema');
 const { createSourceRecord, validateSourceRecord } = require('./schema');
 
 async function registerSource(appDataRoot, input, now = new Date()) {
@@ -24,7 +24,6 @@ async function updateSourceScanState(appDataRoot, machineId, sourceId, scanState
     sourceId,
     (current) => ({
       ...current,
-      lastCompletedScan: scanState.lastCompletedScan || current.lastCompletedScan,
       lastCompletedAt: scanState.lastCompletedAt || current.lastCompletedAt
     }),
     now
@@ -33,7 +32,52 @@ async function updateSourceScanState(appDataRoot, machineId, sourceId, scanState
   return updated;
 }
 
+async function updateSourceWatchState(appDataRoot, machineId, sourceId, updater, now = new Date(), options = {}) {
+  const targets = await listBackupTargets(appDataRoot);
+  const updates = [];
+
+  for (const target of targets) {
+    const matchesSource = (target.sources || []).some((source) => (
+      source.machineId === machineId
+      && source.sourceId === sourceId
+      && (!options.sourcePath || source.sourcePath === options.sourcePath)
+    ));
+    if (!matchesSource) {
+      continue;
+    }
+
+    const updated = await updateBackupSource(
+      appDataRoot,
+      target.path,
+      machineId,
+      sourceId,
+      (current) => ({
+        ...current,
+        watchState: typeof updater === 'function'
+          ? updater(current.watchState || {
+            dirtyRef: `watch/${sourceId}.dirty.json`,
+            needsRescan: false,
+            lastEventAt: null
+          }, current)
+          : {
+            ...(current.watchState || {
+              dirtyRef: `watch/${sourceId}.dirty.json`,
+              needsRescan: false,
+              lastEventAt: null
+            }),
+            ...updater
+          }
+      }),
+      now
+    );
+    updates.push(updated);
+  }
+
+  return updates;
+}
+
 module.exports = {
   registerSource,
-  updateSourceScanState
+  updateSourceScanState,
+  updateSourceWatchState
 };

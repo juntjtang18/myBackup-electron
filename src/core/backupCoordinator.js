@@ -2,58 +2,85 @@ const fs = require('fs-extra');
 const path = require('path');
 const { createHashRecordSession } = require('./hashRecordSession');
 const { cleanupTempFiles } = require('./plainFileStorage');
-const {
-  ensureScanState,
-  markGenerationCompleted,
-  markGenerationPaused
-} = require('./scanManager');
-const { loadBackupSource } = require('./backupSchema');
+const { loadBackupSchema, loadBackupSource, updateBackupSource } = require('./backupSchema');
 const { loadIgnoreMatcher } = require('./ignoreMatcher');
 const { createErrorReportWriter } = require('./errorReportStore');
 const { createSourceSnapshot, loadSourceSnapshot, saveSourceSnapshot } = require('./sourceSnapshotStore');
-const { updateSourceScanState } = require('./sourceRegistry');
 const { toPosixPath } = require('./layout');
-const { openCursorRun, saveCursorFolder } = require('./cursor');
-const { createBoundedQueue } = require('./pipeline/boundedQueue');
-const { createFixedWorkerPool } = require('./pipeline/fixedWorkerPool');
-const { createInFlightHashCoordinator: createFileTaskHashCoordinator, processFileTask } = require('./fileTaskProcessor');
+const { createFolderHash } = require('./cursor');
+const { createFileQueue } = require('./engine/fileQueue');
+const { createFileWorkerPool } = require('./engine/fileWorkerPool');
+const { scanFullSource } = require('./engine/fullScanner');
+const { scanDirtyFolders, selectDirtyFolders } = require('./engine/dirtyFolderScanner');
+const { createFileTaskHashCoordinator, processFileTask } = require('./engine/fileTaskProcessor');
+const { loadRunState, saveRunState } = require('./runStateStore');
+const { snapshotDirtyState, clearDirtyFolderIfUnchanged } = require('./watch/dirtyStore');
+const { createScanId } = require('./ids');
 const { createLogger } = require('./logger');
 
 const logger = createLogger('BackupCoordinator', 'backupCoordinator.js');
 
-async function readFolderEntries(folderPath, relativeRoot = '.', ignoreMatcher = null) {
-  const entries = await fs.readdir(folderPath, { withFileTypes: true });
-  const files = [];
-  const directories = [];
-
-  for (const entry of entries) {
-    const fullPath = path.join(folderPath, entry.name);
-    const relativePath = relativeRoot === '.'
-      ? entry.name
-      : path.posix.join(relativeRoot, entry.name);
-    if (entry.isDirectory()) {
-      if (ignoreMatcher && ignoreMatcher.shouldIgnore(relativePath, true)) {
-        continue;
-      }
-      directories.push({ name: entry.name, path: fullPath });
-    } else if (entry.isFile()) {
-      if (relativePath === '.mbignore') {
-        continue;
-      }
-      if (ignoreMatcher && ignoreMatcher.shouldIgnore(relativePath, false)) {
-        continue;
-      }
-      files.push({ name: entry.name, path: fullPath });
-    }
-  }
-
-  directories.sort((left, right) => left.name.localeCompare(right.name));
-  files.sort((left, right) => left.name.localeCompare(right.name));
-  return { directories, files };
+function nowIso(now = new Date()) {
+  return now.toISOString();
 }
 
 function isMissingPathError(error) {
   return Boolean(error && error.code === 'ENOENT');
+}
+
+function determineBackupMode(source, options) {
+  if (options.forceNewScan) {
+    return 'full';
+  }
+  if (!source.baselineAt) {
+    return 'full';
+  }
+  if (source.watchState && source.watchState.needsRescan) {
+    return 'full';
+  }
+  return 'incremental';
+}
+
+async function loadTargetEntry(appDataRoot, targetRoot) {
+  const schema = await loadBackupSchema(appDataRoot);
+  const resolvedTargetRoot = path.resolve(targetRoot);
+  const target = (schema?.targets || []).find((entry) => entry.path === resolvedTargetRoot);
+  if (!target) {
+    throw new Error(`Unknown backup target: ${resolvedTargetRoot}`);
+  }
+  return target;
+}
+
+function buildDefaultWatchState(sourceId) {
+  return {
+    dirtyRef: `watch/${sourceId}.dirty.json`,
+    needsRescan: false,
+    lastEventAt: null
+  };
+}
+
+async function updateSourceRuntimeState(appDataRoot, targetRoot, machineId, sourceId, updater, now = new Date()) {
+  return updateBackupSource(
+    appDataRoot,
+    targetRoot,
+    machineId,
+    sourceId,
+    (current) => {
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      return {
+        ...current,
+        ...next
+      };
+    },
+    now
+  );
+}
+
+function cloneProgress(summary, progress) {
+  return {
+    summary: { ...summary },
+    progress: JSON.parse(JSON.stringify(progress))
+  };
 }
 
 async function backupSource(targetRoot, machineId, sourceId, options = {}) {
@@ -63,7 +90,10 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     throw new Error(`Source not found: ${machineId}/${sourceId}`);
   }
 
+  const target = await loadTargetEntry(appDataRoot, targetRoot);
   const now = options.now || new Date();
+  const mode = determineBackupMode(source, options);
+  const shouldStopForPause = () => typeof options.shouldPause === 'function' && options.shouldPause();
   const workerCount = Math.max(
     1,
     options.initialWorkers
@@ -77,13 +107,13 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     workerCount * 8,
     options.queueCapacity || options.hashQueueCapacity || options.copyQueueCapacity || 64
   );
-  const shouldStopForPause = () => typeof options.shouldPause === 'function' && options.shouldPause();
 
   logger.info('Backup source started.', {
     machineId,
     sourceId,
     targetRoot,
     sourcePath: source.sourcePath,
+    mode,
     pipeline: 'single-queue',
     workerPools: {
       file: workerCount
@@ -100,26 +130,20 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     });
   }
 
-  const stateBundle = await ensureScanState(targetRoot, machineId, sourceId, {
-    appDataRoot,
-    forceNew: options.forceNewScan,
-    now
-  });
-  const scanId = stateBundle.scanState.activeGeneration;
-  const startedAt = Date.now();
-  let fileTaskCount = 0;
-  let paused = false;
-  let pausePhase = null;
-  let activeResumeCursor = null;
-  let lastCompletedResumeCursor = null;
-  let firstFileTaskLogged = false;
-  let lastProgressEmitAt = 0;
-  let throughputBytesProcessed = 0;
+  const ignoreMatcher = await loadIgnoreMatcher(source.sourcePath);
+  const loadedSourceSnapshot = await loadSourceSnapshot(targetRoot, machineId, sourceId);
+  const sourceSnapshot = createSourceSnapshot(machineId, sourceId, loadedSourceSnapshot, now);
+  const sourceSnapshotCache = new Map(Object.entries(sourceSnapshot.files || {}));
+  let errorReport = null;
+  const hashRecordSession = createHashRecordSession(targetRoot);
+  const inFlightHashes = createFileTaskHashCoordinator();
+  const fileQueue = createFileQueue({ capacity: queueCapacity });
+  const pendingFilePromises = new Set();
 
   const summary = {
     machineId,
     sourceId,
-    scanId,
+    scanId: null,
     foldersProcessed: 0,
     filesProcessed: 0,
     filesCopied: 0,
@@ -137,9 +161,10 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   const progress = {
     machineId,
     sourceId,
-    scanId,
-    startedAt: now.toISOString(),
+    scanId: null,
+    startedAt: nowIso(now),
     status: 'running',
+    mode,
     foldersProcessed: 0,
     filesProcessed: 0,
     filesCopied: 0,
@@ -158,43 +183,109 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     }
   };
 
-  const loadedSourceSnapshot = await loadSourceSnapshot(targetRoot, machineId, sourceId);
-  const sourceSnapshot = createSourceSnapshot(machineId, sourceId, loadedSourceSnapshot, now);
-  const sourceSnapshotCache = new Map(Object.entries(sourceSnapshot.files || {}));
-  const errorReport = await createErrorReportWriter(targetRoot, machineId, sourceId, scanId);
-  summary.reportPath = errorReport.reportPath;
-  const ignoreMatcher = await loadIgnoreMatcher(source.sourcePath);
-  const resumeRun = await openCursorRun(targetRoot, machineId, sourceId, source.sourcePath, {
-    appDataRoot,
-    backupId: scanId,
-    forceNew: options.forceNewScan,
-    ignoreMatcher,
-    now
-  });
-  lastCompletedResumeCursor = resumeRun.cursor || null;
+  let scanId = null;
+  let runState = null;
+  let dirtyStateSnapshot = null;
+  let dirtyScanSeq = null;
+  let selectedDirtyFolders = [];
+  let paused = false;
+  let pausePhase = null;
+  let activeFolder = null;
+  let lastCompletedFolder = null;
+  let resumed = false;
+  let throughputBytesProcessed = 0;
+  let taskCount = 0;
+  let lastProgressEmitAt = 0;
+  let firstFileTaskLogged = false;
+  const completedDirtyFolders = new Set();
 
-  logger.info('Resume run initialized.', {
-    machineId,
-    sourceId,
-    scanId,
-    backupId: resumeRun.backupId,
-    resumed: resumeRun.resumed,
-    cursor: resumeRun.cursor
+  if (mode === 'full') {
+    const existingRunState = !options.forceNewScan
+      ? await loadRunState(appDataRoot, target.id, sourceId)
+      : null;
+    const resumeFrom = (!options.forceNewScan
+      && existingRunState
+      && existingRunState.mode === 'full'
+      && existingRunState.status === 'paused'
+      && source.cursor
+      && source.cursor.status === 'paused'
+      && source.cursor.relativePath)
       ? {
-          relativePath: resumeRun.cursor.relativePath,
-          folderHash: resumeRun.cursor.folderHash,
+          backupId: existingRunState.runId,
+          relativePath: source.cursor.relativePath,
+          folderHash: existingRunState.cursor?.folderHash || createFolderHash(source.cursor.relativePath)
         }
-      : null
-  });
+      : null;
+    resumed = Boolean(resumeFrom);
+    scanId = resumed ? existingRunState.runId : createScanId(now);
+    dirtyStateSnapshot = await snapshotDirtyState(appDataRoot, source, now);
+    dirtyScanSeq = dirtyStateSnapshot.scanSeq;
+    runState = await saveRunState(appDataRoot, target.id, sourceId, {
+      runId: scanId,
+      mode: 'full',
+      status: 'running',
+      scanSeq: dirtyScanSeq,
+      pendingFolders: [],
+      cursor: resumeFrom ? {
+        backupId: scanId,
+        relativePath: resumeFrom.relativePath,
+        folderHash: resumeFrom.folderHash
+      } : null,
+      startedAt: resumed ? existingRunState.startedAt || nowIso(now) : nowIso(now)
+    }, now);
 
-  const hashRecordSession = createHashRecordSession(targetRoot);
-  const inFlightHashes = createFileTaskHashCoordinator();
-  const fileQueue = createBoundedQueue({ name: 'file', capacity: queueCapacity });
-  const pendingFilePromises = new Set();
-
-  function queuePreview(queue, mapper) {
-    return queue.preview(20, mapper);
+    logger.info('Resume run initialized.', {
+      machineId,
+      sourceId,
+      scanId,
+      backupId: scanId,
+      resumed,
+      cursor: resumeFrom
+        ? {
+            relativePath: resumeFrom.relativePath,
+            folderHash: resumeFrom.folderHash
+          }
+        : null
+    });
+  } else {
+    dirtyStateSnapshot = await snapshotDirtyState(appDataRoot, source, now);
+    dirtyScanSeq = dirtyStateSnapshot.scanSeq;
+    const existingRunState = !options.forceNewScan
+      ? await loadRunState(appDataRoot, target.id, sourceId)
+      : null;
+    const resumeFrom = (!options.forceNewScan
+      && existingRunState
+      && existingRunState.mode === 'incremental'
+      && existingRunState.status === 'paused'
+      && source.cursor
+      && source.cursor.status === 'paused')
+      ? source.cursor.relativePath
+      : null;
+    selectedDirtyFolders = selectDirtyFolders(dirtyStateSnapshot.state, dirtyScanSeq, resumeFrom)
+      .map((entry) => entry.relativePath);
+    scanId = existingRunState && existingRunState.mode === 'incremental' && existingRunState.status === 'paused'
+      ? existingRunState.runId
+      : createScanId(now);
+    runState = await saveRunState(appDataRoot, target.id, sourceId, {
+      runId: scanId,
+      mode: 'incremental',
+      status: 'running',
+      scanSeq: dirtyScanSeq,
+      pendingFolders: selectedDirtyFolders,
+      cursor: resumeFrom ? {
+        backupId: scanId,
+        relativePath: resumeFrom
+      } : null,
+      startedAt: existingRunState && existingRunState.status === 'paused'
+        ? existingRunState.startedAt || nowIso(now)
+        : nowIso(now)
+    }, now);
   }
+
+  summary.scanId = scanId;
+  errorReport = await createErrorReportWriter(targetRoot, machineId, sourceId, scanId);
+  summary.reportPath = errorReport.reportPath;
+  progress.scanId = scanId;
 
   function refreshQueues() {
     const fileSnapshot = fileQueue.snapshot();
@@ -205,7 +296,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         depth: fileSnapshot.depth,
         pending: fileSnapshot.depth + fileWorkers.length,
         active: fileWorkers.length,
-        waitingItems: queuePreview(fileQueue, (item) => ({
+        waitingItems: fileQueue.preview(20, (item) => ({
           sourceRelativePath: item.sourceRelativePath,
           totalBytes: item.stats?.size || 0
         })),
@@ -223,6 +314,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     if (typeof options.onProgress !== 'function') {
       return;
     }
+
     const forceEmit = force
       || event?.type === 'backup-started'
       || event?.type === 'backup-paused'
@@ -237,9 +329,9 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       return;
     }
     lastProgressEmitAt = current;
+
     options.onProgress({
-      summary: { ...summary },
-      progress: JSON.parse(JSON.stringify(progress)),
+      ...cloneProgress(summary, progress),
       event,
       trace: null
     });
@@ -254,6 +346,17 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       pendingFiles: pendingFilePromises.size
     });
     emitProgress({ type: 'backup-pausing', phase }, true);
+  }
+
+  async function persistSourceCursor(relativePath, status, nowValue = now) {
+    await updateSourceRuntimeState(appDataRoot, targetRoot, machineId, sourceId, (current) => ({
+      cursor: {
+        ...(current.cursor || { relativePath: null, status: null, updatedAt: null }),
+        relativePath: relativePath || null,
+        status: status || null,
+        updatedAt: relativePath ? nowIso(nowValue) : null
+      }
+    }), nowValue);
   }
 
   function updateCompletedResult(result, stats) {
@@ -281,7 +384,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         mtimeMs: stats.mtimeMs,
         fileHash: result.fileHash,
         logicalPath: result.logicalPath,
-        updatedAt: now.toISOString()
+        updatedAt: nowIso(now)
       };
       sourceSnapshotCache.set(result.sourceRelativePath, sourceSnapshot.files[result.sourceRelativePath]);
     }
@@ -334,10 +437,11 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       .catch((error) => handleFileError(error, fileItem));
   }
 
-  const filePool = createFixedWorkerPool({
+  const startedAt = Date.now();
+
+  const filePool = createFileWorkerPool({
     queue: fileQueue,
     size: workerCount,
-    prefix: 'W',
     process: async (item, worker) => {
       const started = Date.now();
       try {
@@ -373,6 +477,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           item.resolveFile(null);
           return null;
         }
+
         item.resolveFile(result);
         throughputBytesProcessed += result.bytesProcessed || 0;
         progress.throughputBytesPerSecond = Date.now() > startedAt
@@ -390,7 +495,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         throw error;
       } finally {
         summary.copyTaskDurationMs += Date.now() - started;
-        fileTaskCount += 1;
+        taskCount += 1;
         emitProgress({ type: 'task-completed', pool: 'file', workerId: worker.id, sourceRelativePath: item.sourceRelativePath });
       }
     },
@@ -457,117 +562,141 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       }
     }
   });
+
+  async function handleFolderStart(folder) {
+    const folderHash = folder.folderHash || createFolderHash(folder.relativePath);
+    activeFolder = {
+      relativePath: folder.relativePath,
+      folderHash
+    };
+
+    logger.info('Processing folder from traversal stack.', {
+      scanId,
+      folderPath: folder.folderPath,
+      relativePath: folder.relativePath,
+      folderHash,
+      resumed: mode === 'full' ? resumed : Boolean(runState.cursor),
+      foldersProcessed: summary.foldersProcessed,
+      filesProcessed: summary.filesProcessed,
+      filesCopied: summary.filesCopied
+    });
+
+    await persistSourceCursor(folder.relativePath, 'running', now);
+    runState = await saveRunState(appDataRoot, target.id, sourceId, {
+      ...runState,
+      status: 'running',
+      cursor: {
+        backupId: scanId,
+        relativePath: folder.relativePath,
+        folderHash
+      }
+    }, now);
+  }
+
+  async function handleFolderCompleted(folder) {
+    const folderHash = folder.folderHash || createFolderHash(folder.relativePath);
+    lastCompletedFolder = {
+      relativePath: folder.relativePath,
+      folderHash
+    };
+    summary.foldersProcessed += 1;
+    progress.foldersProcessed = summary.foldersProcessed;
+
+    if (mode === 'incremental') {
+      completedDirtyFolders.add(folder.relativePath);
+      await clearDirtyFolderIfUnchanged(appDataRoot, source, folder.relativePath, dirtyScanSeq, now);
+      runState = await saveRunState(appDataRoot, target.id, sourceId, {
+        ...runState,
+        pendingFolders: selectedDirtyFolders.filter((relativePath) => !completedDirtyFolders.has(relativePath))
+      }, now);
+    }
+
+    await hashRecordSession.flush();
+    emitProgress({ type: 'folder-completed', relativePath: folder.relativePath }, true);
+  }
+
+  async function handleMissingFolder(folder, error) {
+    await errorReport.append({
+      type: 'missing-folder',
+      relativePath: folder.relativePath,
+      path: folder.folderPath,
+      code: error.code,
+      message: error.message
+    });
+    summary.skippedFolders += 1;
+    summary.errors += 1;
+    progress.skippedFolders = summary.skippedFolders;
+    progress.errors = summary.errors;
+    if (mode === 'incremental') {
+      completedDirtyFolders.add(folder.relativePath);
+      await clearDirtyFolderIfUnchanged(appDataRoot, source, folder.relativePath, dirtyScanSeq, now);
+      runState = await saveRunState(appDataRoot, target.id, sourceId, {
+        ...runState,
+        pendingFolders: selectedDirtyFolders.filter((relativePath) => !completedDirtyFolders.has(relativePath))
+      }, now);
+    }
+    emitProgress({ type: 'folder-skipped', relativePath: folder.relativePath }, true);
+  }
+
+  async function handleMissingFile(fileEntry, error) {
+    await errorReport.append({
+      type: isMissingPathError(error) ? 'missing-file' : 'file-stat-error',
+      relativePath: toPosixPath(fileEntry.relativePath),
+      path: fileEntry.path,
+      code: error.code || null,
+      message: error.message
+    });
+    summary.skippedFiles += 1;
+    summary.errors += 1;
+    progress.skippedFiles = summary.skippedFiles;
+    progress.errors = summary.errors;
+    emitProgress({ type: 'file-skipped', sourceRelativePath: toPosixPath(fileEntry.relativePath) }, true);
+  }
+
   filePool.start();
   emitProgress({ type: 'backup-started' }, true);
 
   try {
-    for await (const resumeFolder of resumeRun.folders) {
+    if (mode === 'full') {
+      await scanFullSource({
+        sourcePath: source.sourcePath,
+        resumeFrom: runState.cursor,
+        ignoreMatcher,
+        shouldAbort: shouldStopForPause,
+        onFolder: handleFolderStart,
+        onFolderCompleted: handleFolderCompleted,
+        onMissingFolder: handleMissingFolder,
+        onMissingFile: handleMissingFile,
+        enqueueFile: async (fileItem) => enqueueFile({
+          ...fileItem,
+          sourceRelativePath: toPosixPath(fileItem.sourceRelativePath),
+          now
+        })
+      });
       if (shouldStopForPause()) {
         paused = true;
-        break;
       }
-
-      activeResumeCursor = {
-        folderHash: resumeFolder.folderHash,
-        relativePath: resumeFolder.relativePath
-      };
-      logger.info('Processing folder from traversal stack.', {
-        scanId,
-        folderPath: resumeFolder.folderPath,
-        relativePath: resumeFolder.relativePath,
-        folderHash: resumeFolder.folderHash,
-        resumed: resumeRun.resumed,
-        foldersProcessed: summary.foldersProcessed,
-        filesProcessed: summary.filesProcessed,
-        filesCopied: summary.filesCopied
-      });
-      await saveCursorFolder(targetRoot, machineId, sourceId, resumeRun.backupId, activeResumeCursor, {
-        appDataRoot,
-        status: 'running',
-        now
-      });
-
-      let directories;
-      let files;
-      try {
-        ({ directories, files } = await readFolderEntries(resumeFolder.folderPath, resumeFolder.relativePath, ignoreMatcher));
-      } catch (error) {
-        if (!isMissingPathError(error)) {
-          throw error;
-        }
-        await errorReport.append({
-          type: 'missing-folder',
-          relativePath: resumeFolder.relativePath,
-          path: resumeFolder.folderPath,
-          code: error.code,
-          message: error.message
-        });
-        summary.skippedFolders += 1;
-        summary.errors += 1;
-        progress.skippedFolders = summary.skippedFolders;
-        progress.errors = summary.errors;
-        emitProgress({ type: 'folder-skipped', relativePath: resumeFolder.relativePath }, true);
-        continue;
-      }
-
-      const folderFilePromises = [];
-      for (const fileEntry of files) {
-        if (shouldStopForPause()) {
-          paused = true;
-          break;
-        }
-
-        const sourceRelativePath = resumeFolder.relativePath === '.'
-          ? fileEntry.name
-          : path.posix.join(resumeFolder.relativePath, fileEntry.name);
-        const normalizedRelativePath = toPosixPath(sourceRelativePath);
-
-        let stats;
-        try {
-          stats = await fs.stat(fileEntry.path);
-        } catch (error) {
-          await errorReport.append({
-            type: isMissingPathError(error) ? 'missing-file' : 'file-stat-error',
-            relativePath: normalizedRelativePath,
-            path: fileEntry.path,
-            code: error.code || null,
-            message: error.message
-          });
-          summary.skippedFiles += 1;
-          summary.errors += 1;
-          progress.skippedFiles = summary.skippedFiles;
-          progress.errors = summary.errors;
-          emitProgress({ type: 'file-skipped', sourceRelativePath: normalizedRelativePath }, true);
-          continue;
-        }
-
-        folderFilePromises.push(enqueueFile({
-          sourceFilePath: fileEntry.path,
-          sourceRelativePath: normalizedRelativePath,
-          stats,
+    } else {
+      await scanDirtyFolders({
+        sourcePath: source.sourcePath,
+        dirtyState: dirtyStateSnapshot.state,
+        scanSeq: dirtyScanSeq,
+        resumeFrom: runState.cursor ? runState.cursor.relativePath : null,
+        ignoreMatcher,
+        shouldAbort: shouldStopForPause,
+        onFolder: handleFolderStart,
+        onFolderCompleted: handleFolderCompleted,
+        onMissingFolder: handleMissingFolder,
+        onMissingFile: handleMissingFile,
+        enqueueFile: async (fileItem) => enqueueFile({
+          ...fileItem,
+          sourceRelativePath: toPosixPath(fileItem.sourceRelativePath),
           now
-        }));
-      }
-
-      if (paused) {
-        break;
-      }
-
-      const folderResults = await Promise.all(folderFilePromises);
-
-      lastCompletedResumeCursor = {
-        folderHash: resumeFolder.folderHash,
-        relativePath: resumeFolder.relativePath
-      };
-      await saveCursorFolder(targetRoot, machineId, sourceId, resumeRun.backupId, lastCompletedResumeCursor, {
-        appDataRoot,
-        status: 'running',
-        now
+        })
       });
-      summary.foldersProcessed += 1;
-      progress.foldersProcessed = summary.foldersProcessed;
-      await hashRecordSession.flush();
-      emitProgress({ type: 'folder-completed', relativePath: resumeFolder.relativePath }, true);
+      if (shouldStopForPause()) {
+        paused = true;
+      }
     }
   } finally {
     if (!paused && shouldStopForPause()) {
@@ -589,17 +718,32 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     await hashRecordSession.flush();
   }
 
-  sourceSnapshot.updatedAt = now.toISOString();
+  sourceSnapshot.updatedAt = nowIso(now);
   await saveSourceSnapshot(targetRoot, sourceSnapshot);
 
   if (paused) {
-    const pausedCursor = activeResumeCursor
-      && lastCompletedResumeCursor
-      && activeResumeCursor.folderHash === lastCompletedResumeCursor.folderHash
-      && activeResumeCursor.relativePath === lastCompletedResumeCursor.relativePath
-      ? lastCompletedResumeCursor
-      : activeResumeCursor || lastCompletedResumeCursor;
-    await markGenerationPaused(targetRoot, machineId, sourceId, now, pausedCursor, appDataRoot);
+    const pausedFolder = activeFolder
+      && lastCompletedFolder
+      && activeFolder.relativePath === lastCompletedFolder.relativePath
+      ? lastCompletedFolder
+      : activeFolder || lastCompletedFolder || (runState.cursor ? {
+        relativePath: runState.cursor.relativePath,
+        folderHash: runState.cursor.folderHash || createFolderHash(runState.cursor.relativePath)
+      } : null);
+
+    await persistSourceCursor(pausedFolder ? pausedFolder.relativePath : null, pausedFolder ? 'paused' : null, now);
+    await saveRunState(appDataRoot, target.id, sourceId, {
+      ...runState,
+      status: 'paused',
+      cursor: pausedFolder ? {
+        backupId: scanId,
+        relativePath: pausedFolder.relativePath,
+        folderHash: pausedFolder.folderHash
+      } : null,
+      pendingFolders: mode === 'incremental'
+        ? selectedDirtyFolders.filter((relativePath) => !completedDirtyFolders.has(relativePath))
+        : runState.pendingFolders
+    }, now);
     progress.status = 'paused';
     delete progress.pausePhase;
     emitProgress({ type: 'backup-paused' }, true);
@@ -616,25 +760,42 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     };
   }
 
-  await markGenerationCompleted(targetRoot, machineId, sourceId, now, appDataRoot);
-  await updateSourceScanState(
-    appDataRoot,
-    machineId,
-    sourceId,
-    {
-      targetRoot,
-      lastCompletedScan: scanId,
-      lastCompletedAt: now.toISOString()
+  if (mode === 'full') {
+    for (const relativePath of Object.keys(dirtyStateSnapshot.state.folders || {})) {
+      await clearDirtyFolderIfUnchanged(appDataRoot, source, relativePath, dirtyScanSeq, now);
+    }
+  }
+
+  await saveRunState(appDataRoot, target.id, sourceId, {
+    ...runState,
+    status: 'completed',
+    cursor: null,
+    pendingFolders: [],
+    completedAt: nowIso(now)
+  }, now);
+
+  await updateSourceRuntimeState(appDataRoot, targetRoot, machineId, sourceId, (current) => ({
+    lastCompletedAt: nowIso(now),
+    baselineAt: mode === 'full' && !current.baselineAt ? nowIso(now) : current.baselineAt,
+    cursor: {
+      relativePath: null,
+      status: null,
+      updatedAt: null
     },
-    now
-  );
+    watchState: {
+      ...(current.watchState || buildDefaultWatchState(sourceId)),
+      needsRescan: mode === 'full' ? false : Boolean((current.watchState || {}).needsRescan),
+      lastEventAt: (current.watchState || {}).lastEventAt || null
+    }
+  }), now);
 
   progress.status = 'completed';
   emitProgress({ type: 'backup-completed' }, true);
   summary.hashTaskAverageMs = 0;
-  summary.copyTaskAverageMs = fileTaskCount > 0 ? Math.round(summary.copyTaskDurationMs / fileTaskCount) : 0;
+  summary.copyTaskAverageMs = taskCount > 0 ? Math.round(summary.copyTaskDurationMs / taskCount) : 0;
   logger.info('Backup source completed.', {
     ...summary,
+    mode,
     pipeline: 'single-queue',
     durationMs: Date.now() - startedAt
   });

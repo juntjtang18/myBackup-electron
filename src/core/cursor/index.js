@@ -1,4 +1,4 @@
 module.exports = {
-  ...require('./cursorManager'),
-  ...require('./cursorState')
+  ...require('./cursorState'),
+  ...require('../scanner/folderWalker')
 };

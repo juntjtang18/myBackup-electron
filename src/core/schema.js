@@ -1,7 +1,7 @@
 const os = require('os');
 const path = require('path');
 const { createMachineId, createScanId, createSourceId, sanitizeSegment } = require('./ids');
-const { machineBackupRoot, mergedBackupRoot, toPosixPath } = require('./layout');
+const { toPosixPath } = require('./layout');
 
 const SCHEMA_VERSION = 1;
 const CONTENT_TYPES = new Set(['plain', 'blocks']);
@@ -25,6 +25,21 @@ function assertBoolean(value, fieldName) {
 function assertArray(value, fieldName) {
   if (!Array.isArray(value)) {
     throw new Error(`${fieldName} must be an array.`);
+  }
+}
+
+function assertNullableString(value, fieldName) {
+  if (value !== null && value !== undefined) {
+    assertNonEmptyString(value, fieldName);
+  }
+}
+
+function assertNullableNonNegativeInteger(value, fieldName) {
+  if (value === null || value === undefined) {
+    return;
+  }
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${fieldName} must be a non-negative integer or null.`);
   }
 }
 
@@ -60,6 +75,10 @@ function createSourceRecord(input, now = new Date()) {
   const sourceId = input.sourceId || createSourceId(resolvedSourcePath);
   const mergeEnabled = Boolean(input.mergeEnabled);
   const mergeKey = mergeEnabled ? sanitizeSegment(input.mergeKey || path.basename(resolvedSourcePath) || sourceId) : null;
+  const watchEnabled = input.watchEnabled === undefined ? true : Boolean(input.watchEnabled);
+  const backupIntervalMinutes = input.backupIntervalMinutes === undefined || input.backupIntervalMinutes === null
+    ? null
+    : Number(input.backupIntervalMinutes);
 
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -69,8 +88,19 @@ function createSourceRecord(input, now = new Date()) {
     organizeMedia: Boolean(input.organizeMedia),
     mergeEnabled,
     mergeKey,
-    targetSubdir: mergeEnabled ? mergedBackupRoot(mergeKey) : machineBackupRoot(input.machineId, sourceId),
-    lastCompletedScan: input.lastCompletedScan || null,
+    watchEnabled,
+    backupIntervalMinutes,
+    baselineAt: input.baselineAt || null,
+    watchState: {
+      dirtyRef: input.watchState?.dirtyRef || `watch/${sourceId}.dirty.json`,
+      needsRescan: Boolean(input.watchState?.needsRescan),
+      lastEventAt: input.watchState?.lastEventAt || null
+    },
+    cursor: {
+      relativePath: input.cursor?.relativePath || null,
+      status: input.cursor?.status || null,
+      updatedAt: input.cursor?.updatedAt || null
+    },
     lastCompletedAt: input.lastCompletedAt || null,
     createdAt: input.createdAt || nowIso(now),
     updatedAt: input.updatedAt || nowIso(now)
@@ -193,7 +223,21 @@ function validateSourceRecord(record) {
   if (record.mergeEnabled) {
     assertNonEmptyString(record.mergeKey, 'mergeKey');
   }
-  assertNonEmptyString(record.targetSubdir, 'targetSubdir');
+  assertBoolean(record.watchEnabled, 'watchEnabled');
+  assertNullableNonNegativeInteger(record.backupIntervalMinutes, 'backupIntervalMinutes');
+  assertNullableString(record.baselineAt, 'baselineAt');
+  if (!record.watchState || typeof record.watchState !== 'object') {
+    throw new Error('watchState must be an object.');
+  }
+  assertNonEmptyString(record.watchState.dirtyRef, 'watchState.dirtyRef');
+  assertBoolean(record.watchState.needsRescan, 'watchState.needsRescan');
+  assertNullableString(record.watchState.lastEventAt, 'watchState.lastEventAt');
+  if (!record.cursor || typeof record.cursor !== 'object') {
+    throw new Error('cursor must be an object.');
+  }
+  assertNullableString(record.cursor.relativePath, 'cursor.relativePath');
+  assertNullableString(record.cursor.status, 'cursor.status');
+  assertNullableString(record.cursor.updatedAt, 'cursor.updatedAt');
   return record;
 }
 

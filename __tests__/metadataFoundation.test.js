@@ -2,7 +2,14 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs-extra');
 const { createFolderId, createMachineId, createScanId, createSourceId } = require('../src/core/ids');
-const { backupSchemaPath, backupSourcesPath, legacyLocalConfigPath, schemaMigrationMarkerPath } = require('../src/core/paths');
+const {
+  backupSchemaPath,
+  backupSourcesPath,
+  dirtyStatePath,
+  legacyLocalConfigPath,
+  runStatePath,
+  schemaMigrationMarkerPath
+} = require('../src/core/paths');
 const {
   configPath,
   errorReportPath,
@@ -31,10 +38,11 @@ const { ensureMachine, updateMachine } = require('../src/core/machineRegistry');
 const {
   BACKUP_SCHEMA_VERSION,
   ensureBackupSchema,
-  loadBackupScanState,
   loadBackupSchema,
   loadBackupSource
 } = require('../src/core/backupSchema');
+const { createTargetId } = require('../src/core/targetConfig');
+const { loadLegacyBackupScanState } = require('../src/core/legacy/scanStateStore');
 const { registerSource, updateSourceScanState } = require('../src/core/sourceRegistry');
 const { buildConflictPath, classifyMedia, planLogicalTarget } = require('../src/core/pathPlanner');
 const {
@@ -42,7 +50,7 @@ const {
   getResumeState,
   markGenerationCompleted,
   startNewGeneration
-} = require('../src/core/scanManager');
+} = require('../src/core/legacy/scanManager');
 const { hashFile } = require('../src/core/hashService');
 const { lookupHashRecord, registerHashRecord } = require('../src/core/hashIndex');
 const { packHashRecord, unpackHashRecord } = require('../src/core/hashRecordCodec');
@@ -56,11 +64,26 @@ const {
   writePlainFile
 } = require('../src/core/plainFileStorage');
 const { backupSource } = require('../src/core/backupCoordinator');
-const { createWorkScheduler } = require('../src/core/workScheduler');
+const { createWorkScheduler } = require('../src/core/legacy/workScheduler');
 const { buildFolderTraversalStack } = require('../src/core/scanner/folderWalker');
 const { parseIgnoreFile, shouldIgnorePath, buildIgnoreRules } = require('../src/core/ignoreMatcher');
 const { readJsonIfExists, writeJsonAtomic } = require('../src/core/jsonStore');
 const { createSourceSnapshot, loadSourceSnapshot, saveSourceSnapshot } = require('../src/core/sourceSnapshotStore');
+const {
+  createRunState,
+  ensureRunState,
+  loadRunState,
+  saveRunState,
+  validateRunState
+} = require('../src/core/runStateStore');
+const { createWatchService } = require('../src/core/watch/watchService');
+const {
+  clearDirtyFolderIfUnchanged,
+  ensureDirtyState,
+  loadDirtyState,
+  markDirtyFolder,
+  snapshotDirtyState
+} = require('../src/core/watch/dirtyStore');
 const { createTargetAvailabilityMonitor, checkTargetAvailability } = require('../src/core/targetAvailability');
 const { loadLoggerConfig, parseLoggerProperties } = require('../src/core/loggerConfig');
 const {
@@ -80,6 +103,7 @@ const {
   normalizeWorkerPools,
   saveLocalConfig
 } = require('../src/core/localConfig');
+const { addTarget } = require('../src/core/targetRegistry');
 const { listSourcesForMachine, loadCurrentMachineContext } = require('../src/core/sourceCatalog');
 const { configureLogger, createLogger, formatLogMessage, getLogLevel } = require('../src/core/logger');
 
@@ -154,9 +178,20 @@ describe('metadata foundation', () => {
       mergeKey: 'Documents'
     });
 
-    expect(separated.targetSubdir).toBe(`Backups/Machines/machine-a/${separated.sourceId}`);
     expect(merged.mergeKey).toBe('documents');
-    expect(merged.targetSubdir).toBe('documents');
+    expect(separated.watchEnabled).toBe(true);
+    expect(separated.backupIntervalMinutes).toBeNull();
+    expect(separated.baselineAt).toBeNull();
+    expect(separated.watchState).toEqual({
+      dirtyRef: `watch/${separated.sourceId}.dirty.json`,
+      needsRescan: false,
+      lastEventAt: null
+    });
+    expect(merged.cursor).toEqual({
+      relativePath: null,
+      status: null,
+      updatedAt: null
+    });
     expect(validateSourceRecord(merged)).toBe(merged);
   });
 
@@ -350,6 +385,288 @@ describe('metadata foundation', () => {
     expect(tempRoot('/target')).toBe(path.join('/target', '.mybackup', 'tmp'));
   });
 
+  test('resolves dirty-state paths under local app data', () => {
+    expect(dirtyStatePath('/app', 'source-a')).toBe(path.join('/app', 'watch', 'source-a.dirty.json'));
+    expect(dirtyStatePath('/app', 'watch/source-a.dirty.json')).toBe(
+      path.join('/app', 'watch', 'source-a.dirty.json')
+    );
+  });
+
+  test('resolves per-target run-state paths under local app data', () => {
+    expect(runStatePath('/app', 'target-a', 'source-a')).toBe(
+      path.join('/app', 'run', 'target-a', 'source-a.run.json')
+    );
+  });
+
+  test('creates and persists a per-source dirty state file', async () => {
+    const source = createSourceRecord({
+      machineId: 'machine-a',
+      sourcePath: '/Users/James/Documents',
+      mergeEnabled: false
+    }, new Date('2026-06-10T10:00:00Z'));
+
+    const state = await ensureDirtyState(tempRootPath, source, new Date('2026-06-10T10:00:00Z'));
+    expect(state).toEqual({
+      version: 1,
+      sourceId: source.sourceId,
+      lastEventSeq: 0,
+      updatedAt: '2026-06-10T10:00:00.000Z',
+      folders: {}
+    });
+
+    expect(await loadDirtyState(tempRootPath, source)).toEqual(state);
+  });
+
+  test('marks dirty folders with monotonic event sequences', async () => {
+    const source = createSourceRecord({
+      machineId: 'machine-a',
+      sourcePath: '/Users/James/Documents',
+      mergeEnabled: false
+    }, new Date('2026-06-10T10:00:00Z'));
+
+    await ensureDirtyState(tempRootPath, source, new Date('2026-06-10T10:00:00Z'));
+    await markDirtyFolder(tempRootPath, source, 'IBM/SametimeTranscripts', new Date('2026-06-10T10:01:00Z'));
+    const second = await markDirtyFolder(
+      tempRootPath,
+      source,
+      'IBM/SametimeTranscripts/child/',
+      new Date('2026-06-10T10:02:00Z')
+    );
+
+    expect(second.lastEventSeq).toBe(2);
+    expect(second.folders).toEqual({
+      'IBM/SametimeTranscripts': {
+        seq: 1,
+        changedAt: '2026-06-10T10:01:00.000Z'
+      },
+      'IBM/SametimeTranscripts/child': {
+        seq: 2,
+        changedAt: '2026-06-10T10:02:00.000Z'
+      }
+    });
+  });
+
+  test('clears a dirty folder only when unchanged since the scan snapshot', async () => {
+    const source = createSourceRecord({
+      machineId: 'machine-a',
+      sourcePath: '/Users/James/Documents',
+      mergeEnabled: false
+    }, new Date('2026-06-10T10:00:00Z'));
+
+    await markDirtyFolder(tempRootPath, source, 'a/b', new Date('2026-06-10T10:01:00Z'));
+    await markDirtyFolder(tempRootPath, source, 'a/c', new Date('2026-06-10T10:02:00Z'));
+
+    const snapshot = await snapshotDirtyState(tempRootPath, source, new Date('2026-06-10T10:03:00Z'));
+    expect(snapshot.scanSeq).toBe(2);
+
+    const cleared = await clearDirtyFolderIfUnchanged(
+      tempRootPath,
+      source,
+      'a/b',
+      snapshot.scanSeq,
+      new Date('2026-06-10T10:04:00Z')
+    );
+    expect(cleared.folders).toEqual({
+      'a/c': {
+        seq: 2,
+        changedAt: '2026-06-10T10:02:00.000Z'
+      }
+    });
+
+    await markDirtyFolder(tempRootPath, source, 'a/c', new Date('2026-06-10T10:05:00Z'));
+    const preserved = await clearDirtyFolderIfUnchanged(
+      tempRootPath,
+      source,
+      'a/c',
+      snapshot.scanSeq,
+      new Date('2026-06-10T10:06:00Z')
+    );
+    expect(preserved.folders['a/c']).toEqual({
+      seq: 3,
+      changedAt: '2026-06-10T10:05:00.000Z'
+    });
+  });
+
+  test('creates and persists local run state per target and source', async () => {
+    const initial = await ensureRunState(
+      tempRootPath,
+      'target-a',
+      'source-a',
+      new Date('2026-06-10T11:00:00Z')
+    );
+
+    expect(initial).toEqual({
+      version: 1,
+      targetId: 'target-a',
+      sourceId: 'source-a',
+      runId: '20260610-110000',
+      mode: 'full',
+      status: 'idle',
+      scanSeq: null,
+      pendingFolders: [],
+      cursor: null,
+      startedAt: null,
+      updatedAt: '2026-06-10T11:00:00.000Z',
+      completedAt: null
+    });
+
+    expect(await loadRunState(tempRootPath, 'target-a', 'source-a')).toEqual(initial);
+  });
+
+  test('persists run state with pending folders and cursor', async () => {
+    const saved = await saveRunState(
+      tempRootPath,
+      'target-a',
+      'source-a',
+      createRunState('target-a', 'source-a', {
+        runId: '20260610-111500',
+        mode: 'incremental',
+        status: 'running',
+        scanSeq: 42,
+        pendingFolders: ['a', 'a/b'],
+        cursor: {
+          backupId: '20260610-111500',
+          relativePath: 'a/b'
+        },
+        startedAt: '2026-06-10T11:15:00.000Z'
+      }, new Date('2026-06-10T11:15:00Z')),
+      new Date('2026-06-10T11:16:00Z')
+    );
+
+    expect(validateRunState(saved)).toBe(saved);
+    expect(saved).toMatchObject({
+      targetId: 'target-a',
+      sourceId: 'source-a',
+      runId: '20260610-111500',
+      mode: 'incremental',
+      status: 'running',
+      scanSeq: 42,
+      pendingFolders: ['a', 'a/b'],
+      startedAt: '2026-06-10T11:15:00.000Z',
+      updatedAt: '2026-06-10T11:16:00.000Z'
+    });
+    expect(saved.cursor).toMatchObject({
+      scanId: '20260610-111500',
+      relativePath: 'a/b'
+    });
+  });
+
+  test('watch service bootstraps enabled sources and marks dirty folders on file events', async () => {
+    const targetRoot = path.join(tempRootPath, 'target');
+    await addTarget(tempRootPath, targetRoot);
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'watch-host',
+      displayName: 'Watch Host',
+      platform: 'darwin',
+      seed: 'watch-seed',
+      now: new Date('2026-06-10T12:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      targetRoot,
+      machineId: machine.machineId,
+      sourcePath: path.join(tempRootPath, 'watched-source'),
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-10T12:01:00Z'));
+
+    await fs.ensureDir(path.join(source.sourcePath, 'docs'));
+
+    const backendState = {
+      sources: [],
+      handlers: null,
+      stopped: false
+    };
+    const backend = {
+      async sync(sources, handlers) {
+        backendState.sources = sources;
+        backendState.handlers = handlers;
+      },
+      async stop() {
+        backendState.stopped = true;
+      }
+    };
+
+    const service = createWatchService('darwin', {
+      appDataRoot: tempRootPath,
+      backend
+    });
+
+    await service.bootstrap();
+
+    expect(backendState.sources).toHaveLength(1);
+    expect(backendState.sources[0]).toMatchObject({
+      machineId: machine.machineId,
+      sourceId: source.sourceId,
+      sourcePath: source.sourcePath
+    });
+    expect(await loadDirtyState(tempRootPath, source)).toMatchObject({
+      sourceId: source.sourceId,
+      lastEventSeq: 0
+    });
+
+    await backendState.handlers.onEvent(backendState.sources[0], {
+      eventPath: path.join(source.sourcePath, 'docs', 'a.txt')
+    });
+
+    const dirtyState = await loadDirtyState(tempRootPath, source);
+    expect(dirtyState.lastEventSeq).toBe(1);
+    expect(dirtyState.folders.docs.seq).toBe(1);
+    expect(dirtyState.folders.docs.changedAt).toBeTruthy();
+
+    const updatedSource = await loadBackupSource(tempRootPath, targetRoot, machine.machineId, source.sourceId);
+    expect(updatedSource.watchState.lastEventAt).not.toBeNull();
+
+    await service.stop();
+    expect(backendState.stopped).toBe(true);
+  });
+
+  test('watch service marks matching sources as needsRescan on watcher error', async () => {
+    const targetRoot = path.join(tempRootPath, 'target');
+    await addTarget(tempRootPath, targetRoot);
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'watch-error-host',
+      displayName: 'Watch Error Host',
+      platform: 'darwin',
+      seed: 'watch-error-seed',
+      now: new Date('2026-06-10T13:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      targetRoot,
+      machineId: machine.machineId,
+      sourcePath: path.join(tempRootPath, 'error-source'),
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-10T13:01:00Z'));
+
+    await fs.ensureDir(source.sourcePath);
+
+    const backendState = {
+      sources: [],
+      handlers: null
+    };
+    const backend = {
+      async sync(sources, handlers) {
+        backendState.sources = sources;
+        backendState.handlers = handlers;
+      },
+      async stop() {}
+    };
+
+    const service = createWatchService('darwin', {
+      appDataRoot: tempRootPath,
+      backend
+    });
+
+    await service.bootstrap();
+    await backendState.handlers.onError(backendState.sources[0], new Error('watch overflow'));
+
+    const updatedSource = await loadBackupSource(tempRootPath, targetRoot, machine.machineId, source.sourceId);
+    expect(updatedSource.watchState).toMatchObject({
+      needsRescan: true
+    });
+    expect(updatedSource.watchState.lastEventAt).not.toBeNull();
+  });
+
   test('bootstraps and reuses the local machine identity', async () => {
     const machine = await ensureMachine(tempRootPath, {
       hostname: 'James-MacBook',
@@ -413,8 +730,7 @@ describe('metadata foundation', () => {
     expect(updated.createdAt).toBe(first.createdAt);
     expect(updated.mergeEnabled).toBe(true);
     expect(updated.mergeKey).toBe('docs-shared');
-    expect(updated.targetSubdir).toBe('docs-shared');
-    expect(updated.lastCompletedScan).toBe(scanned.lastCompletedScan);
+    expect(updated.watchState.dirtyRef).toBe(`watch/${updated.sourceId}.dirty.json`);
     expect(updated.lastCompletedAt).toBe(scanned.lastCompletedAt);
   });
 
@@ -977,12 +1293,11 @@ describe('metadata foundation', () => {
     );
     expect(await fs.readFile(targetFile, 'utf8')).toBe('alpha');
 
-    const scanState = await loadBackupScanState(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
-    expect(scanState.status).toBe('completed');
-    expect(scanState.activeGeneration).toBe(summary.scanId);
+    const runState = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
+    expect(runState.status).toBe('completed');
+    expect(runState.runId).toBe(summary.scanId);
 
     const updatedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
-    expect(updatedSource.lastCompletedScan).toBe(summary.scanId);
     expect(updatedSource.lastCompletedAt).toBe('2026-06-07T08:10:00.000Z');
   });
 
@@ -1020,9 +1335,13 @@ describe('metadata foundation', () => {
 
     expect(summary.status).toBe('paused');
     const context = await loadCurrentMachineContext(tempRootPath);
-    expect(context.sources[0].scanState.status).toBe('paused');
-    expect(context.sources[0].scanState.resumeCursor).toMatchObject({
-      scanId: summary.scanId,
+    expect(context.sources[0].cursor).toMatchObject({
+      relativePath: '.',
+      status: 'paused'
+    });
+    const runState = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
+    expect(runState.status).toBe('paused');
+    expect(runState.cursor).toMatchObject({
       relativePath: '.'
     });
   });
@@ -1150,7 +1469,6 @@ describe('metadata foundation', () => {
     expect(resumed.status).toBe('completed');
     expect(resumed.filesCopied).toBe(2);
     expect(resumed.filesProcessed).toBeGreaterThanOrEqual(2);
-    expect(events.some((entry) => entry.module === 'ScanManager' && entry.message === 'Loaded resumable scan state.')).toBe(true);
     expect(events.some((entry) => entry.module === 'FolderWalker' && entry.message === 'Built resume traversal stack from cursor.')).toBe(true);
     expect(events.some((entry) => entry.module === 'BackupCoordinator' && entry.message === 'Processing folder from traversal stack.')).toBe(true);
     expect(events.some((entry) => entry.module === 'BackupCoordinator' && entry.message === 'First file task started.')).toBe(true);
@@ -1204,10 +1522,13 @@ describe('metadata foundation', () => {
     });
 
     expect(paused.status).toBe('paused');
-    const pausedScanState = await loadBackupScanState(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
-    expect(pausedScanState.status).toBe('paused');
-    expect(pausedScanState.resumeCursor.relativePath).toBe('.');
-    expect(pausedScanState.resumeCursor.folderHash).toBe(createFolderHash('.'));
+    const pausedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(pausedSource.cursor.relativePath).toBe('.');
+    expect(pausedSource.cursor.status).toBe('paused');
+    const pausedRunState = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
+    expect(pausedRunState.status).toBe('paused');
+    expect(pausedRunState.cursor.relativePath).toBe('.');
+    expect(pausedRunState.cursor.folderHash).toBe(createFolderHash('.'));
 
     const completed = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
       now: new Date('2026-06-07T08:20:00Z')
@@ -1217,9 +1538,15 @@ describe('metadata foundation', () => {
     expect(completed.scanId).toBe(paused.scanId);
     expect(completed.filesCopied).toBe(2);
 
-    const completedScanState = await loadBackupScanState(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
-    expect(completedScanState.status).toBe('completed');
-    expect(completedScanState.resumeCursor).toBeNull();
+    const completedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(completedSource.cursor).toEqual({
+      relativePath: null,
+      status: null,
+      updatedAt: null
+    });
+    const completedRunState = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
+    expect(completedRunState.status).toBe('completed');
+    expect(completedRunState.cursor).toBeNull();
 
     expect(
       await fs.readFile(
@@ -2182,7 +2509,7 @@ dist/**
       path: targetRoot,
       collapsed: true
     });
-    expect(await fs.pathExists(backupSourcesPath(targetRoot))).toBe(true);
+    expect(await fs.pathExists(backupSourcesPath(targetRoot))).toBe(false);
     const migratedContext = await loadCurrentMachineContext(targetRoot, { appDataRoot });
     expect(migratedContext.sources).toHaveLength(1);
     expect(migratedContext.sources[0]).toMatchObject({

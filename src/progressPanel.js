@@ -303,7 +303,7 @@
     `;
   }
 
-  function renderPoolPanel(poolView, safeKey) {
+  function renderPoolPanel(poolView, safeKey, showQueueDetails) {
     const workerLines = poolView.workers.length > 0
       ? poolView.workers.map((worker) => renderWorkerLine(poolView.pool, worker)).join('')
       : `<div class="queue-empty">${escapeHtml(poolView.emptyWorkersText)}</div>`;
@@ -311,7 +311,7 @@
       <section class="progress-pool progress-pool-${poolView.pool}" id="progress-${poolView.pool}-${safeKey}" data-progress-pool="${poolView.pool}" aria-label="${escapeHtml(poolView.title)}">
         <div class="pool-heading pool-heading-${poolView.pool}">${escapeHtml(poolView.title)}</div>
         <div class="worker-list worker-list-${poolView.pool}" id="${poolView.pool}-workers-${safeKey}">${workerLines}</div>
-        <div class="queue-block queue-block-${poolView.pool}" id="${poolView.pool}-queue-${safeKey}">${renderQueue(poolView)}</div>
+        ${showQueueDetails ? `<div class="queue-block queue-block-${poolView.pool}">${renderQueue(poolView)}</div>` : ''}
       </section>
     `;
   }
@@ -344,13 +344,14 @@
     const progressKey = input.progressKey || `${input.targetRoot || ''}::${input.source?.machineId || ''}::${input.source?.sourceId || ''}`;
     const safeKey = safeDomId(progressKey);
     const view = createProgressViewModel(entry);
+    const showQueueDetails = Boolean(input.showProgressQueueDetails);
     return `
       <tr class="source-progress-row">
         <td colspan="5">
           <div class="source-progress-panel" id="progress-panel-${safeKey}">
             ${renderSummary(view.summary)}
             <div class="progress-pools">
-              ${renderPoolPanel(view.pools.file || view.pools.hash, safeKey)}
+              ${renderPoolPanel(view.pools.file || view.pools.hash, safeKey, showQueueDetails)}
             </div>
           </div>
         </td>
@@ -374,7 +375,6 @@
     createProgressViewModel,
     normalizeProgress,
     renderBackupProgressPanel,
-    renderPoolPanel,
     shouldRenderImmediatelyForProgress
   };
 }));

@@ -39,22 +39,6 @@ function dirtyStatePath(appDataRoot, dirtyRefOrSourceId) {
   return path.join(appMetadataRoot(appDataRoot), relativePath);
 }
 
-function runStateRoot(appDataRoot) {
-  return path.join(appMetadataRoot(appDataRoot), 'run');
-}
-
-function runStatePath(appDataRoot, targetId, sourceId) {
-  const normalizedTargetId = String(targetId || '').trim();
-  const normalizedSourceId = String(sourceId || '').trim();
-  if (!normalizedTargetId) {
-    throw new Error('targetId is required.');
-  }
-  if (!normalizedSourceId) {
-    throw new Error('sourceId is required.');
-  }
-  return path.join(runStateRoot(appDataRoot), normalizedTargetId, `${normalizedSourceId}.run.json`);
-}
-
 function schemaMigrationMarkerPath(appDataRoot) {
   return path.join(appMetadataRoot(appDataRoot), 'schema-migration.json');
 }
@@ -169,8 +153,6 @@ module.exports = {
   mergedBackupRoot,
   resolveAppDataRoot,
   resolveTargetRoot,
-  runStatePath,
-  runStateRoot,
   scanCurrentPath,
   sourcePath,
   targetMetadataRoot,

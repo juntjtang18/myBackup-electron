@@ -28,18 +28,25 @@
           "watchState": {
             "dirtyRef": "watch/documents-0cf0ec50.dirty.json",
             "needsRescan": false,
-            "lastEventAt": null
+            "lastEventAt": "2026-06-14T05:23:10.168Z"
           },
-          "cursor": {
-            "relativePath": null,
+          "backupStatus": {
             "status": null,
-            "updatedAt": null
+            "mode": null,
+            "runId": null,
+            "copiedBytes": 0,
+            "startedAt": null,
+            "updatedAt": null,
+            "completedAt": null,
+            "cursor": null,
+            "scanSeq": null,
+            "error": null
           },
           "sourceSizeBytes": 6988655022,
           "backupSizeBytes": 6988655022,
-          "lastCompletedAt": "2026-06-13T18:44:26.213Z",
+          "lastCompletedAt": "2026-06-14T04:01:03.312Z",
           "createdAt": "2026-06-02T04:18:46.753Z",
-          "updatedAt": "2026-06-13T18:44:26.213Z",
+          "updatedAt": "2026-06-14T05:23:10.168Z",
           "scanState": {
             "status": "completed",
             "activeGeneration": "20260610-064603",
@@ -63,10 +70,17 @@
             "needsRescan": false,
             "lastEventAt": null
           },
-          "cursor": {
-            "relativePath": null,
+          "backupStatus": {
             "status": null,
-            "updatedAt": null
+            "mode": null,
+            "runId": null,
+            "copiedBytes": 0,
+            "startedAt": null,
+            "updatedAt": null,
+            "completedAt": null,
+            "cursor": null,
+            "scanSeq": null,
+            "error": null
           },
           "sourceSizeBytes": 6148,
           "backupSizeBytes": 6148,
@@ -96,16 +110,29 @@
             "needsRescan": false,
             "lastEventAt": "2026-06-13T19:06:12.123Z"
           },
-          "cursor": {
-            "relativePath": "2016/2016-09-07",
-            "status": "paused",
-            "updatedAt": "2026-06-13T20:38:48.645Z"
+          "backupStatus": {
+            "status": "running",
+            "mode": "full",
+            "runId": "20260614-055509",
+            "copiedBytes": 31572845013,
+            "startedAt": "2026-06-14T05:55:09.487Z",
+            "updatedAt": "2026-06-14T05:55:09.487Z",
+            "completedAt": null,
+            "cursor": {
+              "backupId": "20260614-055509",
+              "relativePath": "Lightroom source",
+              "folderHash": "lightroom-source-7b38923643",
+              "status": "running",
+              "updatedAt": "2026-06-14T05:55:09.487Z"
+            },
+            "scanSeq": 1,
+            "error": null
           },
           "sourceSizeBytes": null,
           "backupSizeBytes": null,
           "lastCompletedAt": null,
           "createdAt": "2026-06-13T18:46:13.662Z",
-          "updatedAt": "2026-06-13T20:38:48.645Z"
+          "updatedAt": "2026-06-14T05:55:09.487Z"
         }
       ]
     }
@@ -118,5 +145,5 @@
     "importedSourceCount": 0
   },
   "createdAt": "2026-06-10T06:30:28.970Z",
-  "updatedAt": "2026-06-13T20:38:48.645Z"
+  "updatedAt": "2026-06-14T05:55:09.487Z"
 }

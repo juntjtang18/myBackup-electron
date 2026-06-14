@@ -11,7 +11,6 @@ const { createFileWorkerPool } = require('./engine/fileWorkerPool');
 const { scanFullSource } = require('./engine/fullScanner');
 const { scanDirtyFolders, selectDirtyFolders } = require('./engine/dirtyFolderScanner');
 const { processFileTask } = require('./engine/fileTaskProcessor');
-const { loadRunState, saveRunState } = require('./runStateStore');
 const { snapshotDirtyState, clearDirtyFolderIfUnchanged } = require('./watch/dirtyStore');
 const { createScanId } = require('./ids');
 const { createLogger } = require('./logger');
@@ -75,6 +74,17 @@ async function updateSourceRuntimeState(appDataRoot, targetRoot, machineId, sour
     },
     now
   );
+}
+
+function cloneBackupCursor(cursor, now = new Date()) {
+  if (!cursor || !cursor.relativePath) {
+    return null;
+  }
+  return {
+    ...cursor,
+    relativePath: cursor.relativePath,
+    updatedAt: cursor.updatedAt || nowIso(now)
+  };
 }
 
 function cloneProgress(summary, progress) {
@@ -180,7 +190,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   };
 
   let scanId = null;
-  let runState = null;
+  let backupStatus = source.backupStatus || {};
   let dirtyStateSnapshot = null;
   let dirtyScanSeq = null;
   let selectedDirtyFolders = [];
@@ -197,40 +207,44 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   let discoveredSourceBytes = 0;
 
   if (mode === 'full') {
-    const existingRunState = !options.forceNewScan
-      ? await loadRunState(appDataRoot, target.id, sourceId)
-      : null;
+    const existingBackupStatus = !options.forceNewScan ? (source.backupStatus || {}) : null;
     const resumeFrom = (!options.forceNewScan
-      && existingRunState
-      && existingRunState.mode === 'full'
-      && existingRunState.status === 'paused'
-      && source.cursor
-      && source.cursor.status === 'paused'
-      && source.cursor.relativePath)
+      && existingBackupStatus
+      && existingBackupStatus.mode === 'full'
+      && existingBackupStatus.status === 'paused'
+      && existingBackupStatus.cursor
+      && existingBackupStatus.cursor.relativePath)
       ? {
-          backupId: existingRunState.runId,
-          relativePath: source.cursor.relativePath,
-          folderHash: existingRunState.cursor?.folderHash || createFolderHash(source.cursor.relativePath)
+          backupId: existingBackupStatus.runId,
+          relativePath: existingBackupStatus.cursor.relativePath,
+          folderHash: existingBackupStatus.cursor.folderHash || createFolderHash(existingBackupStatus.cursor.relativePath)
         }
       : null;
     resumed = Boolean(resumeFrom);
-    scanId = resumed ? existingRunState.runId : createScanId(now);
+    scanId = resumed ? existingBackupStatus.runId : createScanId(now);
     dirtyStateSnapshot = await snapshotDirtyState(appDataRoot, source, now);
     dirtyScanSeq = dirtyStateSnapshot.scanSeq;
-    runState = await saveRunState(appDataRoot, target.id, sourceId, {
-      runId: scanId,
-      mode: 'full',
-      status: 'running',
-      scanSeq: dirtyScanSeq,
-      copiedBytes: resumed && existingRunState ? Number(existingRunState.copiedBytes || 0) : 0,
-      pendingFolders: [],
-      cursor: resumeFrom ? {
-        backupId: scanId,
-        relativePath: resumeFrom.relativePath,
-        folderHash: resumeFrom.folderHash
-      } : null,
-      startedAt: resumed ? existingRunState.startedAt || nowIso(now) : nowIso(now)
-    }, now);
+    backupStatus = (await updateSourceRuntimeState(appDataRoot, targetRoot, machineId, sourceId, (current) => ({
+      backupStatus: {
+        ...(current.backupStatus || {}),
+        status: 'running',
+        mode: 'full',
+        runId: scanId,
+        copiedBytes: resumed && existingBackupStatus ? Number(existingBackupStatus.copiedBytes || 0) : 0,
+        startedAt: resumed ? (existingBackupStatus.startedAt || nowIso(now)) : nowIso(now),
+        updatedAt: nowIso(now),
+        completedAt: null,
+        cursor: resumeFrom ? {
+          backupId: scanId,
+          relativePath: resumeFrom.relativePath,
+          folderHash: resumeFrom.folderHash,
+          status: 'running',
+          updatedAt: nowIso(now)
+        } : null,
+        scanSeq: dirtyScanSeq,
+        error: null
+      }
+    }), now)).backupStatus;
 
     logger.info('Resume run initialized.', {
       machineId,
@@ -248,41 +262,46 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   } else {
     dirtyStateSnapshot = await snapshotDirtyState(appDataRoot, source, now);
     dirtyScanSeq = dirtyStateSnapshot.scanSeq;
-    const existingRunState = !options.forceNewScan
-      ? await loadRunState(appDataRoot, target.id, sourceId)
-      : null;
+    const existingBackupStatus = !options.forceNewScan ? (source.backupStatus || {}) : null;
     const resumeFrom = (!options.forceNewScan
-      && existingRunState
-      && existingRunState.mode === 'incremental'
-      && existingRunState.status === 'paused'
-      && source.cursor
-      && source.cursor.status === 'paused')
-      ? source.cursor.relativePath
+      && existingBackupStatus
+      && existingBackupStatus.mode === 'incremental'
+      && existingBackupStatus.status === 'paused'
+      && existingBackupStatus.cursor
+      && existingBackupStatus.cursor.relativePath)
+      ? existingBackupStatus.cursor.relativePath
       : null;
     selectedDirtyFolders = selectDirtyFolders(dirtyStateSnapshot.state, dirtyScanSeq, resumeFrom)
       .map((entry) => entry.relativePath);
-    scanId = existingRunState && existingRunState.mode === 'incremental' && existingRunState.status === 'paused'
-      ? existingRunState.runId
+    scanId = existingBackupStatus && existingBackupStatus.mode === 'incremental' && existingBackupStatus.status === 'paused'
+      ? existingBackupStatus.runId
       : createScanId(now);
-    runState = await saveRunState(appDataRoot, target.id, sourceId, {
-      runId: scanId,
-      mode: 'incremental',
-      status: 'running',
-      scanSeq: dirtyScanSeq,
-      copiedBytes: existingRunState ? Number(existingRunState.copiedBytes || 0) : 0,
-      pendingFolders: selectedDirtyFolders,
-      cursor: resumeFrom ? {
-        backupId: scanId,
-        relativePath: resumeFrom
-      } : null,
-      startedAt: existingRunState && existingRunState.status === 'paused'
-        ? existingRunState.startedAt || nowIso(now)
-        : nowIso(now)
-    }, now);
+    backupStatus = (await updateSourceRuntimeState(appDataRoot, targetRoot, machineId, sourceId, (current) => ({
+      backupStatus: {
+        ...(current.backupStatus || {}),
+        status: 'running',
+        mode: 'incremental',
+        runId: scanId,
+        copiedBytes: existingBackupStatus ? Number(existingBackupStatus.copiedBytes || 0) : 0,
+        startedAt: existingBackupStatus && existingBackupStatus.status === 'paused'
+          ? (existingBackupStatus.startedAt || nowIso(now))
+          : nowIso(now),
+        updatedAt: nowIso(now),
+        completedAt: null,
+        cursor: resumeFrom ? {
+          backupId: scanId,
+          relativePath: resumeFrom,
+          status: 'running',
+          updatedAt: nowIso(now)
+        } : null,
+        scanSeq: dirtyScanSeq,
+        error: null
+      }
+    }), now)).backupStatus;
   }
 
   summary.scanId = scanId;
-  summary.copiedBytes = Number(runState.copiedBytes || 0);
+  summary.copiedBytes = Number(backupStatus.copiedBytes || 0);
   errorReport = await createErrorReportWriter(targetRoot, machineId, sourceId, scanId);
   summary.reportPath = errorReport.reportPath;
   progress.scanId = scanId;
@@ -349,15 +368,22 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     emitProgress({ type: 'backup-pausing', phase }, true);
   }
 
-  async function persistSourceCursor(relativePath, status, nowValue = now) {
-    await updateSourceRuntimeState(appDataRoot, targetRoot, machineId, sourceId, (current) => ({
-      cursor: {
-        ...(current.cursor || { relativePath: null, status: null, updatedAt: null }),
-        relativePath: relativePath || null,
-        status: status || null,
-        updatedAt: relativePath ? nowIso(nowValue) : null
+  async function persistBackupStatusState(patch, nowValue = now) {
+    const updated = await updateSourceRuntimeState(appDataRoot, targetRoot, machineId, sourceId, (current) => {
+      const nextBackupStatus = {
+        ...(current.backupStatus || {}),
+        ...patch
+      };
+      if (Object.prototype.hasOwnProperty.call(patch, 'cursor')) {
+        nextBackupStatus.cursor = patch.cursor ? cloneBackupCursor(patch.cursor, nowValue) : null;
       }
-    }), nowValue);
+      nextBackupStatus.updatedAt = patch.updatedAt || nowIso(nowValue);
+      return {
+        backupStatus: nextBackupStatus
+      };
+    }, nowValue);
+    backupStatus = updated.backupStatus;
+    return updated;
   }
 
   function updateCompletedResult(result, stats) {
@@ -565,21 +591,20 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       folderPath: folder.folderPath,
       relativePath: folder.relativePath,
       folderHash,
-      resumed: mode === 'full' ? resumed : Boolean(runState.cursor),
+      resumed: mode === 'full' ? resumed : Boolean(backupStatus.cursor),
       foldersProcessed: summary.foldersProcessed,
       filesProcessed: summary.filesProcessed,
       filesCopied: summary.filesCopied
     });
 
-    await persistSourceCursor(folder.relativePath, 'running', now);
-    runState = await saveRunState(appDataRoot, target.id, sourceId, {
-      ...runState,
+    await persistBackupStatusState({
       status: 'running',
       copiedBytes: summary.copiedBytes,
       cursor: {
         backupId: scanId,
         relativePath: folder.relativePath,
-        folderHash
+        folderHash,
+        status: 'running'
       }
     }, now);
   }
@@ -596,10 +621,9 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     if (mode === 'incremental') {
       completedDirtyFolders.add(folder.relativePath);
       await clearDirtyFolderIfUnchanged(appDataRoot, source, folder.relativePath, dirtyScanSeq, now);
-      runState = await saveRunState(appDataRoot, target.id, sourceId, {
-        ...runState,
+      await persistBackupStatusState({
         copiedBytes: summary.copiedBytes,
-        pendingFolders: selectedDirtyFolders.filter((relativePath) => !completedDirtyFolders.has(relativePath))
+        scanSeq: dirtyScanSeq
       }, now);
     }
 
@@ -621,10 +645,9 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     if (mode === 'incremental') {
       completedDirtyFolders.add(folder.relativePath);
       await clearDirtyFolderIfUnchanged(appDataRoot, source, folder.relativePath, dirtyScanSeq, now);
-      runState = await saveRunState(appDataRoot, target.id, sourceId, {
-        ...runState,
+      await persistBackupStatusState({
         copiedBytes: summary.copiedBytes,
-        pendingFolders: selectedDirtyFolders.filter((relativePath) => !completedDirtyFolders.has(relativePath))
+        scanSeq: dirtyScanSeq
       }, now);
     }
     emitProgress({ type: 'folder-skipped', relativePath: folder.relativePath }, true);
@@ -652,7 +675,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     if (mode === 'full') {
       await scanFullSource({
         sourcePath: source.sourcePath,
-        resumeFrom: runState.cursor,
+        resumeFrom: backupStatus.cursor,
         ignoreMatcher,
         shouldAbort: shouldStopForPause,
         onFolder: handleFolderStart,
@@ -673,7 +696,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         sourcePath: source.sourcePath,
         dirtyState: dirtyStateSnapshot.state,
         scanSeq: dirtyScanSeq,
-        resumeFrom: runState.cursor ? runState.cursor.relativePath : null,
+        resumeFrom: backupStatus.cursor ? backupStatus.cursor.relativePath : null,
         ignoreMatcher,
         shouldAbort: shouldStopForPause,
         onFolder: handleFolderStart,
@@ -714,24 +737,21 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       && lastCompletedFolder
       && activeFolder.relativePath === lastCompletedFolder.relativePath
       ? lastCompletedFolder
-      : activeFolder || lastCompletedFolder || (runState.cursor ? {
-        relativePath: runState.cursor.relativePath,
-        folderHash: runState.cursor.folderHash || createFolderHash(runState.cursor.relativePath)
+      : activeFolder || lastCompletedFolder || (backupStatus.cursor ? {
+        relativePath: backupStatus.cursor.relativePath,
+        folderHash: backupStatus.cursor.folderHash || createFolderHash(backupStatus.cursor.relativePath)
       } : null);
 
-    await persistSourceCursor(pausedFolder ? pausedFolder.relativePath : null, pausedFolder ? 'paused' : null, now);
-    await saveRunState(appDataRoot, target.id, sourceId, {
-      ...runState,
+    await persistBackupStatusState({
       status: 'paused',
       copiedBytes: summary.copiedBytes,
       cursor: pausedFolder ? {
         backupId: scanId,
         relativePath: pausedFolder.relativePath,
-        folderHash: pausedFolder.folderHash
+        folderHash: pausedFolder.folderHash,
+        status: 'paused'
       } : null,
-      pendingFolders: mode === 'incremental'
-        ? selectedDirtyFolders.filter((relativePath) => !completedDirtyFolders.has(relativePath))
-        : runState.pendingFolders
+      scanSeq: dirtyScanSeq
     }, now);
     progress.status = 'paused';
     delete progress.pausePhase;
@@ -755,12 +775,10 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     }
   }
 
-    await saveRunState(appDataRoot, target.id, sourceId, {
-      ...runState,
+  await persistBackupStatusState({
       status: 'completed',
       copiedBytes: summary.copiedBytes,
       cursor: null,
-      pendingFolders: [],
       completedAt: nowIso(now)
   }, now);
 
@@ -773,10 +791,18 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     baselineAt: mode === 'full' && !current.baselineAt ? nowIso(now) : current.baselineAt,
     sourceSizeBytes: mode === 'full' ? discoveredSourceBytes : current.sourceSizeBytes ?? null,
     backupSizeBytes: mode === 'full' ? backupSizeBytes : current.backupSizeBytes ?? null,
-    cursor: {
-      relativePath: null,
-      status: null,
-      updatedAt: null
+    backupStatus: {
+      ...(current.backupStatus || {}),
+      ...backupStatus,
+      status: 'completed',
+      mode,
+      runId: scanId,
+      copiedBytes: summary.copiedBytes,
+      completedAt: nowIso(now),
+      updatedAt: nowIso(now),
+      cursor: null,
+      scanSeq: dirtyScanSeq,
+      error: null
     },
     watchState: {
       ...(current.watchState || buildDefaultWatchState(sourceId)),

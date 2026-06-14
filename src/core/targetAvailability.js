@@ -100,7 +100,7 @@ function checkTargetAvailability(targetPath, mountedRoots = new Set(), platform 
   };
 }
 
-function mapSourceDashboardEntry(source) {
+async function mapSourceDashboardEntry(source) {
   const targetRoot = resolveTargetMapping({
     machineId: source.machineId,
     source,
@@ -120,10 +120,17 @@ function mapSourceDashboardEntry(source) {
       needsRescan: false,
       lastEventAt: null
     },
-    cursor: source.cursor || {
-      relativePath: null,
+    backupStatus: source.backupStatus || {
       status: null,
-      updatedAt: null
+      mode: null,
+      runId: null,
+      copiedBytes: 0,
+      startedAt: null,
+      updatedAt: null,
+      completedAt: null,
+      cursor: null,
+      scanSeq: null,
+      error: null
     },
     sourceSizeBytes: source.sourceSizeBytes ?? null,
     backupSizeBytes: source.backupSizeBytes ?? null,
@@ -191,7 +198,7 @@ async function createAvailableTargetDashboardEntry(target, appDataRoot, platform
       available: true,
       unavailableReason: null,
       machine: context.machine,
-      sources: (context.sources || []).map(mapSourceDashboardEntry)
+      sources: await Promise.all((context.sources || []).map((source) => mapSourceDashboardEntry(source)))
     };
   } catch (error) {
     return {

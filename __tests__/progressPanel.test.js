@@ -6,49 +6,38 @@ const {
 } = require('../src/progressPanel');
 
 describe('progress panel renderer', () => {
-  test('renders only the left hash panel', () => {
+  test('renders only active file workers and no queue sections by default', () => {
     const entry = {
       progress: {
         status: 'running',
         filesProcessed: 3,
         filesCopied: 1,
         workers: {
-          'hash:h1': {
-            workerId: 'h1',
-            pool: 'hash',
-            state: 'hashing',
-            sourceRelativePath: 'hash-only.txt',
+          'file:w1': {
+            workerId: 'w1',
+            pool: 'file',
+            state: 'processing',
+            sourceRelativePath: 'docs/a.txt',
             copiedBytes: 10,
             totalBytes: 100
           },
-          'copy:c1': {
-            workerId: 'c1',
-            pool: 'copy',
-            state: 'copying',
-            sourceRelativePath: 'copy-only.txt',
-            logicalPath: 'target/copy-only.txt',
+          'file:w2': {
+            workerId: 'w2',
+            pool: 'file',
+            state: 'processing',
+            sourceRelativePath: 'docs/b.txt',
+            logicalPath: 'target/docs/b.txt',
             copiedBytes: 20,
             totalBytes: 200
           }
         },
         queues: {
-          hash: {
+          file: {
             depth: 1,
             pending: 1,
             active: 1,
-            waitingItems: [{ sourceRelativePath: 'hash-waiting.txt', totalBytes: 10 }],
-            activeItems: [{ sourceRelativePath: 'hash-active.txt', totalBytes: 20 }],
-            feedItems: [{ sourceRelativePath: 'hash-feed.txt', totalBytes: 30 }],
-            handoffItems: [{ sourceRelativePath: 'should-not-render-in-hash.txt', totalBytes: 40 }]
-          },
-          copy: {
-            depth: 1,
-            pending: 1,
-            active: 1,
-            waitingItems: [{ sourceRelativePath: 'copy-waiting.txt', totalBytes: 50 }],
-            activeItems: [{ sourceRelativePath: 'copy-active.txt', totalBytes: 60 }],
-            handoffItems: [{ sourceRelativePath: 'copy-handoff.txt', totalBytes: 70 }],
-            feedItems: [{ sourceRelativePath: 'should-not-render-in-copy.txt', totalBytes: 80 }]
+            waitingItems: [{ sourceRelativePath: 'should-not-render.txt', totalBytes: 30 }],
+            activeItems: [{ sourceRelativePath: 'should-not-render-2.txt', totalBytes: 40 }]
           }
         }
       }
@@ -60,16 +49,56 @@ describe('progress panel renderer', () => {
       progressKey: '/backup-target::machine-a::source-a'
     });
 
-    const hashPanelStart = html.indexOf('data-progress-pool="hash"');
-    expect(hashPanelStart).toBeGreaterThan(-1);
+    const filePanelStart = html.indexOf('data-progress-pool="file"');
+    expect(filePanelStart).toBeGreaterThan(-1);
+    expect(html).not.toContain('data-progress-pool="hash"');
     expect(html).not.toContain('data-progress-pool="copy"');
 
-    const hashPanelHtml = html.slice(hashPanelStart);
-    expect(hashPanelHtml).toContain('hash-only.txt');
-    expect(hashPanelHtml).toContain('hash-feed.txt');
-    expect(hashPanelHtml).not.toContain('copy-only.txt');
-    expect(hashPanelHtml).not.toContain('copy-handoff.txt');
-    expect(hashPanelHtml).not.toContain('should-not-render-in-hash.txt');
+    const filePanelHtml = html.slice(filePanelStart);
+    expect(filePanelHtml).toContain('docs/a.txt');
+    expect(filePanelHtml).toContain('docs/b.txt');
+    expect(filePanelHtml).not.toContain('should-not-render.txt');
+    expect(filePanelHtml).not.toContain('queue-block');
+  });
+
+  test('renders queue sections when enabled by runtime flag', () => {
+    const entry = {
+      progress: {
+        status: 'running',
+        workers: {
+          'file:w1': {
+            workerId: 'w1',
+            pool: 'file',
+            state: 'processing',
+            sourceRelativePath: 'docs/a.txt',
+            copiedBytes: 10,
+            totalBytes: 100
+          }
+        },
+        queues: {
+          file: {
+            depth: 2,
+            pending: 3,
+            active: 1,
+            waitingItems: [{ sourceRelativePath: 'queued.txt', totalBytes: 30 }],
+            activeItems: [{ sourceRelativePath: 'active.txt', totalBytes: 40 }]
+          }
+        }
+      }
+    };
+
+    const html = renderBackupProgressPanel({
+      targetRoot: '/backup-target',
+      source: { machineId: 'machine-a', sourceId: 'source-a' },
+      entry,
+      progressKey: '/backup-target::machine-a::source-a',
+      showProgressQueueDetails: true
+    });
+
+    expect(html).toContain('queue-block');
+    expect(html).toContain('Queue');
+    expect(html).toContain('queued.txt');
+    expect(html).toContain('active.txt');
   });
 
   test('normalizes missing or invalid pool data without sharing queues', () => {
@@ -95,24 +124,15 @@ describe('progress panel renderer', () => {
     const entry = {
       progress: {
         workers: {
-          'hash:h1': {
-            workerId: 'h1',
-            pool: 'hash',
+          'file:w1': {
+            workerId: 'w1',
+            pool: 'file',
             state: 'idle',
             sourceRelativePath: null,
-            logicalPath: 'documents/target-looking-copy-path.txt',
+            logicalPath: null,
             lastAction: 'copied',
             copiedBytes: 128,
             totalBytes: 128
-          },
-          'copy:c1': {
-            workerId: 'c1',
-            pool: 'copy',
-            state: 'idle',
-            sourceRelativePath: null,
-            logicalPath: 'documents/copy-panel-path.txt',
-            copiedBytes: 256,
-            totalBytes: 256
           }
         },
         queues: {}
@@ -125,17 +145,15 @@ describe('progress panel renderer', () => {
       entry,
       progressKey: '/backup-target::machine-a::source-a'
     });
-    const hashPanelStart = html.indexOf('data-progress-pool="hash"');
+    const hashPanelStart = html.indexOf('data-progress-pool="file"');
     const hashPanelHtml = html.slice(hashPanelStart);
 
     expect(hashPanelHtml).not.toContain('documents/target-looking-copy-path.txt');
-    expect(hashPanelHtml).not.toContain('copied');
-    expect(hashPanelHtml).not.toContain('documents/copy-panel-path.txt');
     expect(hashPanelHtml).toContain('idle');
     expect(html).not.toContain('data-progress-pool="copy"');
   });
 
-  test('pause state keeps the single panel hash-only', () => {
+  test('pause state keeps the single panel file-only', () => {
     const entry = {
       progress: {
         status: 'paused',
@@ -143,29 +161,9 @@ describe('progress panel renderer', () => {
         filesCopied: 0,
         filesIndexed: 34,
         workers: {
-          'hash:h1': {
-            workerId: 'h1',
-            pool: 'hash',
-            state: 'idle',
-            sourceRelativePath: null,
-            logicalPath: null,
-            lastAction: 'indexed-existing',
-            copiedBytes: 5403,
-            totalBytes: 5403
-          },
-          'hash:h2': {
-            workerId: 'h2',
-            pool: 'hash',
-            state: 'idle',
-            sourceRelativePath: null,
-            logicalPath: null,
-            lastAction: 'indexed-existing',
-            copiedBytes: 11667,
-            totalBytes: 11667
-          },
-          'copy:c1': {
-            workerId: 'c1',
-            pool: 'copy',
+          'file:w1': {
+            workerId: 'w1',
+            pool: 'file',
             state: 'idle',
             sourceRelativePath: null,
             logicalPath: null,
@@ -175,8 +173,7 @@ describe('progress panel renderer', () => {
           }
         },
         queues: {
-          hash: { depth: 0, pending: 0, active: 0, waitingItems: [], activeItems: [], feedItems: [] },
-          copy: { depth: 0, pending: 0, active: 0, waitingItems: [], activeItems: [], handoffItems: [] }
+          file: { depth: 0, pending: 0, active: 0, waitingItems: [], activeItems: [] }
         }
       }
     };
@@ -187,12 +184,10 @@ describe('progress panel renderer', () => {
       entry,
       progressKey: '/backup-target::machine-a::source-a'
     });
-    const hashPanelStart = html.indexOf('data-progress-pool="hash"');
+    const hashPanelStart = html.indexOf('data-progress-pool="file"');
     const hashPanelHtml = html.slice(hashPanelStart);
 
-    expect(hashPanelHtml).toContain('indexed existing');
-    expect(hashPanelHtml).toContain('indexed 5.3 KB / 5.3 KB');
-    expect(hashPanelHtml).not.toContain('C1');
+    expect(hashPanelHtml).toContain('idle');
     expect(hashPanelHtml).not.toContain('Copy Workers');
     expect(hashPanelHtml).not.toContain('Copy Queue');
     expect(html).not.toContain('data-progress-pool="copy"');

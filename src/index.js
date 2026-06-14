@@ -14,6 +14,7 @@ const { createTargetAvailabilityMonitor, normalizePlatform } = require('./core/t
 const { createWatchService } = require('./core/watch/watchService');
 const { configureLogger, createLogger, getLogLevel } = require('./core/logger');
 const { getSourceFolderName, normalizeTargetFolder } = require('./core/pathPlanner');
+const { loadRuntimeFlags } = require('./core/runtimeFlags');
 
 let mainWindow = null;
 const logger = createLogger('MainProcess', 'index.js');
@@ -23,6 +24,10 @@ let progressForwardTraceCount = 0;
 const PROGRESS_FORWARD_TRACE_LIMIT = 160;
 const appPlatform = normalizePlatform(process.platform);
 let watchService = null;
+let runtimeFlags = {
+  traceProgressUi: String(process.env.MYBACKUP_TRACE_PROGRESS_UI || '1').trim() !== '0',
+  showProgressQueueDetails: true
+};
 const targetAvailability = createTargetAvailabilityMonitor(appPlatform, {
   onChange: async () => {
     await refreshDashboardState(true);
@@ -57,9 +62,7 @@ function sendProgressToRenderer(payload) {
 }
 
 function getRuntimeFlags() {
-  return {
-    traceProgressUi: String(process.env.MYBACKUP_TRACE_PROGRESS_UI || '1').trim() !== '0'
-  };
+  return { ...runtimeFlags };
 }
 
 function summarizeProgressForTrace(payload) {
@@ -456,6 +459,12 @@ function createWindow() {
 app.whenReady().then(async () => {
   const localConfig = await ensureLocalConfig(getAppDataRoot());
   await ensureAppSchema();
+  runtimeFlags = await loadRuntimeFlags({
+    appPath: path.resolve(__dirname, '..'),
+    cwd: process.cwd(),
+    appDataRoot: getAppDataRoot()
+  });
+  runtimeFlags.traceProgressUi = String(process.env.MYBACKUP_TRACE_PROGRESS_UI || String(runtimeFlags.traceProgressUi ? 1 : 0)).trim() !== '0';
   configureLogger({
     level: localConfig.logLevel || process.env.MYBACKUP_LOG_LEVEL || 'info',
     sink: (record) => {

@@ -410,6 +410,63 @@ function findSource(sources, machineId, sourceId) {
   )) || null;
 }
 
+function mergeSourceBackupStatus(source, now = new Date()) {
+  const currentBackupStatus = source.backupStatus || {};
+  const fallbackCursor = source.cursor && source.cursor.relativePath
+    ? {
+        relativePath: source.cursor.relativePath,
+        status: source.cursor.status || null,
+        updatedAt: source.cursor.updatedAt || null
+      }
+    : null;
+
+  return createBackupSourceEntry({
+    ...source,
+    backupStatus: {
+      status: currentBackupStatus.status || null,
+      mode: currentBackupStatus.mode || null,
+      runId: currentBackupStatus.runId || null,
+      copiedBytes: Number(currentBackupStatus.copiedBytes || 0),
+      startedAt: currentBackupStatus.startedAt || null,
+      updatedAt: currentBackupStatus.updatedAt || null,
+      completedAt: currentBackupStatus.completedAt || null,
+      cursor: currentBackupStatus.cursor || fallbackCursor,
+      scanSeq: currentBackupStatus.scanSeq ?? null,
+      error: currentBackupStatus.error || null
+    },
+    cursor: undefined
+  }, now);
+}
+
+async function hydrateTargetSources(appDataRoot, target, now = new Date()) {
+  const mergedSources = [];
+  let changed = false;
+
+  for (const source of target.sources || []) {
+    const merged = mergeSourceBackupStatus(source, now);
+    if (JSON.stringify(merged) !== JSON.stringify(source)) {
+      changed = true;
+    }
+    mergedSources.push(merged);
+  }
+
+  if (changed) {
+    await mutateBackupSchema(appDataRoot, (schema) => {
+      schema.targets = (schema.targets || []).map((entry) => (
+        entry.id === target.id
+          ? createBackupTargetEntry({
+              ...entry,
+              sources: mergedSources
+            }, now)
+          : entry
+      ));
+      return schema;
+    }, now);
+  }
+
+  return mergedSources;
+}
+
 async function mutateBackupSchema(appDataRoot, mutator, now = new Date()) {
   const current = await ensureBackupSchema(appDataRoot, {}, now);
   const draft = createBackupSchema(current, now);
@@ -493,7 +550,8 @@ async function loadBackupSource(appDataRoot, targetRoot, machineId, sourceId) {
   if (!target) {
     return null;
   }
-  return findSource(target.sources || [], machineId, sourceId);
+  const sources = await hydrateTargetSources(appDataRoot, target);
+  return findSource(sources, machineId, sourceId);
 }
 
 async function registerBackupSource(appDataRoot, input, now = new Date()) {
@@ -569,7 +627,10 @@ async function listTargetBackupSources(appDataRoot, targetRoot) {
   const resolvedTargetRoot = await requireBackupTarget(appDataRoot, targetRoot);
   const schema = await ensureBackupSchema(appDataRoot);
   const target = findTarget(schema, resolvedTargetRoot);
-  return (target?.sources || []).slice().sort((left, right) => left.sourcePath.localeCompare(right.sourcePath));
+  const sources = target
+    ? await hydrateTargetSources(appDataRoot, target)
+    : [];
+  return sources.slice().sort((left, right) => left.sourcePath.localeCompare(right.sourcePath));
 }
 
 module.exports = {

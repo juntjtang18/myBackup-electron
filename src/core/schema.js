@@ -44,6 +44,25 @@ function assertNullableNonNegativeInteger(value, fieldName) {
   }
 }
 
+function createBackupStatus(input = {}, now = new Date()) {
+  return {
+    status: input.status || null,
+    mode: input.mode || null,
+    runId: input.runId || null,
+    copiedBytes: input.copiedBytes === undefined || input.copiedBytes === null
+      ? 0
+      : Number(input.copiedBytes),
+    startedAt: input.startedAt || null,
+    updatedAt: input.updatedAt || null,
+    completedAt: input.completedAt || null,
+    cursor: input.cursor || null,
+    scanSeq: input.scanSeq === undefined || input.scanSeq === null
+      ? null
+      : Number(input.scanSeq),
+    error: input.error || null
+  };
+}
+
 function createAppConfig(overrides = {}, now = new Date()) {
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -80,6 +99,17 @@ function createSourceRecord(input, now = new Date()) {
     : Number(input.backupIntervalMinutes);
   const targetFolder = normalizeTargetFolder(input.targetFolder);
 
+  const backupStatusInput = {
+    ...(input.backupStatus || {})
+  };
+  if (!backupStatusInput.cursor && input.cursor?.relativePath) {
+    backupStatusInput.cursor = {
+      relativePath: input.cursor.relativePath,
+      status: input.cursor.status || null,
+      updatedAt: input.cursor.updatedAt || null
+    };
+  }
+
   return {
     schemaVersion: SCHEMA_VERSION,
     machineId: input.machineId,
@@ -94,11 +124,7 @@ function createSourceRecord(input, now = new Date()) {
       needsRescan: Boolean(input.watchState?.needsRescan),
       lastEventAt: input.watchState?.lastEventAt || null
     },
-    cursor: {
-      relativePath: input.cursor?.relativePath || null,
-      status: input.cursor?.status || null,
-      updatedAt: input.cursor?.updatedAt || null
-    },
+    backupStatus: createBackupStatus(backupStatusInput, now),
     sourceSizeBytes: input.sourceSizeBytes === undefined || input.sourceSizeBytes === null
       ? null
       : Number(input.sourceSizeBytes),
@@ -234,12 +260,26 @@ function validateSourceRecord(record) {
   assertNonEmptyString(record.watchState.dirtyRef, 'watchState.dirtyRef');
   assertBoolean(record.watchState.needsRescan, 'watchState.needsRescan');
   assertNullableString(record.watchState.lastEventAt, 'watchState.lastEventAt');
-  if (!record.cursor || typeof record.cursor !== 'object') {
-    throw new Error('cursor must be an object.');
+  if (!record.backupStatus || typeof record.backupStatus !== 'object') {
+    throw new Error('backupStatus must be an object.');
   }
-  assertNullableString(record.cursor.relativePath, 'cursor.relativePath');
-  assertNullableString(record.cursor.status, 'cursor.status');
-  assertNullableString(record.cursor.updatedAt, 'cursor.updatedAt');
+  assertNullableString(record.backupStatus.status, 'backupStatus.status');
+  assertNullableString(record.backupStatus.mode, 'backupStatus.mode');
+  assertNullableString(record.backupStatus.runId, 'backupStatus.runId');
+  assertNullableNonNegativeInteger(record.backupStatus.copiedBytes, 'backupStatus.copiedBytes');
+  assertNullableString(record.backupStatus.startedAt, 'backupStatus.startedAt');
+  assertNullableString(record.backupStatus.updatedAt, 'backupStatus.updatedAt');
+  assertNullableString(record.backupStatus.completedAt, 'backupStatus.completedAt');
+  if (record.backupStatus.cursor !== null && record.backupStatus.cursor !== undefined) {
+    if (typeof record.backupStatus.cursor !== 'object') {
+      throw new Error('backupStatus.cursor must be an object or null.');
+    }
+    assertNullableString(record.backupStatus.cursor.relativePath, 'backupStatus.cursor.relativePath');
+    assertNullableString(record.backupStatus.cursor.status, 'backupStatus.cursor.status');
+    assertNullableString(record.backupStatus.cursor.updatedAt, 'backupStatus.cursor.updatedAt');
+  }
+  assertNullableNonNegativeInteger(record.backupStatus.scanSeq, 'backupStatus.scanSeq');
+  assertNullableString(record.backupStatus.error, 'backupStatus.error');
   assertNullableNonNegativeInteger(record.sourceSizeBytes, 'sourceSizeBytes');
   assertNullableNonNegativeInteger(record.backupSizeBytes, 'backupSizeBytes');
   return record;
@@ -287,6 +327,7 @@ module.exports = {
   CONTENT_TYPES,
   SCHEMA_VERSION,
   createAppConfig,
+  createBackupStatus,
   createFileContentRef,
   createHashRecord,
   createMachineRecord,

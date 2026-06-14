@@ -6,7 +6,6 @@ const {
   backupSchemaPath,
   backupSourcesPath,
   dirtyStatePath,
-  runStatePath,
 } = require('../src/core/paths');
 const {
   configPath,
@@ -39,7 +38,6 @@ const {
   loadBackupSource,
   updateBackupSource
 } = require('../src/core/backupSchema');
-const { createTargetId } = require('../src/core/targetConfig');
 const { registerSource: registerSourceBase } = require('../src/core/sourceRegistry');
 const { buildConflictPath, getSourceTargetRoot, planLogicalTarget } = require('../src/core/pathPlanner');
 const { resolveTargetMapping } = require('../src/core/pathMapper');
@@ -59,13 +57,6 @@ const { backupSource } = require('../src/core/backupCoordinator');
 const { buildFolderTraversalStack } = require('../src/core/scanner/folderWalker');
 const { parseIgnoreFile, shouldIgnorePath, buildIgnoreRules } = require('../src/core/ignoreMatcher');
 const { readJsonIfExists, writeJsonAtomic } = require('../src/core/jsonStore');
-const {
-  createRunState,
-  ensureRunState,
-  loadRunState,
-  saveRunState,
-  validateRunState
-} = require('../src/core/runStateStore');
 const { createWatchService } = require('../src/core/watch/watchService');
 const {
   clearDirtyFolderIfUnchanged,
@@ -187,10 +178,17 @@ describe('metadata foundation', () => {
       needsRescan: false,
       lastEventAt: null
     });
-    expect(shared.cursor).toEqual({
-      relativePath: null,
+    expect(separated.backupStatus).toEqual({
       status: null,
-      updatedAt: null
+      mode: null,
+      runId: null,
+      copiedBytes: 0,
+      startedAt: null,
+      updatedAt: null,
+      completedAt: null,
+      cursor: null,
+      scanSeq: null,
+      error: null
     });
     expect(validateSourceRecord(shared)).toBe(shared);
   });
@@ -384,12 +382,6 @@ describe('metadata foundation', () => {
     );
   });
 
-  test('resolves per-target run-state paths under local app data', () => {
-    expect(runStatePath('/app', 'target-a', 'source-a')).toBe(
-      path.join('/app', 'run', 'target-a', 'source-a.run.json')
-    );
-  });
-
   test('creates and persists a per-source dirty state file', async () => {
     const source = createSourceRecord({
       machineId: 'machine-a',
@@ -476,73 +468,6 @@ describe('metadata foundation', () => {
     expect(preserved.folders['a/c']).toEqual({
       seq: 3,
       changedAt: '2026-06-10T10:05:00.000Z'
-    });
-  });
-
-  test('creates and persists local run state per target and source', async () => {
-    const initial = await ensureRunState(
-      tempRootPath,
-      'target-a',
-      'source-a',
-      new Date('2026-06-10T11:00:00Z')
-    );
-
-    expect(initial).toEqual({
-      version: 1,
-      targetId: 'target-a',
-      sourceId: 'source-a',
-      runId: '20260610-110000',
-      mode: 'full',
-      status: 'idle',
-      scanSeq: null,
-      copiedBytes: 0,
-      pendingFolders: [],
-      cursor: null,
-      startedAt: null,
-      updatedAt: '2026-06-10T11:00:00.000Z',
-      completedAt: null
-    });
-
-    expect(await loadRunState(tempRootPath, 'target-a', 'source-a')).toEqual(initial);
-  });
-
-  test('persists run state with pending folders and cursor', async () => {
-    const saved = await saveRunState(
-      tempRootPath,
-      'target-a',
-      'source-a',
-      createRunState('target-a', 'source-a', {
-        runId: '20260610-111500',
-        mode: 'incremental',
-        status: 'running',
-        scanSeq: 42,
-        copiedBytes: 1234,
-        pendingFolders: ['a', 'a/b'],
-        cursor: {
-          backupId: '20260610-111500',
-          relativePath: 'a/b'
-        },
-        startedAt: '2026-06-10T11:15:00.000Z'
-      }, new Date('2026-06-10T11:15:00Z')),
-      new Date('2026-06-10T11:16:00Z')
-    );
-
-    expect(validateRunState(saved)).toBe(saved);
-    expect(saved).toMatchObject({
-      targetId: 'target-a',
-      sourceId: 'source-a',
-      runId: '20260610-111500',
-      mode: 'incremental',
-      status: 'running',
-      scanSeq: 42,
-      copiedBytes: 1234,
-      pendingFolders: ['a', 'a/b'],
-      startedAt: '2026-06-10T11:15:00.000Z',
-      updatedAt: '2026-06-10T11:16:00.000Z'
-    });
-    expect(saved.cursor).toMatchObject({
-      scanId: '20260610-111500',
-      relativePath: 'a/b'
     });
   });
 
@@ -1038,10 +963,21 @@ describe('metadata foundation', () => {
             mergeKey: null,
             organizeMedia: false,
             lastCompletedAt: '2026-06-05T09:05:00.000Z',
-            cursor: {
-              relativePath: 'docs',
+            backupStatus: {
               status: 'paused',
-              updatedAt: '2026-06-05T09:05:00.000Z'
+              mode: 'full',
+              runId: '20260605-090500',
+              copiedBytes: 0,
+              startedAt: '2026-06-05T09:00:00.000Z',
+              updatedAt: '2026-06-05T09:05:00.000Z',
+              completedAt: null,
+              cursor: {
+                relativePath: 'docs',
+                status: 'paused',
+                updatedAt: '2026-06-05T09:05:00.000Z'
+              },
+              scanSeq: null,
+              error: null
             }
           }
         ]
@@ -1159,12 +1095,12 @@ describe('metadata foundation', () => {
     const targetFile = targetFilePath(tempRootPath, source, 'docs', 'a.txt');
     expect(await fs.readFile(targetFile, 'utf8')).toBe('alpha');
 
-    const runState = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
-    expect(runState.status).toBe('completed');
-    expect(runState.runId).toBe(summary.scanId);
-    expect(runState.copiedBytes).toBe(9);
-
     const updatedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(updatedSource.backupStatus).toMatchObject({
+      status: 'completed',
+      runId: summary.scanId,
+      copiedBytes: 9
+    });
     expect(updatedSource.lastCompletedAt).toBe('2026-06-07T08:10:00.000Z');
     expect(updatedSource.sourceSizeBytes).toBe(9);
     expect(updatedSource.backupSizeBytes).toBe(9);
@@ -1204,16 +1140,20 @@ describe('metadata foundation', () => {
 
     expect(summary.status).toBe('paused');
     const context = await loadCurrentMachineContext(tempRootPath);
-    expect(context.sources[0].cursor).toMatchObject({
-      relativePath: '.',
-      status: 'paused'
+    expect(context.sources[0].backupStatus).toMatchObject({
+      status: 'paused',
+      cursor: {
+        relativePath: '.'
+      }
     });
-    const runState = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
-    expect(runState.status).toBe('paused');
-    expect(runState.cursor).toMatchObject({
-      relativePath: '.'
+    const pausedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(pausedSource.backupStatus).toMatchObject({
+      status: 'paused',
+      copiedBytes: 0,
+      cursor: {
+        relativePath: '.'
+      }
     });
-    expect(runState.copiedBytes).toBe(0);
   });
 
   test('pauses an in-flight copy as soon as possible and cleans up temp files', async () => {
@@ -1329,9 +1269,11 @@ describe('metadata foundation', () => {
 
     expect(paused.status).toBe('paused');
     expect(paused.filesCopied).toBe(0);
-    const pausedRunState = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
-    expect(pausedRunState.status).toBe('paused');
-    expect(pausedRunState.copiedBytes).toBe(0);
+    const pausedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(pausedSource.backupStatus).toMatchObject({
+      status: 'paused',
+      copiedBytes: 0
+    });
 
     events.length = 0;
 
@@ -1396,12 +1338,13 @@ describe('metadata foundation', () => {
 
     expect(paused.status).toBe('paused');
     const pausedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
-    expect(pausedSource.cursor.relativePath).toBe('.');
-    expect(pausedSource.cursor.status).toBe('paused');
-    const pausedRunState = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
-    expect(pausedRunState.status).toBe('paused');
-    expect(pausedRunState.cursor.relativePath).toBe('.');
-    expect(pausedRunState.cursor.folderHash).toBe(createFolderHash('.'));
+    expect(pausedSource.backupStatus).toMatchObject({
+      status: 'paused',
+      cursor: {
+        relativePath: '.',
+        folderHash: createFolderHash('.')
+      }
+    });
 
     const completed = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
       now: new Date('2026-06-07T08:20:00Z')
@@ -1410,19 +1353,12 @@ describe('metadata foundation', () => {
     expect(completed.status).toBe('completed');
     expect(completed.scanId).toBe(paused.scanId);
     expect(completed.filesCopied).toBe(2);
-    const completedRunState = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
-    expect(completedRunState.status).toBe('completed');
-    expect(completedRunState.copiedBytes).toBe(6);
-
     const completedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
-    expect(completedSource.cursor).toEqual({
-      relativePath: null,
-      status: null,
-      updatedAt: null
+    expect(completedSource.backupStatus).toMatchObject({
+      status: 'completed',
+      copiedBytes: 6,
+      cursor: null
     });
-    const completedRunStateAfterCleanup = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
-    expect(completedRunStateAfterCleanup.status).toBe('completed');
-    expect(completedRunStateAfterCleanup.cursor).toBeNull();
 
     expect(await fs.readFile(targetFilePath(tempRootPath, source, 'a', 'one.txt'), 'utf8')).toBe('one');
     expect(await fs.readFile(targetFilePath(tempRootPath, source, 'b', 'two.txt'), 'utf8')).toBe('two');
@@ -1507,9 +1443,8 @@ describe('metadata foundation', () => {
     });
 
     expect(summary.filesCopied).toBe(1);
-    const runState = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
-    expect(runState.mode).toBe('full');
     const updatedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(updatedSource.backupStatus.mode).toBe('full');
     expect(updatedSource.sourceSizeBytes).toBe(5);
     expect(updatedSource.backupSizeBytes).toBe(5);
   });

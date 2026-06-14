@@ -8,7 +8,8 @@ const state = {
   backupProgress: {},
   pauseRequests: {},
   runtimeFlags: {
-    traceProgressUi: true
+    traceProgressUi: true,
+    showProgressQueueDetails: true
   },
   lastProgressTraceAt: {},
   progressPayloadTraceCount: 0,
@@ -363,7 +364,8 @@ function renderProgressPanel(targetRoot, source) {
     targetRoot,
     source,
     entry,
-    progressKey: key
+    progressKey: key,
+    showProgressQueueDetails: Boolean(state.runtimeFlags.showProgressQueueDetails)
   });
   traceProgressPanelRendered(key, entry, html);
   return html;
@@ -390,7 +392,7 @@ function renderTargetSourcesTable(target) {
     const activeProgress = state.backupProgress[key];
     const pauseRequested = state.pauseRequests[key];
     const isPausing = activeProgress?.progress?.status === 'pausing';
-    const pausedCursor = source.cursor?.status === 'paused';
+    const pausedCursor = source.backupStatus?.status === 'paused';
     const missingSourceSize = source.sourceSizeBytes === null || source.sourceSizeBytes === undefined;
     const requiresFullBackup = !source.baselineAt
       || missingSourceSize
@@ -805,6 +807,7 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
     window.myBackup.setTargetCollapsed({ targetId: target.id, collapsed: false }).catch(() => {});
   }
   try {
+    const persistedCopiedBytes = Number(source?.backupStatus?.copiedBytes || 0);
     state.backupProgress[key] = {
       targetRoot,
       machineId,
@@ -813,6 +816,7 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
         status: 'running',
         filesProcessed: 0,
         filesCopied: 0,
+        copiedBytes: persistedCopiedBytes,
         workers: {}
       },
       event: null

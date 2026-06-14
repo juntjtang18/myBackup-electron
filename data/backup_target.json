@@ -58,46 +58,6 @@
         },
         {
           "schemaVersion": 1,
-          "machineId": "mybackup-electron-c52ee58e",
-          "sourceId": "documents-214492f7",
-          "sourcePath": "/Users/James/My Cloud/Documents",
-          "targetFolder": "",
-          "watchEnabled": true,
-          "backupIntervalMinutes": null,
-          "baselineAt": "2026-06-13T06:36:58.178Z",
-          "watchState": {
-            "dirtyRef": "watch/documents-214492f7.dirty.json",
-            "needsRescan": false,
-            "lastEventAt": null
-          },
-          "backupStatus": {
-            "status": null,
-            "mode": null,
-            "runId": null,
-            "copiedBytes": 0,
-            "startedAt": null,
-            "updatedAt": null,
-            "completedAt": null,
-            "cursor": null,
-            "scanSeq": null,
-            "error": null
-          },
-          "sourceSizeBytes": 6148,
-          "backupSizeBytes": 6148,
-          "lastCompletedAt": "2026-06-13T16:24:20.545Z",
-          "createdAt": "2026-06-02T02:53:05.666Z",
-          "updatedAt": "2026-06-13T16:24:20.545Z",
-          "scanState": {
-            "status": "completed",
-            "activeGeneration": "20260602-032015",
-            "startedAt": "2026-06-02T03:20:15.252Z",
-            "completedAt": "2026-06-02T03:21:01.506Z",
-            "updatedAt": "2026-06-02T03:21:01.506Z",
-            "resumeCursor": null
-          }
-        },
-        {
-          "schemaVersion": 1,
           "machineId": "macbook-pro.local-e98619af",
           "sourceId": "pictures-08be52ca",
           "sourcePath": "/Users/James/Pictures",
@@ -113,20 +73,20 @@
           "backupStatus": {
             "status": "completed",
             "mode": "incremental",
-            "runId": "20260614-064804",
+            "runId": "20260614-205634",
             "copiedBytes": 7975821928,
-            "startedAt": "2026-06-14T06:48:04.427Z",
-            "updatedAt": "2026-06-14T06:48:04.427Z",
-            "completedAt": "2026-06-14T06:48:04.427Z",
+            "startedAt": "2026-06-14T20:56:34.791Z",
+            "updatedAt": "2026-06-14T20:56:34.791Z",
+            "completedAt": "2026-06-14T20:56:34.791Z",
             "cursor": null,
             "scanSeq": 1,
             "error": null
           },
           "sourceSizeBytes": 437237769350,
           "backupSizeBytes": 437237769350,
-          "lastCompletedAt": "2026-06-14T06:48:04.427Z",
+          "lastCompletedAt": "2026-06-14T20:56:34.791Z",
           "createdAt": "2026-06-13T18:46:13.662Z",
-          "updatedAt": "2026-06-14T06:48:04.427Z"
+          "updatedAt": "2026-06-14T20:56:34.791Z"
         }
       ]
     },
@@ -135,13 +95,6 @@
       "path": "/Volumes/5T/Videos",
       "collapsed": false,
       "addedAt": "2026-06-14T19:08:07.430Z",
-      "sources": []
-    },
-    {
-      "id": "8fcf163ba00d",
-      "path": "/Volumes/5T/Software Repository",
-      "collapsed": false,
-      "addedAt": "2026-06-14T19:21:54.201Z",
       "sources": []
     }
   ],
@@ -153,5 +106,5 @@
     "importedSourceCount": 0
   },
   "createdAt": "2026-06-10T06:30:28.970Z",
-  "updatedAt": "2026-06-14T19:21:54.201Z"
+  "updatedAt": "2026-06-14T21:29:04.678Z"
 }

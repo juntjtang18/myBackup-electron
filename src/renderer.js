@@ -7,6 +7,7 @@ const state = {
   logs: [],
   backupProgress: {},
   pauseRequests: {},
+  sourceDeleteExpanded: {},
   runtimeFlags: {
     traceProgressUi: true,
     showProgressQueueDetails: false
@@ -387,6 +388,7 @@ function renderProgressPanel(targetRoot, source) {
 function renderTargetSourcesTable(target) {
   const targetRoot = target.path;
   const sources = target.sources || [];
+  const showDeleteButtons = Boolean(state.sourceDeleteExpanded[target.id]);
 
   if (!target.available) {
     return `
@@ -414,6 +416,7 @@ function renderTargetSourcesTable(target) {
       ? (isPausing ? 'pausing' : (activeProgress.progress?.status || 'running'))
       : (pausedCursor ? 'paused' : (requiresFullBackup ? 'full backup required' : 'ready'));
     const restoreDisabled = Boolean(activeProgress);
+    const deleteDisabled = Boolean(activeProgress);
     const backupLabel = activeProgress
       ? (pauseRequested || isPausing ? 'Pausing...' : 'Pause')
       : (pausedCursor ? 'Resume' : (requiresFullBackup ? 'Full Backup' : 'Backup Changes'));
@@ -446,6 +449,7 @@ function renderTargetSourcesTable(target) {
           <div class="actions-row">
             <button class="btn btn-sm ${backupClass} run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}">${backupLabel}</button>
             <button class="btn btn-sm btn-outline-secondary restore-source-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${restoreDisabled ? ' disabled' : ''}>Restore</button>
+            ${showDeleteButtons ? `<button class="btn btn-sm btn-outline-danger delete-source-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}"${deleteDisabled ? ' disabled' : ''}>Delete</button>` : ''}
           </div>
         </td>
       </tr>
@@ -500,6 +504,13 @@ function bindTargetPanelActions(container) {
     });
   });
 
+  container.querySelectorAll('.toggle-source-delete-button').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleSourceDeleteMode(button.dataset.targetId);
+    });
+  });
+
   container.querySelectorAll('.run-backup-button').forEach((button) => {
     button.addEventListener('click', () => runBackup(
       button.dataset.targetRoot,
@@ -518,6 +529,16 @@ function bindTargetPanelActions(container) {
     ));
   });
 
+  container.querySelectorAll('.delete-source-button').forEach((button) => {
+    button.addEventListener('click', () => removeSourceFromTarget(
+      button.dataset.targetId,
+      button.dataset.targetRoot,
+      button.dataset.machineId,
+      button.dataset.sourceId,
+      button.dataset.sourcePath,
+      button
+    ));
+  });
 }
 
 function renderTargets() {
@@ -555,6 +576,7 @@ function renderTargets() {
           <div class="target-panel-actions">
             <button type="button" class="btn-target-action add-source-button" data-target-root="${escapeHtml(target.path)}"${target.available === false ? ' disabled' : ''}>+ Source</button>
             <button type="button" class="btn-target-action danger remove-target-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(target.path)}" title="Remove from list">Remove</button>
+            <button type="button" class="btn-target-action icon-only toggle-source-delete-button${state.sourceDeleteExpanded[target.id] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" title="Toggle source delete mode" aria-label="Toggle source delete mode">⚙</button>
           </div>
         </div>
         <div class="target-panel-body">
@@ -701,6 +723,43 @@ async function removeTarget(targetId, targetRoot) {
     renderDashboard();
   } catch (error) {
     appendLog('error', error.message || 'Failed to remove backup target.');
+  }
+}
+
+function toggleSourceDeleteMode(targetId) {
+  state.sourceDeleteExpanded[targetId] = !state.sourceDeleteExpanded[targetId];
+  renderSources();
+}
+
+async function removeSourceFromTarget(targetId, targetRoot, machineId, sourceId, sourcePath, button) {
+  const key = progressKey(targetRoot, machineId, sourceId);
+  if (state.backupProgress[key]) {
+    appendLog('warn', 'Cannot delete a source while its backup is running.');
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `Delete source from app list?\n\n${sourcePath}\n\nBackup data on disk is not deleted.`
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+    setBusy(button, true, 'Deleting...');
+    state.dashboard = await window.myBackup.removeSource({
+      targetRoot,
+      machineId,
+      sourceId
+    });
+    if ((state.dashboard.targets || []).every((target) => target.id !== targetId || (target.sources || []).length === 0)) {
+      delete state.sourceDeleteExpanded[targetId];
+    }
+    renderDashboard();
+  } catch (error) {
+    appendLog('error', error.message || 'Failed to delete source.');
+  } finally {
+    setBusy(button, false);
   }
 }
 

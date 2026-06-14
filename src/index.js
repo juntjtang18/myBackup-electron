@@ -5,7 +5,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs-extra');
 const { ensureBackupSchema } = require('./core/backupSchema');
-const { registerSource } = require('./core/sourceRegistry');
+const { registerSource, removeSource } = require('./core/sourceRegistry');
 const { backupSource } = require('./core/backupCoordinator');
 const { restoreLogicalTree, restoreSource } = require('./core/restoreService');
 const { ensureLocalConfig, loadLocalConfig, saveLocalConfig } = require('./core/localConfig');
@@ -268,6 +268,34 @@ function registerIpcHandlers() {
       conflict: false,
       dashboard: await buildDashboardState()
     };
+  });
+
+  ipcMain.handle('app:remove-source', async (_event, input) => {
+    const targetRoot = await requireTargetRoot(input);
+    if (!input || !input.machineId || !input.sourceId) {
+      throw new Error('Source identity is required.');
+    }
+
+    const removed = await removeSource(getAppDataRoot(), {
+      targetRoot,
+      machineId: input.machineId,
+      sourceId: input.sourceId
+    });
+    logger.info('Source removed from app list.', {
+      targetRoot,
+      machineId: input.machineId,
+      sourceId: input.sourceId,
+      sourcePath: removed?.sourcePath || null
+    });
+    logToRenderer('info', 'Source removed from app list.', {
+      targetRoot,
+      machineId: input.machineId,
+      sourceId: input.sourceId
+    });
+    if (watchService) {
+      await watchService.refresh();
+    }
+    return buildDashboardState();
   });
 
   ipcMain.handle('app:pick-source-folder', async () => {

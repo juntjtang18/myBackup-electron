@@ -623,6 +623,31 @@ async function updateBackupSource(appDataRoot, targetRoot, machineId, sourceId, 
   return updated;
 }
 
+async function removeBackupSource(appDataRoot, targetRoot, machineId, sourceId, now = new Date()) {
+  const resolvedTargetRoot = await requireBackupTarget(appDataRoot, targetRoot);
+  let removed = null;
+
+  await mutateBackupSchema(appDataRoot, (schema) => {
+    const target = findTarget(schema, resolvedTargetRoot);
+    if (!target) {
+      throw new Error(`Unknown backup target: ${resolvedTargetRoot}`);
+    }
+
+    const existing = findSource(target.sources, machineId, sourceId);
+    if (!existing) {
+      throw new Error(`Source not found: ${machineId}/${sourceId}`);
+    }
+
+    removed = existing;
+    target.sources = (target.sources || []).filter((source) => !(
+      source.machineId === machineId && source.sourceId === sourceId
+    ));
+    return schema;
+  }, now);
+
+  return removed;
+}
+
 async function listTargetBackupSources(appDataRoot, targetRoot) {
   const resolvedTargetRoot = await requireBackupTarget(appDataRoot, targetRoot);
   const schema = await ensureBackupSchema(appDataRoot);
@@ -647,6 +672,7 @@ module.exports = {
   loadBackupSource,
   loadTargetSourceCatalog,
   registerBackupSource,
+  removeBackupSource,
   removeBackupTarget,
   requireBackupTarget,
   saveSchemaMigrationMarker,

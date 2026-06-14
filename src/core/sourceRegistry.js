@@ -1,4 +1,9 @@
-const { listBackupTargets, registerBackupSource, updateBackupSource } = require('./backupSchema');
+const {
+  listBackupTargets,
+  registerBackupSource,
+  removeBackupSource,
+  updateBackupSource
+} = require('./backupSchema');
 const { createSourceRecord, validateSourceRecord } = require('./schema');
 
 async function registerSource(appDataRoot, input, now = new Date()) {
@@ -59,7 +64,19 @@ async function updateSourceWatchState(appDataRoot, machineId, sourceId, updater,
   return updates;
 }
 
+async function removeSource(appDataRoot, input, now = new Date()) {
+  const targetRoot = input.targetRoot || appDataRoot;
+  return removeBackupSource(
+    appDataRoot,
+    targetRoot,
+    input.machineId,
+    input.sourceId,
+    now
+  );
+}
+
 module.exports = {
+  removeSource,
   registerSource,
   updateSourceWatchState
 };

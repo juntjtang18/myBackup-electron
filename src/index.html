@@ -308,6 +308,35 @@
       color: #9f1239;
     }
 
+    .btn-target-action {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 30px;
+      padding: 5px 10px;
+      border-radius: 7px;
+      border: 1px solid var(--line);
+      background: #ffffff;
+      color: var(--ink);
+      font-size: 0.74rem;
+      font-weight: 600;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    .btn-target-action.icon-only {
+      width: 30px;
+      min-width: 30px;
+      padding: 0;
+      font-size: 0.95rem;
+    }
+
+    .btn-target-action.icon-only.active {
+      background: var(--accent-soft);
+      border-color: #bfe0d8;
+      color: var(--accent);
+    }
+
     .btn-target-action:hover {
       background: #f4f7fa;
     }
@@ -379,7 +408,7 @@
     .source-col-target { width: 22%; }
     .source-col-status { width: 120px; }
     .source-col-completed { width: 150px; }
-    .source-col-actions { width: 280px; }
+    .source-col-actions { width: 360px; }
 
     .source-table th,
     .source-table td {

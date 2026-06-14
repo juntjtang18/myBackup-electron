@@ -129,6 +129,20 @@
           "updatedAt": "2026-06-14T06:48:04.427Z"
         }
       ]
+    },
+    {
+      "id": "8527e915ce7f",
+      "path": "/Volumes/5T/Videos",
+      "collapsed": false,
+      "addedAt": "2026-06-14T19:08:07.430Z",
+      "sources": []
+    },
+    {
+      "id": "8fcf163ba00d",
+      "path": "/Volumes/5T/Software Repository",
+      "collapsed": false,
+      "addedAt": "2026-06-14T19:21:54.201Z",
+      "sources": []
     }
   ],
   "migration": {
@@ -139,5 +153,5 @@
     "importedSourceCount": 0
   },
   "createdAt": "2026-06-10T06:30:28.970Z",
-  "updatedAt": "2026-06-14T06:48:04.427Z"
+  "updatedAt": "2026-06-14T19:21:54.201Z"
 }

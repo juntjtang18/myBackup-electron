@@ -101,6 +101,13 @@ function summarizeProgressForTrace(payload) {
 }
 
 function getAppDataRoot() {
+  const override = process.env.MYBACKUP_APP_DATA_ROOT;
+  if (override && String(override).trim()) {
+    return path.resolve(String(override).trim());
+  }
+  if (app.isPackaged) {
+    return path.join(app.getPath('userData'), 'data');
+  }
   return path.resolve(__dirname, '..', 'data');
 }
 
@@ -473,7 +480,8 @@ app.whenReady().then(async () => {
   });
   logger.info('Application ready.', {
     logLevel: getLogLevel(),
-    platform: appPlatform
+    platform: appPlatform,
+    appDataRoot: getAppDataRoot()
   });
 
   registerIpcHandlers();
@@ -499,6 +507,11 @@ app.whenReady().then(async () => {
       createWindow();
     }
   });
+}).catch((error) => {
+  const message = error && error.stack ? error.stack : String(error);
+  console.error('Application startup failed.', message);
+  dialog.showErrorBox('MyBackup Startup Failed', message);
+  app.quit();
 });
 
 app.on('window-all-closed', () => {

@@ -297,10 +297,23 @@ function setBusy(button, busy, label) {
   }
 
   button.disabled = busy;
-  if (label) {
-    button.dataset.label = button.dataset.label || button.textContent;
-    button.textContent = busy ? label : button.dataset.label;
+  if (!button.dataset.label) {
+    button.dataset.label = button.textContent;
   }
+
+  if (busy) {
+    if (label) {
+      button.textContent = label;
+    }
+  } else {
+    button.textContent = button.dataset.label;
+  }
+}
+
+function nextUiFrame() {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
 }
 
 function renderLogs() {
@@ -598,6 +611,7 @@ function showAddSourceModal() {
     modal.classList.add('open');
     modal.setAttribute('aria-hidden', 'false');
   }
+  updateTargetFolderPlaceholder();
 }
 
 function hideAddSourceModal() {
@@ -606,6 +620,23 @@ function hideAddSourceModal() {
     modal.classList.remove('open');
     modal.setAttribute('aria-hidden', 'true');
   }
+}
+
+function updateTargetFolderPlaceholder() {
+  const input = document.getElementById('targetFolderInput');
+  if (!input) {
+    return;
+  }
+
+  const sourcePath = document.getElementById('sourcePathInput')?.value.trim() || '';
+  const targetRoot = String(state.addSourceTargetRoot || '').trim();
+  const sourceFolderName = sourcePath ? pathBasename(sourcePath) : 'source folder';
+  const defaultTargetPath = [targetRoot, sourceFolderName]
+    .filter(Boolean)
+    .join('/')
+    .replace(/\/+/g, '/');
+
+  input.placeholder = defaultTargetPath || '<backup target>/source folder';
 }
 
 async function refreshDashboard() {
@@ -643,6 +674,7 @@ async function addTarget() {
   const button = document.getElementById('addTargetButton');
   try {
     setBusy(button, true, 'Adding...');
+    await nextUiFrame();
     state.dashboard = await window.myBackup.addTarget();
     renderDashboard();
   } catch (error) {
@@ -707,6 +739,7 @@ async function browseSource() {
     const selectedPath = await window.myBackup.pickSourceFolder();
     if (selectedPath) {
       document.getElementById('sourcePathInput').value = selectedPath;
+      updateTargetFolderPlaceholder();
     }
   } catch (error) {
     appendLog('error', error.message || 'Failed to select source folder.');
@@ -760,6 +793,7 @@ async function registerSource(event) {
     state.dashboard = response.dashboard;
     renderDashboard();
     document.getElementById('sourceForm').reset();
+    updateTargetFolderPlaceholder();
     hideAddSourceModal();
   } catch (error) {
     appendLog('error', error.message || 'Failed to register source.');
@@ -888,6 +922,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   document.getElementById('browseSourceButton').addEventListener('click', browseSource);
   document.getElementById('browseTargetFolderButton').addEventListener('click', browseTargetFolder);
+  document.getElementById('sourcePathInput').addEventListener('input', updateTargetFolderPlaceholder);
   document.getElementById('sourceForm').addEventListener('submit', registerSource);
   document.getElementById('logLevelSelect').addEventListener('change', updateLogLevel);
   document.getElementById('copyLogsButton')?.addEventListener('click', copyLogsToClipboard);

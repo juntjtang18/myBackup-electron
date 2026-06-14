@@ -8,7 +8,7 @@
     "electron-builder": "^25.0.5",
     "jest": "^29.7.0"
   },
-  "name": "mybackup-electron",
+  "name": "myBackup",
   "version": "1.0.0",
   "main": "src/index.js",
   "scripts": {
@@ -21,11 +21,10 @@
     "productName": "MyBackup",
     "files": [
       "src/**/*",
-      "dist/",
-      "node_modules/",
       "package.json",
       "mybackup-logging.properties",
-      "bootstrap-5.3.3-dist/**/*"
+      "!dist/**",
+      "!**/*.map"
     ],
     "directories": {
       "output": "dist"

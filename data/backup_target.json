@@ -104,35 +104,29 @@
           "targetFolder": "",
           "watchEnabled": true,
           "backupIntervalMinutes": null,
-          "baselineAt": null,
+          "baselineAt": "2026-06-14T06:40:38.654Z",
           "watchState": {
             "dirtyRef": "watch/pictures-08be52ca.dirty.json",
             "needsRescan": false,
             "lastEventAt": "2026-06-13T19:06:12.123Z"
           },
           "backupStatus": {
-            "status": "running",
-            "mode": "full",
-            "runId": "20260614-055509",
-            "copiedBytes": 31572845013,
-            "startedAt": "2026-06-14T05:55:09.487Z",
-            "updatedAt": "2026-06-14T05:55:09.487Z",
-            "completedAt": null,
-            "cursor": {
-              "backupId": "20260614-055509",
-              "relativePath": "Lightroom source",
-              "folderHash": "lightroom-source-7b38923643",
-              "status": "running",
-              "updatedAt": "2026-06-14T05:55:09.487Z"
-            },
+            "status": "completed",
+            "mode": "incremental",
+            "runId": "20260614-064804",
+            "copiedBytes": 7975821928,
+            "startedAt": "2026-06-14T06:48:04.427Z",
+            "updatedAt": "2026-06-14T06:48:04.427Z",
+            "completedAt": "2026-06-14T06:48:04.427Z",
+            "cursor": null,
             "scanSeq": 1,
             "error": null
           },
-          "sourceSizeBytes": null,
-          "backupSizeBytes": null,
-          "lastCompletedAt": null,
+          "sourceSizeBytes": 437237769350,
+          "backupSizeBytes": 437237769350,
+          "lastCompletedAt": "2026-06-14T06:48:04.427Z",
           "createdAt": "2026-06-13T18:46:13.662Z",
-          "updatedAt": "2026-06-14T05:55:09.487Z"
+          "updatedAt": "2026-06-14T06:48:04.427Z"
         }
       ]
     }
@@ -145,5 +139,5 @@
     "importedSourceCount": 0
   },
   "createdAt": "2026-06-10T06:30:28.970Z",
-  "updatedAt": "2026-06-14T05:55:09.487Z"
+  "updatedAt": "2026-06-14T06:48:04.427Z"
 }

@@ -26,7 +26,7 @@ const appPlatform = normalizePlatform(process.platform);
 let watchService = null;
 let runtimeFlags = {
   traceProgressUi: String(process.env.MYBACKUP_TRACE_PROGRESS_UI || '1').trim() !== '0',
-  showProgressQueueDetails: true
+  showProgressQueueDetails: false
 };
 const targetAvailability = createTargetAvailabilityMonitor(appPlatform, {
   onChange: async () => {

@@ -11,6 +11,7 @@ const DEFAULT_IGNORE_PATTERNS = [
   '._*',
   'Thumbs.db',
   'Desktop.ini',
+  '*.lrdata/',
   '__pycache__/',
   '.pytest_cache/',
   '.mypy_cache/',
@@ -111,10 +112,6 @@ function shouldIgnorePath(rules, relativePath, isDirectory) {
   let ignored = false;
 
   for (const rule of rules) {
-    if (rule.directoryOnly && !isDirectory && normalizedPath !== rule.normalized) {
-      continue;
-    }
-
     if (!rule.regex.test(normalizedPath)) {
       continue;
     }

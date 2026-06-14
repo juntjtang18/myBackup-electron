@@ -560,6 +560,12 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           lastAction: event.result?.action || event.result?.type || null,
           lastTaskDurationMs: event.durationMs || 0
         };
+        emitProgress({
+          type: 'task-state-updated',
+          pool: 'file',
+          workerId: event.workerId,
+          sourceRelativePath: event.item?.sourceRelativePath || null
+        }, true);
       } else if (event.type === 'task-failed') {
         progress.workers[workerKey] = {
           workerId: event.workerId,
@@ -572,9 +578,20 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           error: event.error.message,
           lastTaskDurationMs: event.durationMs || 0
         };
+        emitProgress({
+          type: 'task-state-updated',
+          pool: 'file',
+          workerId: event.workerId,
+          sourceRelativePath: event.item?.sourceRelativePath || null
+        }, true);
       } else if (event.type === 'worker-stopped' && progress.workers[workerKey]) {
         progress.workers[workerKey].state = 'idle';
         progress.workers[workerKey].sourceRelativePath = null;
+        emitProgress({
+          type: 'worker-stopped',
+          pool: 'file',
+          workerId: event.workerId
+        }, true);
       }
     }
   });

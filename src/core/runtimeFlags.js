@@ -53,7 +53,7 @@ function parseRuntimeFlags(content) {
 async function loadRuntimeFlags(options = {}) {
   const defaults = {
     traceProgressUi: true,
-    showProgressQueueDetails: true
+    showProgressQueueDetails: false
   };
 
   const candidates = [

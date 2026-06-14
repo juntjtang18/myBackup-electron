@@ -1470,6 +1470,7 @@ dist/**
 
     expect(shouldIgnorePath(rules, 'node_modules', true)).toBe(true);
     expect(shouldIgnorePath(rules, 'packages/app/node_modules', true)).toBe(true);
+    expect(shouldIgnorePath(rules, 'packages/app/node_modules/pkg/index.js', false)).toBe(true);
     expect(shouldIgnorePath(rules, 'vendor', true)).toBe(true);
     expect(shouldIgnorePath(rules, 'project/.git', true)).toBe(true);
     expect(shouldIgnorePath(rules, '.DS_Store', false)).toBe(true);
@@ -1477,6 +1478,8 @@ dist/**
     expect(shouldIgnorePath(rules, '._metadata', false)).toBe(true);
     expect(shouldIgnorePath(rules, 'Thumbs.db', false)).toBe(true);
     expect(shouldIgnorePath(rules, 'Desktop.ini', false)).toBe(true);
+    expect(shouldIgnorePath(rules, 'Lightroom Catalog.lrdata', true)).toBe(true);
+    expect(shouldIgnorePath(rules, 'Caches/Lightroom Catalog.lrdata/previews.db', false)).toBe(true);
     expect(shouldIgnorePath(rules, 'docs/readme.txt', false)).toBe(false);
   });
 

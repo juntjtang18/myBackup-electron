@@ -9,7 +9,7 @@ const state = {
   pauseRequests: {},
   runtimeFlags: {
     traceProgressUi: true,
-    showProgressQueueDetails: true
+    showProgressQueueDetails: false
   },
   lastProgressTraceAt: {},
   progressPayloadTraceCount: 0,

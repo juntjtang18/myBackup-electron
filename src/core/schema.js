@@ -1,7 +1,8 @@
 const os = require('os');
 const path = require('path');
-const { createMachineId, createScanId, createSourceId, sanitizeSegment } = require('./ids');
+const { createMachineId, createScanId, createSourceId } = require('./ids');
 const { toPosixPath } = require('./layout');
+const { normalizeTargetFolder } = require('./pathPlanner');
 
 const SCHEMA_VERSION = 1;
 const CONTENT_TYPES = new Set(['plain', 'blocks']);
@@ -73,21 +74,18 @@ function createSourceRecord(input, now = new Date()) {
 
   const resolvedSourcePath = path.resolve(input.sourcePath);
   const sourceId = input.sourceId || createSourceId(resolvedSourcePath);
-  const mergeEnabled = Boolean(input.mergeEnabled);
-  const mergeKey = mergeEnabled ? sanitizeSegment(input.mergeKey || path.basename(resolvedSourcePath) || sourceId) : null;
   const watchEnabled = input.watchEnabled === undefined ? true : Boolean(input.watchEnabled);
   const backupIntervalMinutes = input.backupIntervalMinutes === undefined || input.backupIntervalMinutes === null
     ? null
     : Number(input.backupIntervalMinutes);
+  const targetFolder = normalizeTargetFolder(input.targetFolder);
 
   return {
     schemaVersion: SCHEMA_VERSION,
     machineId: input.machineId,
     sourceId,
     sourcePath: resolvedSourcePath,
-    organizeMedia: Boolean(input.organizeMedia),
-    mergeEnabled,
-    mergeKey,
+    targetFolder,
     watchEnabled,
     backupIntervalMinutes,
     baselineAt: input.baselineAt || null,
@@ -224,10 +222,8 @@ function validateSourceRecord(record) {
   assertNonEmptyString(record.machineId, 'machineId');
   assertNonEmptyString(record.sourceId, 'sourceId');
   assertNonEmptyString(record.sourcePath, 'sourcePath');
-  assertBoolean(record.organizeMedia, 'organizeMedia');
-  assertBoolean(record.mergeEnabled, 'mergeEnabled');
-  if (record.mergeEnabled) {
-    assertNonEmptyString(record.mergeKey, 'mergeKey');
+  if (record.targetFolder !== '') {
+    assertNonEmptyString(record.targetFolder, 'targetFolder');
   }
   assertBoolean(record.watchEnabled, 'watchEnabled');
   assertNullableNonNegativeInteger(record.backupIntervalMinutes, 'backupIntervalMinutes');

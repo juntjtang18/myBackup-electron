@@ -61,7 +61,7 @@ async function scanFullSource(options) {
           continue;
         }
 
-        folderTasks.push(await enqueueFile({
+        folderTasks.push(enqueueFile({
           sourceFilePath: fileEntry.path,
           sourceRelativePath: fileEntry.relativePath,
           stats
@@ -122,7 +122,7 @@ async function scanFullSource(options) {
         continue;
       }
 
-      folderTasks.push(await enqueueFile({
+      folderTasks.push(enqueueFile({
         sourceFilePath: fileEntry.path,
         sourceRelativePath: fileEntry.relativePath,
         stats

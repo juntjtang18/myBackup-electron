@@ -43,7 +43,10 @@ function createLegacyEmbeddedScanState(input = {}, now = new Date()) {
 }
 
 function createBackupSourceEntry(input, now = new Date()) {
-  const source = createSourceRecord(input, now);
+  const source = createSourceRecord({
+    ...input,
+    targetFolder: input.targetFolder !== undefined ? input.targetFolder : (input.mergeKey || '')
+  }, now);
   const entry = {
     ...source
   };
@@ -160,17 +163,22 @@ async function loadBackupSchema(appDataRoot) {
     return null;
   }
 
+  if (document.version !== BACKUP_SCHEMA_VERSION) {
+    throw new Error(`Unsupported backup schema version: ${document.version}`);
+  }
+
   try {
     return validateBackupSchema(document);
   } catch (error) {
-    const tolerableLegacyShape = error && (
-      error.message === 'Backup schema target sources must be an array.'
-      || error.message === 'Backup schema target must be an object.'
-    );
-    if (!tolerableLegacyShape) {
-      throw error;
+    if (
+      document
+      && typeof document === 'object'
+      && document.machine
+      && Array.isArray(document.targets)
+    ) {
+      return createBackupSchema(document);
     }
-    return createBackupSchema(document);
+    throw error;
   }
 }
 

@@ -1,6 +1,5 @@
 const fs = require('fs-extra');
 const path = require('path');
-const { createHashRecordSession } = require('./hashRecordSession');
 const { cleanupTempFiles } = require('./plainFileStorage');
 const { loadBackupSchema, loadBackupSource, updateBackupSource } = require('./backupSchema');
 const { loadIgnoreMatcher } = require('./ignoreMatcher');
@@ -11,7 +10,7 @@ const { createFileQueue } = require('./engine/fileQueue');
 const { createFileWorkerPool } = require('./engine/fileWorkerPool');
 const { scanFullSource } = require('./engine/fullScanner');
 const { scanDirtyFolders, selectDirtyFolders } = require('./engine/dirtyFolderScanner');
-const { createFileTaskHashCoordinator, processFileTask } = require('./engine/fileTaskProcessor');
+const { processFileTask } = require('./engine/fileTaskProcessor');
 const { loadRunState, saveRunState } = require('./runStateStore');
 const { snapshotDirtyState, clearDirtyFolderIfUnchanged } = require('./watch/dirtyStore');
 const { createScanId } = require('./ids');
@@ -134,8 +133,6 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
 
   const ignoreMatcher = await loadIgnoreMatcher(source.sourcePath);
   let errorReport = null;
-  const hashRecordSession = createHashRecordSession(targetRoot);
-  const inFlightHashes = createFileTaskHashCoordinator();
   const fileQueue = createFileQueue({ capacity: queueCapacity });
   const pendingFilePromises = new Set();
 
@@ -148,7 +145,6 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     filesCopied: 0,
     copiedBytes: 0,
     filesIndexed: 0,
-    hashTaskDurationMs: 0,
     copyTaskDurationMs: 0,
     conflicts: 0,
     skippedFolders: 0,
@@ -171,7 +167,6 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     copiedBytes: 0,
     filesIndexed: 0,
     throughputBytesPerSecond: 0,
-    hashThroughputBytesPerSecond: 0,
     copyThroughputBytesPerSecond: 0,
     conflicts: 0,
     skippedFolders: 0,
@@ -227,6 +222,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       mode: 'full',
       status: 'running',
       scanSeq: dirtyScanSeq,
+      copiedBytes: resumed && existingRunState ? Number(existingRunState.copiedBytes || 0) : 0,
       pendingFolders: [],
       cursor: resumeFrom ? {
         backupId: scanId,
@@ -273,6 +269,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       mode: 'incremental',
       status: 'running',
       scanSeq: dirtyScanSeq,
+      copiedBytes: existingRunState ? Number(existingRunState.copiedBytes || 0) : 0,
       pendingFolders: selectedDirtyFolders,
       cursor: resumeFrom ? {
         backupId: scanId,
@@ -285,9 +282,11 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   }
 
   summary.scanId = scanId;
+  summary.copiedBytes = Number(runState.copiedBytes || 0);
   errorReport = await createErrorReportWriter(targetRoot, machineId, sourceId, scanId);
   summary.reportPath = errorReport.reportPath;
   progress.scanId = scanId;
+  progress.copiedBytes = summary.copiedBytes;
 
   function refreshQueues() {
     const fileSnapshot = fileQueue.snapshot();
@@ -369,8 +368,6 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     summary.copiedBytes += result.bytesProcessed || 0;
     if (result.action === 'copied') {
       summary.filesCopied += 1;
-    } else if (result.action === 'indexed-existing' || result.action === 'indexed-alias') {
-      summary.filesIndexed += 1;
     }
     if (result.logicalPath && result.logicalPath.includes(' [')) {
       summary.conflicts += 1;
@@ -449,8 +446,6 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           sourceRelativePath: item.sourceRelativePath,
           stats: item.stats,
           now: item.now,
-          hashSession: hashRecordSession,
-          inFlightHashes,
           chunkSize: options.stageChunkSize,
           shouldAbort: shouldStopForPause,
           mtimeToleranceMs: options.mtimeToleranceMs,
@@ -480,7 +475,6 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           ? Math.round(throughputBytesProcessed / ((Date.now() - startedAt) / 1000))
           : 0;
         progress.copyThroughputBytesPerSecond = progress.throughputBytesPerSecond;
-        progress.hashThroughputBytesPerSecond = 0;
         return result;
       } catch (error) {
         if (error && error.code === 'PAUSE_CANCELLED') {
@@ -511,7 +505,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         progress.workers[workerKey] = {
           workerId: event.workerId,
           pool: 'file',
-          state: 'checking-snapshot',
+          state: 'checking-target-stat',
           sourceRelativePath: event.item.sourceRelativePath,
           logicalPath: null,
           copiedBytes: 0,
@@ -581,6 +575,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     runState = await saveRunState(appDataRoot, target.id, sourceId, {
       ...runState,
       status: 'running',
+      copiedBytes: summary.copiedBytes,
       cursor: {
         backupId: scanId,
         relativePath: folder.relativePath,
@@ -603,11 +598,11 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       await clearDirtyFolderIfUnchanged(appDataRoot, source, folder.relativePath, dirtyScanSeq, now);
       runState = await saveRunState(appDataRoot, target.id, sourceId, {
         ...runState,
+        copiedBytes: summary.copiedBytes,
         pendingFolders: selectedDirtyFolders.filter((relativePath) => !completedDirtyFolders.has(relativePath))
       }, now);
     }
 
-    await hashRecordSession.flush();
     emitProgress({ type: 'folder-completed', relativePath: folder.relativePath }, true);
   }
 
@@ -628,6 +623,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       await clearDirtyFolderIfUnchanged(appDataRoot, source, folder.relativePath, dirtyScanSeq, now);
       runState = await saveRunState(appDataRoot, target.id, sourceId, {
         ...runState,
+        copiedBytes: summary.copiedBytes,
         pendingFolders: selectedDirtyFolders.filter((relativePath) => !completedDirtyFolders.has(relativePath))
       }, now);
     }
@@ -711,7 +707,6 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       await Promise.allSettled(Array.from(pendingFilePromises));
     }
     await filePool.wait();
-    await hashRecordSession.flush();
   }
 
   if (paused) {
@@ -728,6 +723,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     await saveRunState(appDataRoot, target.id, sourceId, {
       ...runState,
       status: 'paused',
+      copiedBytes: summary.copiedBytes,
       cursor: pausedFolder ? {
         backupId: scanId,
         relativePath: pausedFolder.relativePath,
@@ -759,12 +755,13 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     }
   }
 
-  await saveRunState(appDataRoot, target.id, sourceId, {
-    ...runState,
-    status: 'completed',
-    cursor: null,
-    pendingFolders: [],
-    completedAt: nowIso(now)
+    await saveRunState(appDataRoot, target.id, sourceId, {
+      ...runState,
+      status: 'completed',
+      copiedBytes: summary.copiedBytes,
+      cursor: null,
+      pendingFolders: [],
+      completedAt: nowIso(now)
   }, now);
 
   const backupSizeBytes = mode === 'full'

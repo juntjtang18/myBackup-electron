@@ -1,28 +1,15 @@
-const { classifyMedia, getSourceTargetRoot, planLogicalTarget } = require('./pathPlanner');
-
-function inferMappingMode(source, kind) {
-  if (source.organizeMedia && (kind === 'image' || kind === 'video')) {
-    return kind === 'video' ? 'media-video' : 'media-image';
-  }
-  if (source.mergeEnabled) {
-    return 'merge';
-  }
-  return 'direct';
-}
+const { getSourceTargetRoot, planLogicalTarget } = require('./pathPlanner');
 
 function resolveTargetMapping(input) {
-  const kind = input.kind || classifyMedia(input.filePath || input.sourceRelativePath || '');
   return {
     logicalPath: planLogicalTarget({
       machineId: input.machineId,
       source: input.source,
-      sourceRelativePath: input.sourceRelativePath,
-      kind,
-      timestamp: input.timestamp
+      sourceRelativePath: input.sourceRelativePath
     }),
     sourceTargetRoot: getSourceTargetRoot(input.machineId, input.source),
-    kind,
-    mappingMode: inferMappingMode(input.source, kind),
+    kind: 'file',
+    mappingMode: 'direct',
     decided: true
   };
 }

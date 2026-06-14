@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('myBackup', {
   removeTarget: (input) => ipcRenderer.invoke('app:remove-target', input),
   setTargetCollapsed: (input) => ipcRenderer.invoke('app:set-target-collapsed', input),
   pickSourceFolder: () => ipcRenderer.invoke('app:pick-source-folder'),
+  pickTargetFolder: (input) => ipcRenderer.invoke('app:pick-target-folder', input),
   addSource: (input) => ipcRenderer.invoke('app:add-source', input),
   runBackup: (input) => ipcRenderer.invoke('app:run-backup', input),
   pauseBackup: (input) => ipcRenderer.invoke('app:pause-backup', input),

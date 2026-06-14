@@ -97,7 +97,7 @@ async function scanDirtyFolders(options) {
         continue;
       }
 
-      folderTasks.push(await enqueueFile({
+      folderTasks.push(enqueueFile({
         sourceFilePath: fileEntry.path,
         sourceRelativePath: fileEntry.relativePath,
         stats,

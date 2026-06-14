@@ -270,6 +270,87 @@ async function stageFileWhileHashing(targetRoot, input) {
   };
 }
 
+async function stageFileForCopy(targetRoot, input) {
+  const tempPath = createStagingTempPath(targetRoot, input.tempKey, input.extension || input.sourcePath);
+  const shouldAbort = typeof input.shouldAbort === 'function' ? input.shouldAbort : () => false;
+  const sourceStat = await fs.stat(input.sourcePath);
+  const expectedSize = input.expectedSize !== undefined ? input.expectedSize : sourceStat.size;
+  await fs.ensureDir(path.dirname(tempPath));
+  const readStream = fs.createReadStream(input.sourcePath, {
+    highWaterMark: input.chunkSize || 1024 * 1024
+  });
+  const writeStream = fs.createWriteStream(tempPath, {
+    flags: 'w'
+  });
+
+  if (shouldAbort()) {
+    return createPauseCancelledResult();
+  }
+
+  let copiedBytes = 0;
+  let aborted = false;
+  try {
+    for await (const chunk of readStream) {
+      if (shouldAbort()) {
+        aborted = true;
+        readStream.destroy();
+        break;
+      }
+
+      copiedBytes += chunk.length;
+      if (!writeStream.write(chunk)) {
+        await once(writeStream, 'drain');
+      }
+      if (typeof input.onProgress === 'function') {
+        input.onProgress({
+          phase: 'copy',
+          copiedBytes,
+          totalBytes: expectedSize,
+          logicalPath: toPosixPath(input.logicalPath || '')
+        });
+      }
+    }
+
+    if (!aborted) {
+      await new Promise((resolve, reject) => {
+        writeStream.on('error', reject);
+        writeStream.end(resolve);
+      });
+    }
+  } catch (error) {
+    await fs.remove(tempPath);
+    readStream.destroy();
+    writeStream.destroy();
+    throw error;
+  }
+
+  if (aborted) {
+    writeStream.destroy();
+    await fs.remove(tempPath);
+    return createPauseCancelledResult();
+  }
+
+  if (copiedBytes !== expectedSize) {
+    await fs.remove(tempPath);
+    throw new Error(`Copied file size mismatch for staging ${input.sourcePath}`);
+  }
+
+  await fs.utimes(tempPath, sourceStat.atime, sourceStat.mtime);
+
+  return {
+    tempPath,
+    finalPath: resolveLogicalPath(targetRoot, input.logicalPath || ''),
+    sourceTimes: {
+      atime: sourceStat.atime,
+      mtime: sourceStat.mtime
+    },
+    content: {
+      type: 'plain',
+      path: toPosixPath(input.logicalPath || '')
+    }
+  };
+}
+
 async function discardStagedFile(staged) {
   if (!staged || !staged.tempPath) {
     return;
@@ -328,6 +409,21 @@ async function finalizePlainFile(targetRoot, pendingWrite) {
   };
 }
 
+async function finalizePlainFileCopy(targetRoot, pendingWrite) {
+  const destination = pendingWrite.finalPath || resolveLogicalPath(targetRoot, pendingWrite.content.path);
+  await fs.ensureDir(path.dirname(destination));
+  if (await fs.pathExists(destination)) {
+    await fs.remove(destination);
+  }
+
+  await fs.move(pendingWrite.tempPath, destination, { overwrite: true });
+  await applySourceTimes(destination, pendingWrite.sourceTimes);
+  return {
+    type: 'plain',
+    path: pendingWrite.content.path
+  };
+}
+
 async function restorePlainFile(targetRoot, contentRef, restorePath) {
   const absoluteSource = resolveLogicalPath(targetRoot, contentRef.path);
   await fs.ensureDir(path.dirname(restorePath));
@@ -357,10 +453,12 @@ module.exports = {
   createStagingTempPath,
   discardStagedFile,
   finalizePlainFile,
+  finalizePlainFileCopy,
   finalizeStagedFile,
   isPauseCancelledResult,
   resolveLogicalPath,
   restorePlainFile,
+  stageFileForCopy,
   stageFileWhileHashing,
   statStoredPlainFile,
   verifyStoredPlainFile,

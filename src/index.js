@@ -3,6 +3,7 @@ process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || '16';
 const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const path = require('path');
 const os = require('os');
+const fs = require('fs-extra');
 const { ensureBackupSchema } = require('./core/backupSchema');
 const { registerSource } = require('./core/sourceRegistry');
 const { backupSource } = require('./core/backupCoordinator');
@@ -12,6 +13,7 @@ const { addTarget, listTargets, removeTarget, requireRegisteredTarget, setTarget
 const { createTargetAvailabilityMonitor, normalizePlatform } = require('./core/targetAvailability');
 const { createWatchService } = require('./core/watch/watchService');
 const { configureLogger, createLogger, getLogLevel } = require('./core/logger');
+const { getSourceFolderName, normalizeTargetFolder } = require('./core/pathPlanner');
 
 let mainWindow = null;
 const logger = createLogger('MainProcess', 'index.js');
@@ -222,19 +224,28 @@ function registerIpcHandlers() {
   ipcMain.handle('app:add-source', async (_event, input) => {
     const targetRoot = await requireTargetRoot(input);
     const schema = await ensureAppSchema();
+    const sourcePath = path.resolve(input.sourcePath || '');
+    const targetFolder = normalizeTargetFolder(input.targetFolder || '');
+    const targetSourceRoot = path.join(targetRoot, targetFolder, getSourceFolderName({ sourcePath }));
+    const targetSourceRootExists = await fs.pathExists(targetSourceRoot);
+    if (targetSourceRootExists && !input.confirmMerge) {
+      return {
+        conflict: true,
+        targetRoot,
+        targetFolder,
+        targetSourceRoot
+      };
+    }
     const source = await registerSource(getAppDataRoot(), {
       targetRoot,
       machineId: schema.machine.machineId,
-      sourcePath: input.sourcePath,
-      organizeMedia: Boolean(input.organizeMedia),
-      mergeEnabled: Boolean(input.mergeEnabled),
-      mergeKey: input.mergeKey || null
+      sourcePath,
+      targetFolder
     });
     logger.info('Source registered.', {
       sourceId: source.sourceId,
       sourcePath: source.sourcePath,
-      mergeEnabled: source.mergeEnabled,
-      organizeMedia: source.organizeMedia
+      targetFolder: source.targetFolder
     });
     logToRenderer('info', 'Source registered.', {
       sourceId: source.sourceId,
@@ -243,7 +254,10 @@ function registerIpcHandlers() {
     if (watchService) {
       await watchService.refresh();
     }
-    return buildDashboardState();
+    return {
+      conflict: false,
+      dashboard: await buildDashboardState()
+    };
   });
 
   ipcMain.handle('app:pick-source-folder', async () => {
@@ -253,6 +267,27 @@ function registerIpcHandlers() {
     });
 
     return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
+  });
+
+  ipcMain.handle('app:pick-target-folder', async (_event, input) => {
+    const targetRoot = await requireTargetRoot(input);
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory', 'createDirectory'],
+      title: 'Select Target Folder Inside Backup Target',
+      defaultPath: targetRoot
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+
+    const selectedPath = path.resolve(result.filePaths[0]);
+    const relativePath = path.relative(targetRoot, selectedPath);
+    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+      throw new Error('Target folder must stay inside the selected backup target.');
+    }
+
+    return normalizeTargetFolder(relativePath);
   });
 
   ipcMain.handle('app:run-backup', async (_event, input) => {

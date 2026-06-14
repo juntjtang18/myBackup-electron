@@ -67,6 +67,9 @@ function createRunState(targetId, sourceId, input = {}, now = new Date()) {
     mode,
     status,
     scanSeq: Number.isInteger(input.scanSeq) ? input.scanSeq : null,
+    copiedBytes: Number.isInteger(input.copiedBytes) && input.copiedBytes >= 0
+      ? input.copiedBytes
+      : 0,
     pendingFolders: normalizePendingFolders(input.pendingFolders),
     cursor: input.cursor ? normalizeCursor(input.cursor) : null,
     startedAt: input.startedAt || null,
@@ -92,6 +95,7 @@ function validateRunState(document) {
     throw new Error(`Unsupported run status: ${document.status}`);
   }
   assertNullableNonNegativeInteger(document.scanSeq, 'scanSeq');
+  assertNullableNonNegativeInteger(document.copiedBytes, 'copiedBytes');
   assertPendingFolders(document.pendingFolders);
   if (document.cursor !== null) {
     normalizeCursor(document.cursor);

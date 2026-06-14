@@ -405,7 +405,7 @@ function renderTargetSourcesTable(target) {
     const backupClass = activeProgress
       ? 'btn-outline-warning'
       : (requiresFullBackup ? 'btn-outline-warning' : 'btn-outline-primary');
-    const mergedRoot = source.mergeEnabled ? source.mergeKey : source.targetSubdir;
+    const targetRootLabel = source.targetSubdir;
     const sourceSizeLabel = source.sourceSizeBytes === null || source.sourceSizeBytes === undefined
       ? '-'
       : formatBytes(source.sourceSizeBytes);
@@ -418,13 +418,9 @@ function renderTargetSourcesTable(target) {
         <td>
           <div class="path-cell">${escapeHtml(source.sourcePath)}</div>
           <div class="small muted mt-1">Source Size: ${escapeHtml(sourceSizeLabel)}</div>
-          <div class="mt-2">
-            ${source.mergeEnabled ? '<span class="tag tag-merge">Merge</span>' : ''}
-            ${source.organizeMedia ? '<span class="tag tag-media">Media</span>' : ''}
-          </div>
         </td>
         <td>
-          <div class="path-cell">${escapeHtml(mergedRoot)}</div>
+          <div class="path-cell">${escapeHtml(targetRootLabel)}</div>
           <div class="small muted mt-1">Backed Up: ${escapeHtml(backupSizeLabel)}</div>
         </td>
         <td>
@@ -435,7 +431,6 @@ function renderTargetSourcesTable(target) {
           <div class="actions-row">
             <button class="btn btn-sm ${backupClass} run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}">${backupLabel}</button>
             <button class="btn btn-sm btn-outline-secondary restore-source-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${restoreDisabled ? ' disabled' : ''}>Restore</button>
-            ${source.mergeEnabled ? `<button class="btn btn-sm btn-outline-success restore-merged-button" data-target-root="${escapeHtml(targetRoot)}" data-logical-root="${escapeHtml(source.targetSubdir)}"${restoreDisabled ? ' disabled' : ''}>Restore Merged</button>` : ''}
           </div>
         </td>
       </tr>
@@ -508,13 +503,6 @@ function bindTargetPanelActions(container) {
     ));
   });
 
-  container.querySelectorAll('.restore-merged-button').forEach((button) => {
-    button.addEventListener('click', () => runRestoreMerged(
-      button.dataset.targetRoot,
-      button.dataset.logicalRoot,
-      button
-    ));
-  });
 }
 
 function renderTargets() {
@@ -723,13 +711,24 @@ async function browseSource() {
   }
 }
 
+async function browseTargetFolder() {
+  try {
+    const selectedPath = await window.myBackup.pickTargetFolder({
+      targetRoot: state.addSourceTargetRoot
+    });
+    if (selectedPath !== null) {
+      document.getElementById('targetFolderInput').value = selectedPath;
+    }
+  } catch (error) {
+    appendLog('error', error.message || 'Failed to select target folder.');
+  }
+}
+
 async function registerSource(event) {
   event.preventDefault();
   const button = document.getElementById('addSourceButton');
   const sourcePath = document.getElementById('sourcePathInput').value.trim();
-  const mergeEnabled = document.getElementById('mergeEnabledInput').checked;
-  const organizeMedia = document.getElementById('organizeMediaInput').checked;
-  const mergeKey = document.getElementById('mergeKeyInput').value.trim();
+  const targetFolder = document.getElementById('targetFolderInput').value.trim();
 
   if (!sourcePath) {
     appendLog('error', 'Source folder is required.');
@@ -738,13 +737,25 @@ async function registerSource(event) {
 
   try {
     setBusy(button, true, 'Registering...');
-    state.dashboard = await window.myBackup.addSource({
+    let response = await window.myBackup.addSource({
       targetRoot: state.addSourceTargetRoot,
       sourcePath,
-      mergeEnabled,
-      organizeMedia,
-      mergeKey
+      targetFolder,
+      confirmMerge: false
     });
+    if (response && response.conflict) {
+      const confirmed = window.confirm(`Target folder already exists:\n${response.targetSourceRoot}\n\nMerge into this folder?`);
+      if (!confirmed) {
+        return;
+      }
+      response = await window.myBackup.addSource({
+        targetRoot: state.addSourceTargetRoot,
+        sourcePath,
+        targetFolder,
+        confirmMerge: true
+      });
+    }
+    state.dashboard = response.dashboard;
     renderDashboard();
     document.getElementById('sourceForm').reset();
     hideAddSourceModal();
@@ -846,20 +857,6 @@ async function runRestoreSource(targetRoot, machineId, sourceId, button) {
   }
 }
 
-async function runRestoreMerged(targetRoot, logicalRoot, button) {
-  try {
-    setBusy(button, true, 'Restoring...');
-    const summary = await window.myBackup.restoreMerged({ targetRoot, logicalRoot });
-    if (summary) {
-      appendLog('info', 'Merged restore summary.', summary);
-    }
-  } catch (error) {
-    appendLog('error', error.message || 'Merged restore failed.');
-  } finally {
-    setBusy(button, false);
-  }
-}
-
 document.addEventListener('DOMContentLoaded', async () => {
   try {
     state.runtimeFlags = {
@@ -886,6 +883,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
   document.getElementById('browseSourceButton').addEventListener('click', browseSource);
+  document.getElementById('browseTargetFolderButton').addEventListener('click', browseTargetFolder);
   document.getElementById('sourceForm').addEventListener('submit', registerSource);
   document.getElementById('logLevelSelect').addEventListener('change', updateLogLevel);
   document.getElementById('copyLogsButton')?.addEventListener('click', copyLogsToClipboard);

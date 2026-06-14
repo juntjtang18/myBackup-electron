@@ -23,7 +23,7 @@ const {
   createAppConfig,
   createHashRecord,
   createMachineRecord,
-  createSourceRecord,
+  createSourceRecord: createSourceRecordBase,
   validateHashRecord,
   validateSourceRecord
 } = require('../src/core/schema');
@@ -40,8 +40,8 @@ const {
   updateBackupSource
 } = require('../src/core/backupSchema');
 const { createTargetId } = require('../src/core/targetConfig');
-const { registerSource } = require('../src/core/sourceRegistry');
-const { buildConflictPath, classifyMedia, planLogicalTarget } = require('../src/core/pathPlanner');
+const { registerSource: registerSourceBase } = require('../src/core/sourceRegistry');
+const { buildConflictPath, getSourceTargetRoot, planLogicalTarget } = require('../src/core/pathPlanner');
 const { resolveTargetMapping } = require('../src/core/pathMapper');
 const { hashFile } = require('../src/core/hashService');
 const { lookupHashRecord, registerHashRecord } = require('../src/core/hashIndex');
@@ -81,7 +81,6 @@ const {
   walkFoldersFromCursor
 } = require('../src/core/cursor');
 const {
-  listHashRecords,
   restoreLogicalFile,
   restoreLogicalTree,
   restoreSource
@@ -111,6 +110,28 @@ describe('metadata foundation', () => {
   function writeFixture(filePath, content) {
     fs.ensureDirSync(path.dirname(filePath));
     fs.writeFileSync(filePath, content);
+  }
+
+  function withDefaultTargetFolder(input = {}) {
+    return {
+      ...input,
+      targetFolder: input.targetFolder !== undefined
+        ? input.targetFolder
+        : (input.mergeKey || 'backup')
+    };
+  }
+
+  function createSourceRecord(input, now) {
+    return createSourceRecordBase(withDefaultTargetFolder(input), now);
+  }
+
+  async function registerSource(appDataRoot, input, now) {
+    return registerSourceBase(appDataRoot, withDefaultTargetFolder(input), now);
+  }
+
+  function targetFilePath(targetRoot, source, ...relativeSegments) {
+    const relativePath = path.posix.join(...relativeSegments.map((segment) => String(segment)));
+    return path.join(targetRoot, getSourceTargetRoot(source.machineId, source), relativePath);
   }
 
   async function saveLegacyAppConfig(targetRoot, document) {
@@ -144,23 +165,20 @@ describe('metadata foundation', () => {
     expect(createFolderId('taxes/2024')).toBe('2024-980428266e');
   });
 
-  test('builds source records for separated and merged targets', () => {
+  test('builds source records with targetFolder-backed mapping state', () => {
     const separated = createSourceRecord({
       machineId: 'machine-a',
       sourcePath: '/Users/James/Documents',
-      organizeMedia: false,
-      mergeEnabled: false
+      targetFolder: 'work'
     });
 
-    const merged = createSourceRecord({
+    const shared = createSourceRecord({
       machineId: 'machine-b',
       sourcePath: '/Users/James/Documents',
-      organizeMedia: true,
-      mergeEnabled: true,
-      mergeKey: 'Documents'
+      targetFolder: 'shared'
     });
 
-    expect(merged.mergeKey).toBe('documents');
+    expect(separated.targetFolder).toBe('work');
     expect(separated.watchEnabled).toBe(true);
     expect(separated.backupIntervalMinutes).toBeNull();
     expect(separated.baselineAt).toBeNull();
@@ -169,12 +187,12 @@ describe('metadata foundation', () => {
       needsRescan: false,
       lastEventAt: null
     });
-    expect(merged.cursor).toEqual({
+    expect(shared.cursor).toEqual({
       relativePath: null,
       status: null,
       updatedAt: null
     });
-    expect(validateSourceRecord(merged)).toBe(merged);
+    expect(validateSourceRecord(shared)).toBe(shared);
   });
 
   test('builds hash records with a future-proof content field', () => {
@@ -220,8 +238,7 @@ describe('metadata foundation', () => {
     const source = createSourceRecord({
       machineId: 'machine-a',
       sourcePath: '/Users/James/Documents',
-      mergeEnabled: true,
-      mergeKey: 'documents'
+      targetFolder: 'documents'
     }, new Date('2026-06-01T10:00:00Z'));
     const hashRecord = createHashRecord({
       fileHash: 'c'.repeat(64),
@@ -478,6 +495,7 @@ describe('metadata foundation', () => {
       mode: 'full',
       status: 'idle',
       scanSeq: null,
+      copiedBytes: 0,
       pendingFolders: [],
       cursor: null,
       startedAt: null,
@@ -498,6 +516,7 @@ describe('metadata foundation', () => {
         mode: 'incremental',
         status: 'running',
         scanSeq: 42,
+        copiedBytes: 1234,
         pendingFolders: ['a', 'a/b'],
         cursor: {
           backupId: '20260610-111500',
@@ -516,6 +535,7 @@ describe('metadata foundation', () => {
       mode: 'incremental',
       status: 'running',
       scanSeq: 42,
+      copiedBytes: 1234,
       pendingFolders: ['a', 'a/b'],
       startedAt: '2026-06-10T11:15:00.000Z',
       updatedAt: '2026-06-10T11:16:00.000Z'
@@ -703,95 +723,42 @@ describe('metadata foundation', () => {
     const updated = await registerSource(tempRootPath, {
       machineId: machine.machineId,
       sourcePath: '/Users/James/Documents',
-      organizeMedia: true,
-      mergeEnabled: true,
-      mergeKey: 'Docs Shared'
+      targetFolder: 'docs-shared'
     }, new Date('2026-06-03T09:10:00Z'));
 
     expect(updated.sourceId).toBe(first.sourceId);
     expect(updated.createdAt).toBe(first.createdAt);
-    expect(updated.mergeEnabled).toBe(true);
-    expect(updated.mergeKey).toBe('docs-shared');
+    expect(updated.targetFolder).toBe('docs-shared');
     expect(updated.watchState.dirtyRef).toBe(`watch/${updated.sourceId}.dirty.json`);
     expect(updated.lastCompletedAt).toBe(scanned.lastCompletedAt);
   });
 
-  test('plans machine-separated, merged, and media logical target paths', async () => {
-    const separatedSource = createSourceRecord({
+  test('plans logical target paths under targetFolder and source folder name', async () => {
+    const source = createSourceRecord({
       machineId: 'machine-a',
       sourcePath: '/Users/James/Documents',
-      mergeEnabled: false,
-      organizeMedia: false
+      targetFolder: 'work'
     });
 
-    const mergedSource = createSourceRecord({
-      machineId: 'machine-b',
-      sourcePath: '/Users/James/Documents',
-      mergeEnabled: true,
-      mergeKey: 'documents',
-      organizeMedia: false
-    });
-
-    const mediaSeparatedSource = createSourceRecord({
-      machineId: 'machine-a',
-      sourcePath: '/Users/James/Pictures',
-      mergeEnabled: false,
-      organizeMedia: true
-    });
-
-    const mediaMergedSource = createSourceRecord({
-      machineId: 'machine-b',
-      sourcePath: '/Users/James/Pictures',
-      mergeEnabled: true,
-      mergeKey: 'photos',
-      organizeMedia: true
-    });
-
-    expect(classifyMedia('IMG_0001.HEIC')).toBe('image');
-    expect(classifyMedia('clip.MOV')).toBe('video');
-    expect(classifyMedia('todo.txt')).toBe('file');
+    expect(getSourceTargetRoot('machine-a', source)).toBe('work/Documents');
 
     expect(planLogicalTarget({
       machineId: 'machine-a',
-      source: separatedSource,
-      sourceRelativePath: 'taxes/2024.pdf',
-      kind: 'file'
-    })).toBe(`Backups/Machines/machine-a/${separatedSource.sourceId}/taxes/2024.pdf`);
+      source,
+      sourceRelativePath: 'taxes/2024.pdf'
+    })).toBe('work/Documents/taxes/2024.pdf');
 
-    expect(planLogicalTarget({
-      machineId: 'machine-b',
-      source: mergedSource,
-      sourceRelativePath: 'taxes/2024.pdf',
-      kind: 'file'
-    })).toBe('documents/taxes/2024.pdf');
-
-    expect(planLogicalTarget({
-      machineId: 'machine-a',
-      source: mediaSeparatedSource,
-      sourceRelativePath: 'albums/IMG_001.HEIC',
-      kind: 'image',
-      timestamp: new Date('2026-05-18T12:00:00Z')
-    })).toBe(`Images/2026/2026-05-18/machine-a/${mediaSeparatedSource.sourceId}/IMG_001.HEIC`);
-
-    expect(planLogicalTarget({
-      machineId: 'machine-b',
-      source: mediaMergedSource,
-      sourceRelativePath: 'albums/IMG_001.HEIC',
-      kind: 'image',
-      timestamp: new Date('2026-05-18T12:00:00Z')
-    })).toBe('Images/2026/2026-05-18/photos/IMG_001.HEIC');
-
-    expect(buildConflictPath('documents/taxes/2024.pdf', 'machine-b', 'documents-abc12345'))
-      .toBe('documents/taxes/2024 [machine-b-documents-abc12345].pdf');
+    expect(buildConflictPath('work/Documents/taxes/2024.pdf', 'machine-b', 'documents-abc12345'))
+      .toBe('work/Documents/taxes/2024 [machine-b-documents-abc12345].pdf');
 
     expect(resolveTargetMapping({
-      machineId: 'machine-b',
-      source: mergedSource,
+      machineId: 'machine-a',
+      source,
       sourceRelativePath: 'taxes/2024.pdf'
     })).toMatchObject({
-      logicalPath: 'documents/taxes/2024.pdf',
-      sourceTargetRoot: 'documents',
-      mappingMode: 'merge',
+      logicalPath: 'work/Documents/taxes/2024.pdf',
+      sourceTargetRoot: 'work/Documents',
+      mappingMode: 'direct',
       decided: true
     });
   });
@@ -1189,20 +1156,13 @@ describe('metadata foundation', () => {
     expect(summary.filesCopied).toBe(2);
     expect(summary.filesIndexed).toBe(0);
 
-    const targetFile = path.join(
-      tempRootPath,
-      'Backups',
-      'Machines',
-      machine.machineId,
-      source.sourceId,
-      'docs',
-      'a.txt'
-    );
+    const targetFile = targetFilePath(tempRootPath, source, 'docs', 'a.txt');
     expect(await fs.readFile(targetFile, 'utf8')).toBe('alpha');
 
     const runState = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
     expect(runState.status).toBe('completed');
     expect(runState.runId).toBe(summary.scanId);
+    expect(runState.copiedBytes).toBe(9);
 
     const updatedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
     expect(updatedSource.lastCompletedAt).toBe('2026-06-07T08:10:00.000Z');
@@ -1253,6 +1213,7 @@ describe('metadata foundation', () => {
     expect(runState.cursor).toMatchObject({
       relativePath: '.'
     });
+    expect(runState.copiedBytes).toBe(0);
   });
 
   test('pauses an in-flight copy as soon as possible and cleans up temp files', async () => {
@@ -1368,6 +1329,9 @@ describe('metadata foundation', () => {
 
     expect(paused.status).toBe('paused');
     expect(paused.filesCopied).toBe(0);
+    const pausedRunState = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
+    expect(pausedRunState.status).toBe('paused');
+    expect(pausedRunState.copiedBytes).toBe(0);
 
     events.length = 0;
 
@@ -1446,6 +1410,9 @@ describe('metadata foundation', () => {
     expect(completed.status).toBe('completed');
     expect(completed.scanId).toBe(paused.scanId);
     expect(completed.filesCopied).toBe(2);
+    const completedRunState = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
+    expect(completedRunState.status).toBe('completed');
+    expect(completedRunState.copiedBytes).toBe(6);
 
     const completedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
     expect(completedSource.cursor).toEqual({
@@ -1453,22 +1420,12 @@ describe('metadata foundation', () => {
       status: null,
       updatedAt: null
     });
-    const completedRunState = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
-    expect(completedRunState.status).toBe('completed');
-    expect(completedRunState.cursor).toBeNull();
+    const completedRunStateAfterCleanup = await loadRunState(tempRootPath, createTargetId(tempRootPath), source.sourceId);
+    expect(completedRunStateAfterCleanup.status).toBe('completed');
+    expect(completedRunStateAfterCleanup.cursor).toBeNull();
 
-    expect(
-      await fs.readFile(
-        path.join(tempRootPath, 'Backups', 'Machines', machine.machineId, source.sourceId, 'a', 'one.txt'),
-        'utf8'
-      )
-    ).toBe('one');
-    expect(
-      await fs.readFile(
-        path.join(tempRootPath, 'Backups', 'Machines', machine.machineId, source.sourceId, 'b', 'two.txt'),
-        'utf8'
-      )
-    ).toBe('two');
+    expect(await fs.readFile(targetFilePath(tempRootPath, source, 'a', 'one.txt'), 'utf8')).toBe('one');
+    expect(await fs.readFile(targetFilePath(tempRootPath, source, 'b', 'two.txt'), 'utf8')).toBe('two');
   });
 
   test('second backup skips unchanged files and overwrites changed files for separated sources', async () => {
@@ -1507,12 +1464,7 @@ describe('metadata foundation', () => {
 
     expect(summary.filesCopied).toBe(1);
     expect(summary.filesIndexed).toBe(0);
-    expect(
-      await fs.readFile(
-        path.join(tempRootPath, 'Backups', 'Machines', machine.machineId, source.sourceId, 'docs', 'b.txt'),
-        'utf8'
-      )
-    ).toBe('beta-v2');
+    expect(await fs.readFile(targetFilePath(tempRootPath, source, 'docs', 'b.txt'), 'utf8')).toBe('beta-v2');
   });
 
   test('legacy source without total size forces a full backup even when baseline exists', async () => {
@@ -1585,6 +1537,11 @@ dist/**
     expect(shouldIgnorePath(rules, 'packages/app/node_modules', true)).toBe(true);
     expect(shouldIgnorePath(rules, 'vendor', true)).toBe(true);
     expect(shouldIgnorePath(rules, 'project/.git', true)).toBe(true);
+    expect(shouldIgnorePath(rules, '.DS_Store', false)).toBe(true);
+    expect(shouldIgnorePath(rules, 'folder/.DS_Store', false)).toBe(true);
+    expect(shouldIgnorePath(rules, '._metadata', false)).toBe(true);
+    expect(shouldIgnorePath(rules, 'Thumbs.db', false)).toBe(true);
+    expect(shouldIgnorePath(rules, 'Desktop.ini', false)).toBe(true);
     expect(shouldIgnorePath(rules, 'docs/readme.txt', false)).toBe(false);
   });
 
@@ -1611,23 +1568,8 @@ dist/**
     });
 
     expect(summary.filesProcessed).toBe(1);
-    expect(await fs.pathExists(path.join(
-      tempRootPath,
-      'Backups',
-      'Machines',
-      machine.machineId,
-      source.sourceId,
-      'docs',
-      'a.txt'
-    ))).toBe(true);
-    expect(await fs.pathExists(path.join(
-      tempRootPath,
-      'Backups',
-      'Machines',
-      machine.machineId,
-      source.sourceId,
-      'node_modules'
-    ))).toBe(false);
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'a.txt'))).toBe(true);
+    expect(await fs.pathExists(path.join(tempRootPath, getSourceTargetRoot(source.machineId, source), 'node_modules'))).toBe(false);
   });
 
   test('backupSource skips files and folders matched by .mbignore', async () => {
@@ -1656,41 +1598,10 @@ dist/**
     });
 
     expect(summary.filesProcessed).toBe(2);
-    expect(await fs.pathExists(path.join(
-      tempRootPath,
-      'Backups',
-      'Machines',
-      machine.machineId,
-      source.sourceId,
-      'docs',
-      'a.txt'
-    ))).toBe(true);
-    expect(await fs.pathExists(path.join(
-      tempRootPath,
-      'Backups',
-      'Machines',
-      machine.machineId,
-      source.sourceId,
-      'docs',
-      'keep.log'
-    ))).toBe(true);
-    expect(await fs.pathExists(path.join(
-      tempRootPath,
-      'Backups',
-      'Machines',
-      machine.machineId,
-      source.sourceId,
-      'docs',
-      'drop.log'
-    ))).toBe(false);
-    expect(await fs.pathExists(path.join(
-      tempRootPath,
-      'Backups',
-      'Machines',
-      machine.machineId,
-      source.sourceId,
-      'node_modules'
-    ))).toBe(false);
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'a.txt'))).toBe(true);
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'keep.log'))).toBe(true);
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'drop.log'))).toBe(false);
+    expect(await fs.pathExists(path.join(tempRootPath, getSourceTargetRoot(source.machineId, source), 'node_modules'))).toBe(false);
   });
 
   test('backupSource continues when a discovered folder disappears before scandir', async () => {
@@ -1723,15 +1634,7 @@ dist/**
     });
 
     expect(summary.skippedFolders).toBe(1);
-    expect(await fs.pathExists(path.join(
-      tempRootPath,
-      'Backups',
-      'Machines',
-      machine.machineId,
-      source.sourceId,
-      'keep',
-      'a.txt'
-    ))).toBe(true);
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'keep', 'a.txt'))).toBe(true);
   });
 
   test('backupSource writes an error report and continues after a file failure', async () => {
@@ -1773,15 +1676,7 @@ dist/**
 
     expect(summary.errors).toBe(1);
     expect(summary.reportPath).toBe(errorReportPath(tempRootPath, machine.machineId, source.sourceId, summary.scanId));
-    expect(await fs.pathExists(path.join(
-      tempRootPath,
-      'Backups',
-      'Machines',
-      machine.machineId,
-      source.sourceId,
-      'docs',
-      'good.txt'
-    ))).toBe(true);
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'good.txt'))).toBe(true);
 
     const reportContent = await fs.readFile(summary.reportPath, 'utf8');
     expect(reportContent).toContain('"type":"file-stat-error"');
@@ -1865,134 +1760,6 @@ dist/**
     expect(activeSnapshots.some((worker) => String(worker.logicalPath || '').startsWith('documents/'))).toBe(false);
   });
 
-  test('reuses same-content files and resolves merged-path conflicts end-to-end', async () => {
-    const sourceRootA = path.join(tempRootPath, 'merge-a');
-    const sourceRootB = path.join(tempRootPath, 'merge-b');
-
-    writeFixture(path.join(sourceRootA, 'shared.txt'), 'same-content');
-    writeFixture(path.join(sourceRootA, 'conflict.txt'), 'content-a');
-    writeFixture(path.join(sourceRootB, 'shared.txt'), 'same-content');
-    writeFixture(path.join(sourceRootB, 'conflict.txt'), 'content-b');
-
-    const machineA = await ensureMachine(tempRootPath, {
-      hostname: 'merge-a-host',
-      seed: 'merge-a-seed',
-      now: new Date('2026-06-07T09:00:00Z')
-    });
-    const sourceA = await registerSource(tempRootPath, {
-      machineId: machineA.machineId,
-      sourcePath: sourceRootA,
-      mergeEnabled: true,
-      mergeKey: 'shared-docs',
-      organizeMedia: false
-    }, new Date('2026-06-07T09:05:00Z'));
-
-    await backupSource(tempRootPath, machineA.machineId, sourceA.sourceId, {
-      now: new Date('2026-06-07T09:10:00Z'),
-      forceNewScan: true
-    });
-
-    const machineB = await ensureMachine(tempRootPath, {
-      machineId: 'machine-b',
-      hostname: 'merge-b-host',
-      seed: 'merge-b-seed',
-      now: new Date('2026-06-07T09:20:00Z')
-    });
-    const sourceB = await registerSource(tempRootPath, {
-      machineId: machineB.machineId,
-      sourcePath: sourceRootB,
-      mergeEnabled: true,
-      mergeKey: 'shared-docs',
-      organizeMedia: false
-    }, new Date('2026-06-07T09:25:00Z'));
-
-    const summaryB = await backupSource(tempRootPath, machineB.machineId, sourceB.sourceId, {
-      now: new Date('2026-06-07T09:30:00Z'),
-      forceNewScan: true
-    });
-
-    expect(summaryB.filesProcessed).toBe(2);
-    expect(summaryB.filesCopied).toBe(1);
-    expect(summaryB.filesIndexed).toBe(1);
-    expect(summaryB.conflicts).toBe(1);
-
-    const sharedLogicalPath = 'shared-docs/shared.txt';
-    const sharedHash = await hashFile(path.join(sourceRootA, 'shared.txt'));
-    const sharedRecord = await lookupHashRecord(tempRootPath, sharedHash);
-    expect(sharedRecord.logicalPath).toBe(sharedLogicalPath);
-    expect(sharedRecord.origins).toHaveLength(2);
-
-    const baseConflictPath = path.join(tempRootPath, 'shared-docs', 'conflict.txt');
-    const suffixedConflictPath = path.join(
-      tempRootPath,
-      'shared-docs',
-      `conflict [${machineB.machineId}-${sourceB.sourceId}].txt`
-    );
-
-    expect(await fs.readFile(baseConflictPath, 'utf8')).toBe('content-a');
-    expect(await fs.readFile(suffixedConflictPath, 'utf8')).toBe('content-b');
-  });
-
-  test('indexes merged same-hash files at different logical paths without duplicate materialization', async () => {
-    const sourceRootA = path.join(tempRootPath, 'merge-folders-a');
-    const sourceRootB = path.join(tempRootPath, 'merge-folders-b');
-
-    writeFixture(path.join(sourceRootA, 'alpha', 'shared.txt'), 'same-content');
-    writeFixture(path.join(sourceRootB, 'beta', 'shared.txt'), 'same-content');
-
-    const machineA = await ensureMachine(tempRootPath, {
-      hostname: 'merge-folders-a-host',
-      seed: 'merge-folders-a-seed',
-      now: new Date('2026-06-07T10:00:00Z')
-    });
-    const sourceA = await registerSource(tempRootPath, {
-      machineId: machineA.machineId,
-      sourcePath: sourceRootA,
-      mergeEnabled: true,
-      mergeKey: 'shared-docs',
-      organizeMedia: false
-    }, new Date('2026-06-07T10:05:00Z'));
-
-    await backupSource(tempRootPath, machineA.machineId, sourceA.sourceId, {
-      now: new Date('2026-06-07T10:10:00Z'),
-      forceNewScan: true
-    });
-
-    const machineB = await ensureMachine(tempRootPath, {
-      machineId: 'machine-c',
-      hostname: 'merge-folders-b-host',
-      seed: 'merge-folders-b-seed',
-      now: new Date('2026-06-07T10:20:00Z')
-    });
-    const sourceB = await registerSource(tempRootPath, {
-      machineId: machineB.machineId,
-      sourcePath: sourceRootB,
-      mergeEnabled: true,
-      mergeKey: 'shared-docs',
-      organizeMedia: false
-    }, new Date('2026-06-07T10:25:00Z'));
-
-    const summaryB = await backupSource(tempRootPath, machineB.machineId, sourceB.sourceId, {
-      now: new Date('2026-06-07T10:30:00Z'),
-      forceNewScan: true
-    });
-
-    expect(summaryB.filesProcessed).toBe(1);
-    expect(summaryB.filesCopied).toBe(0);
-    expect(summaryB.filesIndexed).toBe(1);
-
-    const alphaPath = path.join(tempRootPath, 'shared-docs', 'alpha', 'shared.txt');
-    const betaPath = path.join(tempRootPath, 'shared-docs', 'beta', 'shared.txt');
-    expect(await fs.readFile(alphaPath, 'utf8')).toBe('same-content');
-    expect(await fs.pathExists(betaPath)).toBe(false);
-
-    const sharedHash = await hashFile(path.join(sourceRootA, 'alpha', 'shared.txt'));
-    const sharedRecord = await lookupHashRecord(tempRootPath, sharedHash);
-    expect(sharedRecord.logicalPath).toBe('shared-docs/alpha/shared.txt');
-    expect(sharedRecord.aliases).toContain('shared-docs/beta/shared.txt');
-    expect(sharedRecord.origins).toHaveLength(2);
-  });
-
   test('registerHashRecord preserves aliases and origins under concurrent same-hash updates', async () => {
     const fileHash = 'c'.repeat(64);
     const logicalPaths = ['documents/a.txt', 'documents/b.txt', 'documents/c.txt', 'documents/d.txt'];
@@ -2021,128 +1788,6 @@ dist/**
       'documents/d.txt'
     ]);
     expect(record.origins).toHaveLength(4);
-  });
-
-  test('backupSource handles many same-hash files in one run without hash-record races', async () => {
-    const sourceRoot = path.join(tempRootPath, 'same-hash-source');
-    const fileNames = [
-      'EmoticonHappy.gif',
-      'EmoticonHappy00.gif',
-      'EmoticonHappy000.gif',
-      'EmoticonHappy0000.gif',
-      'EmoticonHappy00000.gif',
-      'EmoticonHappy000000.gif'
-    ];
-
-    for (const fileName of fileNames) {
-      writeFixture(path.join(sourceRoot, 'sametime', fileName), 'same-gif-content');
-    }
-
-    const machine = await ensureMachine(tempRootPath, {
-      hostname: 'same-hash-host',
-      seed: 'same-hash-seed',
-      now: new Date('2026-06-08T10:00:00Z')
-    });
-    const source = await registerSource(tempRootPath, {
-      machineId: machine.machineId,
-      sourcePath: sourceRoot,
-      mergeEnabled: true,
-      mergeKey: 'documents',
-      organizeMedia: false
-    }, new Date('2026-06-08T10:05:00Z'));
-
-    const summary = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
-      now: new Date('2026-06-08T10:10:00Z'),
-      forceNewScan: true,
-      initialHashWorkers: 4,
-      initialCopyWorkers: 4
-    });
-
-    expect(summary.filesProcessed).toBe(fileNames.length);
-    expect(summary.filesCopied).toBe(1);
-    expect(summary.filesIndexed).toBe(fileNames.length - 1);
-    expect(summary.copiedBytes).toBe(Buffer.byteLength('same-gif-content') * fileNames.length);
-
-    const sharedHash = await hashFile(path.join(sourceRoot, 'sametime', fileNames[0]));
-    const record = await lookupHashRecord(tempRootPath, sharedHash);
-    expect(record.origins).toHaveLength(fileNames.length);
-    expect(record.aliases).toHaveLength(fileNames.length - 1);
-
-    expect(await fs.readFile(path.join(tempRootPath, 'documents', 'sametime', fileNames[0]), 'utf8')).toBe('same-gif-content');
-    for (const fileName of fileNames.slice(1)) {
-      expect(await fs.pathExists(path.join(tempRootPath, 'documents', 'sametime', fileName))).toBe(false);
-    }
-  });
-
-  test('indexes merged media files at different day paths and keeps alias metadata', async () => {
-    const sourceRootA = path.join(tempRootPath, 'merge-media-a');
-    const sourceRootB = path.join(tempRootPath, 'merge-media-b');
-    const sharedBytes = 'same-image-content';
-
-    writeFixture(path.join(sourceRootA, 'albums', 'IMG_001.JPG'), sharedBytes);
-    writeFixture(path.join(sourceRootB, 'imports', 'IMG_002.JPG'), sharedBytes);
-    fs.utimesSync(
-      path.join(sourceRootA, 'albums', 'IMG_001.JPG'),
-      new Date('2026-06-01T12:00:00Z'),
-      new Date('2026-06-01T12:00:00Z')
-    );
-    fs.utimesSync(
-      path.join(sourceRootB, 'imports', 'IMG_002.JPG'),
-      new Date('2026-06-01T12:00:00Z'),
-      new Date('2026-06-01T12:00:00Z')
-    );
-
-    const machineA = await ensureMachine(tempRootPath, {
-      hostname: 'merge-media-a-host',
-      seed: 'merge-media-a-seed',
-      now: new Date('2026-06-07T11:00:00Z')
-    });
-    const sourceA = await registerSource(tempRootPath, {
-      machineId: machineA.machineId,
-      sourcePath: sourceRootA,
-      mergeEnabled: true,
-      mergeKey: 'photos',
-      organizeMedia: true
-    }, new Date('2026-06-07T11:05:00Z'));
-
-    await backupSource(tempRootPath, machineA.machineId, sourceA.sourceId, {
-      now: new Date('2026-06-07T11:10:00Z'),
-      forceNewScan: true
-    });
-
-    const machineB = await ensureMachine(tempRootPath, {
-      machineId: 'machine-d',
-      hostname: 'merge-media-b-host',
-      seed: 'merge-media-b-seed',
-      now: new Date('2026-06-07T11:20:00Z')
-    });
-    const sourceB = await registerSource(tempRootPath, {
-      machineId: machineB.machineId,
-      sourcePath: sourceRootB,
-      mergeEnabled: true,
-      mergeKey: 'photos',
-      organizeMedia: true
-    }, new Date('2026-06-07T11:25:00Z'));
-
-    const summaryB = await backupSource(tempRootPath, machineB.machineId, sourceB.sourceId, {
-      now: new Date('2026-06-07T11:30:00Z'),
-      forceNewScan: true
-    });
-
-    expect(summaryB.filesProcessed).toBe(1);
-    expect(summaryB.filesCopied).toBe(0);
-    expect(summaryB.filesIndexed).toBe(1);
-
-    const firstLogicalPath = path.join(tempRootPath, 'Images', '2026', '2026-06-01', 'photos', 'IMG_001.JPG');
-    const secondLogicalPath = path.join(tempRootPath, 'Images', '2026', '2026-06-01', 'photos', 'IMG_002.JPG');
-    expect(await fs.readFile(firstLogicalPath, 'utf8')).toBe(sharedBytes);
-    expect(await fs.pathExists(secondLogicalPath)).toBe(false);
-
-    const sharedHash = await hashFile(path.join(sourceRootA, 'albums', 'IMG_001.JPG'));
-    const sharedRecord = await lookupHashRecord(tempRootPath, sharedHash);
-    expect(sharedRecord.logicalPath).toBe('Images/2026/2026-06-01/photos/IMG_001.JPG');
-    expect(sharedRecord.aliases).toContain('Images/2026/2026-06-01/photos/IMG_002.JPG');
-    expect(sharedRecord.origins).toHaveLength(2);
   });
 
   test('restores a source by origin-relative paths', async () => {
@@ -2179,71 +1824,6 @@ dist/**
     expect(await fs.readFile(path.join(restoreRoot, 'docs', 'nested', 'b.txt'), 'utf8')).toBe('beta');
   });
 
-  test('restores a merged logical tree including aliases and conflict files', async () => {
-    const sourceRootA = path.join(tempRootPath, 'restore-merge-a');
-    const sourceRootB = path.join(tempRootPath, 'restore-merge-b');
-
-    writeFixture(path.join(sourceRootA, 'alpha', 'shared.txt'), 'same-content');
-    writeFixture(path.join(sourceRootA, 'conflict.txt'), 'content-a');
-    writeFixture(path.join(sourceRootB, 'beta', 'shared.txt'), 'same-content');
-    writeFixture(path.join(sourceRootB, 'conflict.txt'), 'content-b');
-
-    const machineA = await ensureMachine(tempRootPath, {
-      hostname: 'restore-merge-a-host',
-      seed: 'restore-merge-a-seed',
-      now: new Date('2026-06-08T09:00:00Z')
-    });
-    const sourceA = await registerSource(tempRootPath, {
-      machineId: machineA.machineId,
-      sourcePath: sourceRootA,
-      mergeEnabled: true,
-      mergeKey: 'shared-docs',
-      organizeMedia: false
-    }, new Date('2026-06-08T09:05:00Z'));
-    await backupSource(tempRootPath, machineA.machineId, sourceA.sourceId, {
-      now: new Date('2026-06-08T09:10:00Z'),
-      forceNewScan: true
-    });
-
-    const machineB = await ensureMachine(tempRootPath, {
-      machineId: 'machine-restore-b',
-      hostname: 'restore-merge-b-host',
-      seed: 'restore-merge-b-seed',
-      now: new Date('2026-06-08T09:20:00Z')
-    });
-    const sourceB = await registerSource(tempRootPath, {
-      machineId: machineB.machineId,
-      sourcePath: sourceRootB,
-      mergeEnabled: true,
-      mergeKey: 'shared-docs',
-      organizeMedia: false
-    }, new Date('2026-06-08T09:25:00Z'));
-    await backupSource(tempRootPath, machineB.machineId, sourceB.sourceId, {
-      now: new Date('2026-06-08T09:30:00Z'),
-      forceNewScan: true
-    });
-
-    const restoreRoot = path.join(tempRootPath, 'restored-merged-tree');
-    const summary = await restoreLogicalTree(tempRootPath, {
-      logicalRoot: 'shared-docs',
-      destinationRoot: restoreRoot
-    });
-
-    expect(summary.restoredFiles).toBe(4);
-    expect(await fs.readFile(path.join(restoreRoot, 'alpha', 'shared.txt'), 'utf8')).toBe('same-content');
-    expect(await fs.readFile(path.join(restoreRoot, 'beta', 'shared.txt'), 'utf8')).toBe('same-content');
-    expect(await fs.readFile(path.join(restoreRoot, 'conflict.txt'), 'utf8')).toBe('content-a');
-    const conflictRestoreName = path.posix.basename(
-      buildConflictPath('shared-docs/conflict.txt', machineB.machineId, sourceB.sourceId)
-    );
-    expect(
-      await fs.readFile(
-        path.join(restoreRoot, conflictRestoreName),
-        'utf8'
-      )
-    ).toBe('content-b');
-  });
-
   test('restores a single logical file by logical path', async () => {
     const sourceRoot = path.join(tempRootPath, 'restore-single');
     writeFixture(path.join(sourceRoot, 'docs', 'one.txt'), 'single-file');
@@ -2266,7 +1846,7 @@ dist/**
     });
 
     const destinationPath = path.join(tempRootPath, 'restore-single-output', 'copied.txt');
-    const logicalPath = `Backups/Machines/${machine.machineId}/${source.sourceId}/docs/one.txt`;
+    const logicalPath = `${getSourceTargetRoot(machine.machineId, source)}/docs/one.txt`;
     const result = await restoreLogicalFile(tempRootPath, {
       logicalPath,
       destinationPath
@@ -2274,33 +1854,6 @@ dist/**
 
     expect(result.restored).toBe(true);
     expect(await fs.readFile(destinationPath, 'utf8')).toBe('single-file');
-  });
-
-  test('lists hash records from metadata storage', async () => {
-    const sourceRoot = path.join(tempRootPath, 'restore-list');
-    writeFixture(path.join(sourceRoot, 'a.txt'), 'alpha');
-    writeFixture(path.join(sourceRoot, 'b.txt'), 'beta');
-
-    const machine = await ensureMachine(tempRootPath, {
-      hostname: 'restore-list-host',
-      seed: 'restore-list-seed',
-      now: new Date('2026-06-08T11:00:00Z')
-    });
-    const source = await registerSource(tempRootPath, {
-      machineId: machine.machineId,
-      sourcePath: sourceRoot,
-      mergeEnabled: false,
-      organizeMedia: false
-    }, new Date('2026-06-08T11:05:00Z'));
-
-    await backupSource(tempRootPath, machine.machineId, source.sourceId, {
-      now: new Date('2026-06-08T11:10:00Z'),
-      forceNewScan: true
-    });
-
-    const records = await listHashRecords(tempRootPath);
-    expect(records).toHaveLength(2);
-    expect(records.every((record) => record.content.type === 'plain')).toBe(true);
   });
 
   test('persists local UI target selection state', async () => {

@@ -1,33 +1,50 @@
+const fs = require('fs-extra');
 const path = require('path');
-const { toPosixPath } = require('./layout');
 const { restorePlainFile } = require('./plainFileStorage');
-const { listFileIndexRecords } = require('./fileIndex');
+const { loadBackupSchema } = require('./backupSchema');
+const { getSourceTargetRoot } = require('./pathPlanner');
+const { toPosixPath } = require('./layout');
 
-function getAllLogicalPaths(record) {
-  const paths = [];
-  if (record.logicalPath) {
-    paths.push(toPosixPath(record.logicalPath));
-  }
-
-  for (const alias of record.aliases || []) {
-    const normalized = toPosixPath(alias);
-    if (!paths.includes(normalized)) {
-      paths.push(normalized);
+async function findSourceRecord(targetRoot, machineId, sourceId) {
+  const schema = await loadBackupSchema(targetRoot);
+  for (const target of schema?.targets || []) {
+    for (const source of target.sources || []) {
+      if (source.machineId === machineId && source.sourceId === sourceId) {
+        return {
+          targetRoot: target.path,
+          source
+        };
+      }
     }
   }
-
-  return paths;
+  return null;
 }
 
-function isPathInsideRoot(logicalPath, logicalRoot) {
-  const normalizedPath = toPosixPath(logicalPath);
-  const normalizedRoot = toPosixPath(logicalRoot).replace(/\/+$/, '');
-  return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
+async function walkFiles(rootPath, onFile, relativeRoot = '.') {
+  if (!(await fs.pathExists(rootPath))) {
+    return;
+  }
+
+  const entries = await fs.readdir(rootPath, { withFileTypes: true });
+  for (const entry of entries) {
+    const absolutePath = path.join(rootPath, entry.name);
+    const relativePath = relativeRoot === '.'
+      ? entry.name
+      : path.posix.join(relativeRoot, entry.name);
+    if (entry.isDirectory()) {
+      await walkFiles(absolutePath, onFile, relativePath);
+    } else if (entry.isFile()) {
+      await onFile({
+        absolutePath,
+        relativePath: toPosixPath(relativePath)
+      });
+    }
+  }
 }
 
 async function restoreSource(targetRoot, input) {
   const destinationRoot = path.resolve(input.destinationRoot);
-  const records = await listFileIndexRecords(targetRoot);
+  const sourceRecord = await findSourceRecord(targetRoot, input.machineId, input.sourceId);
   const summary = {
     machineId: input.machineId,
     sourceId: input.sourceId,
@@ -35,25 +52,17 @@ async function restoreSource(targetRoot, input) {
     skippedRecords: 0
   };
 
-  for (const record of records) {
-    const origin = (record.origins || []).find((entry) => (
-      entry.machineId === input.machineId &&
-      entry.sourceId === input.sourceId
-    ));
-
-    if (!origin) {
-      summary.skippedRecords += 1;
-      continue;
-    }
-
-    const restorePath = path.join(destinationRoot, ...toPosixPath(origin.sourceRelativePath).split('/'));
-    if (record.content.type !== 'plain') {
-      throw new Error(`Unsupported content type for restore: ${record.content.type}`);
-    }
-
-    await restorePlainFile(targetRoot, record.content, restorePath);
-    summary.restoredFiles += 1;
+  if (!sourceRecord) {
+    return summary;
   }
+
+  const sourceTargetRoot = path.join(targetRoot, getSourceTargetRoot(sourceRecord.source.machineId, sourceRecord.source));
+  await walkFiles(sourceTargetRoot, async ({ relativePath }) => {
+    const logicalPath = path.posix.join(getSourceTargetRoot(sourceRecord.source.machineId, sourceRecord.source), relativePath);
+    const restorePath = path.join(destinationRoot, ...relativePath.split('/'));
+    await restorePlainFile(targetRoot, { type: 'plain', path: logicalPath }, restorePath);
+    summary.restoredFiles += 1;
+  });
 
   return summary;
 }
@@ -61,65 +70,45 @@ async function restoreSource(targetRoot, input) {
 async function restoreLogicalTree(targetRoot, input) {
   const logicalRoot = toPosixPath(input.logicalRoot).replace(/\/+$/, '');
   const destinationRoot = path.resolve(input.destinationRoot);
-  const records = await listFileIndexRecords(targetRoot);
+  const sourceRoot = path.join(targetRoot, ...logicalRoot.split('/'));
   const restoredPaths = new Set();
   const summary = {
     logicalRoot,
     restoredFiles: 0
   };
 
-  for (const record of records) {
-    if (record.content.type !== 'plain') {
-      throw new Error(`Unsupported content type for restore: ${record.content.type}`);
+  await walkFiles(sourceRoot, async ({ relativePath }) => {
+    const logicalPath = logicalRoot ? path.posix.join(logicalRoot, relativePath) : relativePath;
+    if (restoredPaths.has(logicalPath)) {
+      return;
     }
 
-    for (const logicalPath of getAllLogicalPaths(record)) {
-      if (!isPathInsideRoot(logicalPath, logicalRoot)) {
-        continue;
-      }
-
-      const relativePath = logicalPath === logicalRoot
-        ? path.posix.basename(logicalPath)
-        : logicalPath.slice(logicalRoot.length + 1);
-      if (restoredPaths.has(logicalPath)) {
-        continue;
-      }
-
-      const restorePath = path.join(destinationRoot, ...toPosixPath(relativePath).split('/'));
-      await restorePlainFile(targetRoot, record.content, restorePath);
-      restoredPaths.add(logicalPath);
-      summary.restoredFiles += 1;
-    }
-  }
+    const restorePath = path.join(destinationRoot, ...relativePath.split('/'));
+    await restorePlainFile(targetRoot, { type: 'plain', path: logicalPath }, restorePath);
+    restoredPaths.add(logicalPath);
+    summary.restoredFiles += 1;
+  });
 
   return summary;
 }
 
 async function restoreLogicalFile(targetRoot, input) {
   const logicalPath = toPosixPath(input.logicalPath);
+  const sourcePath = path.join(targetRoot, ...logicalPath.split('/'));
   const destinationPath = path.resolve(input.destinationPath);
-  const records = await listFileIndexRecords(targetRoot);
 
-  for (const record of records) {
-    for (const candidatePath of getAllLogicalPaths(record)) {
-      if (candidatePath !== logicalPath) {
-        continue;
-      }
-
-      await restorePlainFile(targetRoot, record.content, destinationPath);
-      return {
-        logicalPath,
-        restored: true
-      };
-    }
+  if (!(await fs.pathExists(sourcePath))) {
+    throw new Error(`Logical path not found: ${logicalPath}`);
   }
 
-  throw new Error(`Logical path not found: ${logicalPath}`);
+  await restorePlainFile(targetRoot, { type: 'plain', path: logicalPath }, destinationPath);
+  return {
+    logicalPath,
+    restored: true
+  };
 }
 
 module.exports = {
-  getAllLogicalPaths,
-  listHashRecords: listFileIndexRecords,
   restoreLogicalFile,
   restoreLogicalTree,
   restoreSource

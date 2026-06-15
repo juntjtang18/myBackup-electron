@@ -184,7 +184,7 @@ async function createAvailableTargetDashboardEntry(target, appDataRoot, platform
       available: false,
       unavailableReason: availability.unavailableReason,
       machine: null,
-      sources: []
+      sources: await Promise.all((target.sources || []).map((source) => mapSourceDashboardEntry(source)))
     };
   }
 

@@ -1408,6 +1408,13 @@ describe('metadata foundation', () => {
 
   test('detects unavailable backup targets on startup', async () => {
     const mountedVolumes = new Set(['/Volumes/BackupDrive']);
+    const source = createSourceRecord({
+      machineId: 'machine-a',
+      sourcePath: '/Users/James/Documents',
+      targetFolder: 'documents',
+      baselineAt: '2026-06-09T10:00:00Z',
+      lastCompletedAt: '2026-06-09T10:05:00.000Z'
+    }, new Date('2026-06-09T10:05:00Z'));
 
     expect(checkTargetAvailability('/Volumes/BackupDrive/Archive', mountedVolumes, 'darwin')).toEqual({
       available: true,
@@ -1425,11 +1432,18 @@ describe('metadata foundation', () => {
       id: 'target-1',
       path: '/Volumes/MissingDrive/Archive',
       collapsed: false,
-      addedAt: '2026-06-09T10:00:00Z'
+      addedAt: '2026-06-09T10:00:00Z',
+      sources: [source]
     })).resolves.toMatchObject({
       available: false,
       machine: null,
-      sources: []
+      sources: [
+        expect.objectContaining({
+          sourceId: source.sourceId,
+          sourcePath: source.sourcePath,
+          targetFolder: 'documents'
+        })
+      ]
     });
   });
 

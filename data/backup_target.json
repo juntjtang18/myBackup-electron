@@ -28,7 +28,7 @@
           "watchState": {
             "dirtyRef": "watch/documents-0cf0ec50.dirty.json",
             "needsRescan": false,
-            "lastEventAt": "2026-06-14T05:23:10.168Z"
+            "lastEventAt": "2026-06-15T15:29:07.393Z"
           },
           "backupStatus": {
             "status": "completed",
@@ -46,7 +46,7 @@
           "backupSizeBytes": 6988655022,
           "lastCompletedAt": "2026-06-15T06:44:41.163Z",
           "createdAt": "2026-06-02T04:18:46.753Z",
-          "updatedAt": "2026-06-15T06:44:41.163Z",
+          "updatedAt": "2026-06-15T15:29:07.393Z",
           "scanState": {
             "status": "completed",
             "activeGeneration": "20260610-064603",
@@ -106,5 +106,5 @@
     "importedSourceCount": 0
   },
   "createdAt": "2026-06-10T06:30:28.970Z",
-  "updatedAt": "2026-06-15T06:44:51.597Z"
+  "updatedAt": "2026-06-15T15:29:07.393Z"
 }

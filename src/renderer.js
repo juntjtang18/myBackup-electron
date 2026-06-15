@@ -442,14 +442,7 @@ function renderTargetSourcesTable(target) {
   const targetRoot = target.path;
   const sources = target.sources || [];
   const showDeleteButtons = Boolean(state.sourceDeleteExpanded[target.id]);
-
-  if (!target.available) {
-    return `
-      <div class="empty-state target-unavailable-state">
-        Backup target is unavailable${target.unavailableReason ? `: <span class="muted">${escapeHtml(target.unavailableReason)}</span>` : '.'}
-      </div>
-    `;
-  }
+  const targetUnavailable = target.available === false;
 
   if (!sources || sources.length === 0) {
     return '<div class="empty-state" style="padding:24px 12px;margin-top:8px;">No sources in this target. Click <strong>+ Source</strong> to add one.</div>';
@@ -477,6 +470,7 @@ function renderTargetSourcesTable(target) {
     const backupClass = activeProgress
       ? 'btn-outline-warning'
       : (requiresFullBackup ? 'btn-outline-warning' : 'btn-outline-primary');
+    const backupDisabled = targetUnavailable || Boolean(activeProgress);
     const targetRootLabel = source.targetSubdir;
     const sourceSizeLabel = source.sourceSizeBytes === null || source.sourceSizeBytes === undefined
       ? '-'
@@ -505,7 +499,7 @@ function renderTargetSourcesTable(target) {
         <td>
           <div class="actions-row">
             <button class="btn btn-sm btn-outline-secondary toggle-changes-button${state.sourceChangeExpanded[changeKey] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" data-source-id="${escapeHtml(source.sourceId)}">${escapeHtml(sourceChangeLabel)}</button>
-            <button class="btn btn-sm ${backupClass} run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}">${backupLabel}</button>
+            <button class="btn btn-sm ${backupClass} run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${backupDisabled ? ' disabled' : ''}>${backupLabel}</button>
             <button class="btn btn-sm btn-outline-secondary restore-source-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${restoreDisabled ? ' disabled' : ''}>Restore</button>
             ${showDeleteButtons ? `<button class="btn btn-sm btn-outline-danger delete-source-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}"${deleteDisabled ? ' disabled' : ''}>Delete</button>` : ''}
           </div>
@@ -517,6 +511,11 @@ function renderTargetSourcesTable(target) {
   }).join('');
 
   return `
+    ${targetUnavailable ? `
+      <div class="target-unavailable-banner">
+        Target volume is not mounted. Backup actions are unavailable until the drive is reconnected.${target.unavailableReason ? ` <span class="muted">${escapeHtml(target.unavailableReason)}</span>` : ''}
+      </div>
+    ` : ''}
     <table class="source-table">
       <colgroup>
         <col class="source-col-source">
@@ -640,7 +639,7 @@ function renderTargets() {
             <span class="target-count-badge">${sourceCount} source${sourceCount === 1 ? '' : 's'}</span>
           </div>
           <div class="target-panel-actions">
-            <button type="button" class="btn-target-action add-source-button" data-target-root="${escapeHtml(target.path)}"${target.available === false ? ' disabled' : ''}>+ Source</button>
+            <button type="button" class="btn-target-action add-source-button" data-target-root="${escapeHtml(target.path)}">+ Source</button>
             <button type="button" class="btn-target-action danger remove-target-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(target.path)}" title="Remove from list">Remove</button>
             <button type="button" class="btn-target-action icon-only toggle-source-delete-button${state.sourceDeleteExpanded[target.id] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" title="Toggle source delete mode" aria-label="Toggle source delete mode">⚙</button>
           </div>
@@ -913,12 +912,6 @@ async function openAddSourceFlow(targetRoot) {
     return;
   }
 
-  const target = (state.dashboard.targets || []).find((entry) => entry.path === targetRoot);
-  if (target && target.available === false) {
-    appendLog('warn', 'Backup target is unavailable.');
-    return;
-  }
-
   state.addSourceTargetRoot = targetRoot;
   showAddSourceModal();
 }
@@ -1168,3 +1161,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   await refreshDashboard();
   renderLogs();
 });
+
+if (typeof module !== 'undefined') {
+  module.exports = {
+    __test__: {
+      state,
+      renderTargetSourcesTable,
+      renderTargets
+    }
+  };
+}

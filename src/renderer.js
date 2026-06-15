@@ -16,7 +16,8 @@ const state = {
   },
   lastProgressTraceAt: {},
   progressPayloadTraceCount: 0,
-  progressRenderTraceCount: 0
+  progressRenderTraceCount: 0,
+  logDockCollapsed: false
 };
 
 let lastDashboardPushAt = 0;
@@ -411,6 +412,46 @@ function scanBadgeClass(status) {
   return 'scan-badge-idle';
 }
 
+function scanBadgeLines(status) {
+  const normalized = String(status || '-').trim();
+  if (normalized === 'full backup required') {
+    return ['full backup', 'required'];
+  }
+  const words = normalized.split(/\s+/);
+  if (words.length >= 2) {
+    const mid = Math.ceil(words.length / 2);
+    return [words.slice(0, mid).join(' '), words.slice(mid).join(' ')];
+  }
+  return [normalized];
+}
+
+function renderScanBadge(status) {
+  const lines = scanBadgeLines(status);
+  const className = scanBadgeClass(status);
+  const lineHtml = lines
+    .map((line) => `<span class="scan-badge-line">${escapeHtml(line)}</span>`)
+    .join('');
+  return `<span class="scan-badge ${className}" title="${escapeHtml(status)}">${lineHtml}</span>`;
+}
+
+function renderCompletedCell(value) {
+  if (!value) {
+    return '<div class="completed-at"><span class="completed-at-date">-</span></div>';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return `<div class="completed-at"><span class="completed-at-date">${escapeHtml(String(value))}</span></div>`;
+  }
+
+  return `
+    <div class="completed-at">
+      <span class="completed-at-date">${escapeHtml(date.toLocaleDateString())}</span>
+      <span class="completed-at-time">${escapeHtml(date.toLocaleTimeString())}</span>
+    </div>
+  `;
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -462,7 +503,7 @@ function renderTargetSourcesTable(target) {
     const sourceStatus = activeProgress
       ? (isPausing ? 'pausing' : (activeProgress.progress?.status || 'running'))
       : (pausedCursor ? 'paused' : (requiresFullBackup ? 'full backup required' : 'ready'));
-    const restoreDisabled = Boolean(activeProgress);
+    const restoreDisabled = targetUnavailable || Boolean(activeProgress);
     const deleteDisabled = Boolean(activeProgress);
     const backupLabel = activeProgress
       ? (pauseRequested || isPausing ? 'Pausing...' : 'Pause')
@@ -493,15 +534,15 @@ function renderTargetSourcesTable(target) {
           <div class="small muted mt-1">Backed Up: ${escapeHtml(backupSizeLabel)}</div>
         </td>
         <td>
-          <span class="scan-badge ${scanBadgeClass(sourceStatus)}">${escapeHtml(sourceStatus)}</span>
+          ${renderScanBadge(sourceStatus)}
         </td>
-        <td><div class="small">${escapeHtml(formatTimestamp(source.lastCompletedAt))}</div></td>
+        <td>${renderCompletedCell(source.lastCompletedAt)}</td>
         <td>
           <div class="actions-row">
-            <button class="btn btn-sm btn-outline-secondary toggle-changes-button${state.sourceChangeExpanded[changeKey] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" data-source-id="${escapeHtml(source.sourceId)}">${escapeHtml(sourceChangeLabel)}</button>
-            <button class="btn btn-sm ${backupClass} run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${backupDisabled ? ' disabled' : ''}>${backupLabel}</button>
-            <button class="btn btn-sm btn-outline-secondary restore-source-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${restoreDisabled ? ' disabled' : ''}>Restore</button>
-            ${showDeleteButtons ? `<button class="btn btn-sm btn-outline-danger delete-source-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}"${deleteDisabled ? ' disabled' : ''}>Delete</button>` : ''}
+            <button class="btn btn-sm btn-outline-secondary btn-action btn-action-changes toggle-changes-button${state.sourceChangeExpanded[changeKey] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(sourceChangeLabel)}">${escapeHtml(sourceChangeLabel)}</button>
+            <button class="btn btn-sm ${backupClass} btn-action btn-action-backup run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(backupLabel)}"${backupDisabled ? ' disabled' : ''}>${backupLabel}</button>
+            <button class="btn btn-sm btn-outline-secondary btn-action btn-action-restore restore-source-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${restoreDisabled ? ' disabled' : ''}>Restore</button>
+            ${showDeleteButtons ? `<button class="btn btn-sm btn-outline-danger btn-action btn-action-delete delete-source-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}"${deleteDisabled ? ' disabled' : ''}>Delete</button>` : ''}
           </div>
         </td>
       </tr>
@@ -513,7 +554,7 @@ function renderTargetSourcesTable(target) {
   return `
     ${targetUnavailable ? `
       <div class="target-unavailable-banner">
-        Target volume is not mounted. Backup actions are unavailable until the drive is reconnected.${target.unavailableReason ? ` <span class="muted">${escapeHtml(target.unavailableReason)}</span>` : ''}
+        Target volume is not mounted. Backup and restore actions are unavailable until the drive is reconnected.${target.unavailableReason ? ` <span class="muted">${escapeHtml(target.unavailableReason)}</span>` : ''}
       </div>
     ` : ''}
     <table class="source-table">
@@ -1065,6 +1106,11 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
 }
 
 async function runRestoreSource(targetRoot, machineId, sourceId, button) {
+  const currentTarget = (state.dashboard.targets || []).find((entry) => entry.path === targetRoot);
+  if (currentTarget && currentTarget.available === false) {
+    appendLog('warn', 'Backup target is unavailable.');
+    return;
+  }
   try {
     setBusy(button, true, 'Restoring...');
     const summary = await window.myBackup.restoreSource({ targetRoot, machineId, sourceId });
@@ -1078,7 +1124,78 @@ async function runRestoreSource(targetRoot, machineId, sourceId, button) {
   }
 }
 
+async function syncWindowMaximizedState() {
+  if (!window.myBackup?.isWindowMaximized) {
+    return;
+  }
+  const maximized = await window.myBackup.isWindowMaximized();
+  document.body.classList.toggle('window-maximized', Boolean(maximized));
+}
+
+function setLogDockCollapsed(collapsed) {
+  state.logDockCollapsed = Boolean(collapsed);
+  document.body.classList.toggle('log-dock-collapsed', state.logDockCollapsed);
+  const button = document.getElementById('toggleLogDockButton');
+  if (!button) {
+    return;
+  }
+  button.setAttribute('aria-expanded', state.logDockCollapsed ? 'false' : 'true');
+  button.setAttribute('aria-label', state.logDockCollapsed ? 'Show activity log' : 'Hide activity log');
+  button.setAttribute('title', state.logDockCollapsed ? 'Show activity log' : 'Hide activity log');
+}
+
+function initializeLogDockToggle() {
+  document.getElementById('toggleLogDockButton')?.addEventListener('click', () => {
+    setLogDockCollapsed(!state.logDockCollapsed);
+  });
+}
+
+function initializeWindowChrome() {
+  if (!window.myBackup?.getPlatform) {
+    return;
+  }
+
+  const platform = window.myBackup.getPlatform();
+  document.body.classList.add(`platform-${platform}`);
+
+  document.querySelectorAll('[data-window-action]').forEach((button) => {
+    button.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const action = button.getAttribute('data-window-action');
+      if (action === 'minimize') {
+        await window.myBackup.minimizeWindow();
+        return;
+      }
+      if (action === 'maximize') {
+        await window.myBackup.toggleMaximizeWindow();
+        await syncWindowMaximizedState();
+        return;
+      }
+      if (action === 'close') {
+        await window.myBackup.closeWindow();
+      }
+    });
+  });
+
+  const titlebar = document.getElementById('appTitlebar');
+  titlebar?.addEventListener('dblclick', async (event) => {
+    if (event.target.closest('.window-controls, .hero-tools, button, select, label, option')) {
+      return;
+    }
+    await window.myBackup.toggleMaximizeWindow();
+    await syncWindowMaximizedState();
+  });
+
+  window.myBackup.onWindowMaximizedChanged?.((maximized) => {
+    document.body.classList.toggle('window-maximized', Boolean(maximized));
+  });
+
+  syncWindowMaximizedState().catch(() => {});
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
+  initializeWindowChrome();
+  initializeLogDockToggle();
   try {
     state.runtimeFlags = {
       ...state.runtimeFlags,

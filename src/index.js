@@ -496,6 +496,34 @@ function registerIpcHandlers() {
     logToRenderer('info', 'Merged restore completed.', summary);
     return summary;
   });
+
+  ipcMain.handle('window:minimize', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.minimize();
+    }
+  });
+
+  ipcMain.handle('window:toggle-maximize', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return false;
+    }
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize();
+    } else {
+      mainWindow.maximize();
+    }
+    return mainWindow.isMaximized();
+  });
+
+  ipcMain.handle('window:close', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.close();
+    }
+  });
+
+  ipcMain.handle('window:is-maximized', () => {
+    return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized());
+  });
 }
 
 function createWindow() {
@@ -504,10 +532,23 @@ function createWindow() {
     height: 860,
     minWidth: 1120,
     minHeight: 720,
+    frame: false,
+    backgroundColor: '#eef1f5',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false
+    }
+  });
+
+  mainWindow.on('maximize', () => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('window:maximized-changed', true);
+    }
+  });
+  mainWindow.on('unmaximize', () => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('window:maximized-changed', false);
     }
   });
 

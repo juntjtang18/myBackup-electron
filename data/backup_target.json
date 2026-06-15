@@ -27,8 +27,8 @@
           "baselineAt": "2026-06-13T06:14:20.702Z",
           "watchState": {
             "dirtyRef": "watch/documents-0cf0ec50.dirty.json",
-            "needsRescan": false,
-            "lastEventAt": "2026-06-15T15:29:07.393Z"
+            "needsRescan": true,
+            "lastEventAt": "2026-06-15T23:19:18.171Z"
           },
           "backupStatus": {
             "status": "completed",
@@ -46,7 +46,7 @@
           "backupSizeBytes": 6988655022,
           "lastCompletedAt": "2026-06-15T06:44:41.163Z",
           "createdAt": "2026-06-02T04:18:46.753Z",
-          "updatedAt": "2026-06-15T15:29:07.393Z",
+          "updatedAt": "2026-06-15T23:19:18.171Z",
           "scanState": {
             "status": "completed",
             "activeGeneration": "20260610-064603",
@@ -67,8 +67,8 @@
           "baselineAt": "2026-06-14T06:40:38.654Z",
           "watchState": {
             "dirtyRef": "watch/pictures-08be52ca.dirty.json",
-            "needsRescan": false,
-            "lastEventAt": "2026-06-13T19:06:12.123Z"
+            "needsRescan": true,
+            "lastEventAt": "2026-06-15T23:21:19.534Z"
           },
           "backupStatus": {
             "status": "completed",
@@ -86,7 +86,7 @@
           "backupSizeBytes": 437237769350,
           "lastCompletedAt": "2026-06-14T20:56:34.791Z",
           "createdAt": "2026-06-13T18:46:13.662Z",
-          "updatedAt": "2026-06-14T20:56:34.791Z"
+          "updatedAt": "2026-06-15T23:21:19.534Z"
         }
       ]
     },
@@ -106,5 +106,5 @@
     "importedSourceCount": 0
   },
   "createdAt": "2026-06-10T06:30:28.970Z",
-  "updatedAt": "2026-06-15T15:29:07.393Z"
+  "updatedAt": "2026-06-15T23:21:19.534Z"
 }

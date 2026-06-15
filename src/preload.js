@@ -1,6 +1,16 @@
 const { clipboard, contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('myBackup', {
+  getPlatform: () => process.platform,
+  minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
+  toggleMaximizeWindow: () => ipcRenderer.invoke('window:toggle-maximize'),
+  closeWindow: () => ipcRenderer.invoke('window:close'),
+  isWindowMaximized: () => ipcRenderer.invoke('window:is-maximized'),
+  onWindowMaximizedChanged: (listener) => {
+    const handler = (_event, payload) => listener(payload);
+    ipcRenderer.on('window:maximized-changed', handler);
+    return () => ipcRenderer.removeListener('window:maximized-changed', handler);
+  },
   getRuntimeFlags: () => ipcRenderer.invoke('app:get-runtime-flags'),
   getChangeList: (input) => ipcRenderer.invoke('change-tracking:get-change-list', input),
   copyText: (text) => clipboard.writeText(String(text || '')),

@@ -1,7 +1,7 @@
 const path = require('path');
 const { loadBackupSchema } = require('../backupSchema');
+const { ChangeTracker } = require('../changeTracking/ChangeTracker');
 const { createLogger } = require('../logger');
-const { ensureDirtyState, markDirtyFolder } = require('./dirtyStore');
 const { updateSourceWatchState } = require('../sourceRegistry');
 const { createDarwinWatcherBackend } = require('./backends/darwin');
 const { createLinuxWatcherBackend } = require('./backends/linux');
@@ -78,6 +78,7 @@ function createWatchService(platformInput, options = {}) {
   const scheduleDashboardRefresh = typeof options.onStateChanged === 'function'
     ? options.onStateChanged
     : async () => {};
+  const changeTracker = options.changeTracker || new ChangeTracker(appDataRoot);
 
   let started = false;
 
@@ -87,18 +88,13 @@ function createWatchService(platformInput, options = {}) {
   }
 
   async function persistDirtyEvent(source, eventPath, now = new Date()) {
-    await ensureDirtyState(appDataRoot, {
+    await changeTracker.recordFileChanged({
       sourceId: source.sourceId,
+      sourcePath: source.sourcePath,
       watchState: {
         dirtyRef: source.dirtyRef
       }
-    }, now);
-    await markDirtyFolder(appDataRoot, {
-      sourceId: source.sourceId,
-      watchState: {
-        dirtyRef: source.dirtyRef
-      }
-    }, normalizeRelativeFolder(source.sourcePath, eventPath), now);
+    }, eventPath, now);
     await updateSourceWatchState(
       appDataRoot,
       source.machineId,
@@ -138,8 +134,9 @@ function createWatchService(platformInput, options = {}) {
   async function sync() {
     const sources = await loadWatchedSources();
     for (const source of sources) {
-      await ensureDirtyState(appDataRoot, {
+      await changeTracker.ensureJournal({
         sourceId: source.sourceId,
+        sourcePath: source.sourcePath,
         watchState: {
           dirtyRef: source.dirtyRef
         }

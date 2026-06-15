@@ -4,7 +4,7 @@ const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs-extra');
-const { ensureBackupSchema } = require('./core/backupSchema');
+const { ensureBackupSchema, loadBackupSchema } = require('./core/backupSchema');
 const { registerSource, removeSource } = require('./core/sourceRegistry');
 const { backupSource } = require('./core/backupCoordinator');
 const { restoreLogicalTree, restoreSource } = require('./core/restoreService');
@@ -12,6 +12,7 @@ const { ensureLocalConfig, loadLocalConfig, saveLocalConfig } = require('./core/
 const { addTarget, listTargets, removeTarget, requireRegisteredTarget, setTargetCollapsed } = require('./core/targetRegistry');
 const { createTargetAvailabilityMonitor, normalizePlatform } = require('./core/targetAvailability');
 const { createWatchService } = require('./core/watch/watchService');
+const { ChangeTracker } = require('./core/changeTracking/ChangeTracker');
 const { configureLogger, createLogger, getLogLevel } = require('./core/logger');
 const { getSourceFolderName, normalizeTargetFolder } = require('./core/pathPlanner');
 const { loadRuntimeFlags } = require('./core/runtimeFlags');
@@ -183,6 +184,25 @@ async function requireTargetRoot(input) {
 function registerIpcHandlers() {
   ipcMain.handle('app:get-dashboard', async () => refreshDashboardState(false));
   ipcMain.handle('app:get-runtime-flags', async () => getRuntimeFlags());
+  ipcMain.handle('change-tracking:get-change-list', async (_event, input) => {
+    if (!input || !input.targetId || !input.sourceId) {
+      throw new Error('Target id and source id are required.');
+    }
+
+    const schema = await loadBackupSchema(getAppDataRoot());
+    const target = (schema?.targets || []).find((entry) => entry.id === input.targetId);
+    if (!target) {
+      throw new Error(`Unknown backup target id: ${input.targetId}`);
+    }
+
+    const source = (target.sources || []).find((entry) => entry.sourceId === input.sourceId);
+    if (!source) {
+      throw new Error(`Unknown source id: ${input.sourceId}`);
+    }
+
+    const tracker = new ChangeTracker(getAppDataRoot());
+    return tracker.getChangeList(source);
+  });
   ipcMain.handle('app:set-log-level', async (_event, input) => {
     const level = input && input.level ? input.level : 'info';
     configureLogger({ level });

@@ -11,7 +11,7 @@ const { createFileWorkerPool } = require('./engine/fileWorkerPool');
 const { scanFullSource } = require('./engine/fullScanner');
 const { scanDirtyFolders, selectDirtyFolders } = require('./engine/dirtyFolderScanner');
 const { processFileTask } = require('./engine/fileTaskProcessor');
-const { snapshotDirtyState, clearDirtyFolderIfUnchanged } = require('./watch/dirtyStore');
+const { ChangeTracker } = require('./changeTracking/ChangeTracker');
 const { createScanId } = require('./ids');
 const { createLogger } = require('./logger');
 
@@ -105,6 +105,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   const now = options.now || new Date();
   const mode = determineBackupMode(source, options);
   const shouldStopForPause = () => typeof options.shouldPause === 'function' && options.shouldPause();
+  const changeTracker = new ChangeTracker(appDataRoot);
   const workerCount = Math.max(
     1,
     options.initialWorkers
@@ -222,7 +223,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       : null;
     resumed = Boolean(resumeFrom);
     scanId = resumed ? existingBackupStatus.runId : createScanId(now);
-    dirtyStateSnapshot = await snapshotDirtyState(appDataRoot, source, now);
+    dirtyStateSnapshot = await changeTracker.getChangeList(source, now);
     dirtyScanSeq = dirtyStateSnapshot.scanSeq;
     backupStatus = (await updateSourceRuntimeState(appDataRoot, targetRoot, machineId, sourceId, (current) => ({
       backupStatus: {
@@ -260,7 +261,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         : null
     });
   } else {
-    dirtyStateSnapshot = await snapshotDirtyState(appDataRoot, source, now);
+    dirtyStateSnapshot = await changeTracker.getChangeList(source, now);
     dirtyScanSeq = dirtyStateSnapshot.scanSeq;
     const existingBackupStatus = !options.forceNewScan ? (source.backupStatus || {}) : null;
     const resumeFrom = (!options.forceNewScan
@@ -271,7 +272,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       && existingBackupStatus.cursor.relativePath)
       ? existingBackupStatus.cursor.relativePath
       : null;
-    selectedDirtyFolders = selectDirtyFolders(dirtyStateSnapshot.state, dirtyScanSeq, resumeFrom)
+    selectedDirtyFolders = selectDirtyFolders(dirtyStateSnapshot.legacyDirtyState, dirtyScanSeq, resumeFrom)
       .map((entry) => entry.relativePath);
     scanId = existingBackupStatus && existingBackupStatus.mode === 'incremental' && existingBackupStatus.status === 'paused'
       ? existingBackupStatus.runId
@@ -637,7 +638,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
 
     if (mode === 'incremental') {
       completedDirtyFolders.add(folder.relativePath);
-      await clearDirtyFolderIfUnchanged(appDataRoot, source, folder.relativePath, dirtyScanSeq, now);
+      await changeTracker.clearChangeIfUnchanged(source, folder.relativePath, dirtyScanSeq, now);
       await persistBackupStatusState({
         copiedBytes: summary.copiedBytes,
         scanSeq: dirtyScanSeq
@@ -661,7 +662,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     progress.errors = summary.errors;
     if (mode === 'incremental') {
       completedDirtyFolders.add(folder.relativePath);
-      await clearDirtyFolderIfUnchanged(appDataRoot, source, folder.relativePath, dirtyScanSeq, now);
+      await changeTracker.clearChangeIfUnchanged(source, folder.relativePath, dirtyScanSeq, now);
       await persistBackupStatusState({
         copiedBytes: summary.copiedBytes,
         scanSeq: dirtyScanSeq
@@ -711,7 +712,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     } else {
       await scanDirtyFolders({
         sourcePath: source.sourcePath,
-        dirtyState: dirtyStateSnapshot.state,
+        dirtyState: dirtyStateSnapshot.legacyDirtyState,
         scanSeq: dirtyScanSeq,
         resumeFrom: backupStatus.cursor ? backupStatus.cursor.relativePath : null,
         ignoreMatcher,
@@ -787,9 +788,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   }
 
   if (mode === 'full') {
-    for (const relativePath of Object.keys(dirtyStateSnapshot.state.folders || {})) {
-      await clearDirtyFolderIfUnchanged(appDataRoot, source, relativePath, dirtyScanSeq, now);
-    }
+    await changeTracker.clearAfterFullBackup(source, now);
   }
 
   await persistBackupStatusState({

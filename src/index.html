@@ -440,6 +440,12 @@
       border-bottom: 1px solid var(--line);
     }
 
+    .source-changes-row td {
+      background: #f8fafb;
+      padding: 0 10px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
     .source-table th:last-child,
     .source-table td:last-child {
       text-align: right;
@@ -499,6 +505,12 @@
       white-space: nowrap;
     }
 
+    .toggle-changes-button.active {
+      background: #2563eb;
+      border-color: #2563eb;
+      color: #ffffff;
+    }
+
     .muted { color: var(--muted); }
     .small { font-size: 0.78rem; }
 
@@ -520,6 +532,82 @@
       gap: 8px;
       min-width: 0;
       background: #ffffff;
+    }
+
+    .source-changes-panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+      background: #ffffff;
+    }
+
+    .source-changes-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 0.78rem;
+    }
+
+    .source-changes-title {
+      font-weight: 650;
+      color: var(--ink);
+    }
+
+    .source-changes-meta {
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .changes-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 6px;
+    }
+
+    .changes-item {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 6px 0;
+      border-top: 1px solid #edf2f7;
+    }
+
+    .changes-item:first-child {
+      border-top: none;
+      padding-top: 0;
+    }
+
+    .changes-item-path {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.75rem;
+      color: var(--ink);
+      overflow-wrap: anywhere;
+    }
+
+    .changes-item-meta {
+      display: flex;
+      gap: 10px;
+      flex-shrink: 0;
+      color: var(--muted);
+      font-size: 0.74rem;
+      white-space: nowrap;
+    }
+
+    .changes-empty,
+    .changes-error {
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    .changes-error {
+      color: #b91c1c;
     }
 
     .progress-summary {

@@ -8,6 +8,8 @@ const state = {
   backupProgress: {},
   pauseRequests: {},
   sourceDeleteExpanded: {},
+  sourceChangeExpanded: {},
+  sourceChanges: {},
   runtimeFlags: {
     traceProgressUi: true,
     showProgressQueueDetails: false
@@ -24,6 +26,10 @@ const LOG_RENDER_MS = 100;
 
 function progressKey(targetRoot, machineId, sourceId) {
   return `${targetRoot}::${machineId}::${sourceId}`;
+}
+
+function sourceChangeKey(targetId, sourceId) {
+  return `${targetId}::${sourceId}`;
 }
 
 function clearBackupUiState(key) {
@@ -219,6 +225,53 @@ function formatBytes(value) {
   return `${rounded} ${units[unitIndex]}`;
 }
 
+function renderSourceChangePanel(target, source) {
+  const key = sourceChangeKey(target.id, source.sourceId);
+  if (!state.sourceChangeExpanded[key]) {
+    return '';
+  }
+
+  const entry = state.sourceChanges[key];
+  let body = '<div class="changes-empty">Loading changes...</div>';
+
+  if (entry?.error) {
+    body = `<div class="changes-error">${escapeHtml(entry.error)}</div>`;
+  } else if (entry?.data) {
+    const items = entry.data.items || [];
+    if (items.length === 0) {
+      body = '<div class="changes-empty">No changes since last backup.</div>';
+    } else {
+      body = `
+        <ul class="changes-list">
+          ${items.map((item) => `
+            <li class="changes-item">
+              <div class="changes-item-path">${escapeHtml(item.relativePath)}</div>
+              <div class="changes-item-meta">
+                <span>${escapeHtml(formatTimestamp(item.changedAt))}</span>
+                <span>${escapeHtml(String(item.eventCount || 0))} event${item.eventCount === 1 ? '' : 's'}</span>
+              </div>
+            </li>
+          `).join('')}
+        </ul>
+      `;
+    }
+  }
+
+  return `
+    <tr class="source-changes-row">
+      <td colspan="5">
+        <section class="source-changes-panel">
+          <div class="source-changes-header">
+            <div class="source-changes-title">Changes since last backup</div>
+            <div class="source-changes-meta">${entry?.data?.generatedAt ? escapeHtml(formatTimestamp(entry.data.generatedAt)) : ''}</div>
+          </div>
+          ${body}
+        </section>
+      </td>
+    </tr>
+  `;
+}
+
 function formatLogEntryPlain(entry) {
   const details = entry.details === undefined || entry.details === null
     ? ''
@@ -404,6 +457,7 @@ function renderTargetSourcesTable(target) {
 
   const rows = sources.map((source) => {
     const key = progressKey(targetRoot, source.machineId, source.sourceId);
+    const changeKey = sourceChangeKey(target.id, source.sourceId);
     const activeProgress = state.backupProgress[key];
     const pauseRequested = state.pauseRequests[key];
     const isPausing = activeProgress?.progress?.status === 'pausing';
@@ -430,6 +484,9 @@ function renderTargetSourcesTable(target) {
     const backupSizeLabel = source.backupSizeBytes === null || source.backupSizeBytes === undefined
       ? '-'
       : formatBytes(source.backupSizeBytes);
+    const sourceChangeEntry = state.sourceChanges[changeKey];
+    const sourceChangeCount = sourceChangeEntry?.data?.items?.length || 0;
+    const sourceChangeLabel = sourceChangeCount > 0 ? `Changes (${sourceChangeCount})` : 'Changes';
 
     return `
       <tr>
@@ -447,12 +504,14 @@ function renderTargetSourcesTable(target) {
         <td><div class="small">${escapeHtml(formatTimestamp(source.lastCompletedAt))}</div></td>
         <td>
           <div class="actions-row">
+            <button class="btn btn-sm btn-outline-secondary toggle-changes-button${state.sourceChangeExpanded[changeKey] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" data-source-id="${escapeHtml(source.sourceId)}">${escapeHtml(sourceChangeLabel)}</button>
             <button class="btn btn-sm ${backupClass} run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}">${backupLabel}</button>
             <button class="btn btn-sm btn-outline-secondary restore-source-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${restoreDisabled ? ' disabled' : ''}>Restore</button>
             ${showDeleteButtons ? `<button class="btn btn-sm btn-outline-danger delete-source-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}"${deleteDisabled ? ' disabled' : ''}>Delete</button>` : ''}
           </div>
         </td>
       </tr>
+      ${renderSourceChangePanel(target, source)}
       ${renderProgressPanel(targetRoot, source)}
     `;
   }).join('');
@@ -517,6 +576,13 @@ function bindTargetPanelActions(container) {
       button.dataset.machineId,
       button.dataset.sourceId,
       button
+    ));
+  });
+
+  container.querySelectorAll('.toggle-changes-button').forEach((button) => {
+    button.addEventListener('click', () => toggleSourceChanges(
+      button.dataset.targetId,
+      button.dataset.sourceId
     ));
   });
 
@@ -678,6 +744,7 @@ async function refreshDashboard() {
   }
   state.dashboard = dashboard;
   renderDashboard();
+  refreshOpenChangePanels();
 }
 
 async function updateLogLevel(event) {
@@ -720,6 +787,12 @@ async function removeTarget(targetId, targetRoot) {
 
   try {
     state.dashboard = await window.myBackup.removeTarget({ targetId });
+    Object.keys(state.sourceChangeExpanded).forEach((key) => {
+      if (key.startsWith(`${targetId}::`)) {
+        delete state.sourceChangeExpanded[key];
+        delete state.sourceChanges[key];
+      }
+    });
     renderDashboard();
   } catch (error) {
     appendLog('error', error.message || 'Failed to remove backup target.');
@@ -733,6 +806,7 @@ function toggleSourceDeleteMode(targetId) {
 
 async function removeSourceFromTarget(targetId, targetRoot, machineId, sourceId, sourcePath, button) {
   const key = progressKey(targetRoot, machineId, sourceId);
+  const changeKey = sourceChangeKey(targetId, sourceId);
   if (state.backupProgress[key]) {
     appendLog('warn', 'Cannot delete a source while its backup is running.');
     return;
@@ -752,6 +826,8 @@ async function removeSourceFromTarget(targetId, targetRoot, machineId, sourceId,
       machineId,
       sourceId
     });
+    delete state.sourceChangeExpanded[changeKey];
+    delete state.sourceChanges[changeKey];
     if ((state.dashboard.targets || []).every((target) => target.id !== targetId || (target.sources || []).length === 0)) {
       delete state.sourceDeleteExpanded[targetId];
     }
@@ -781,6 +857,53 @@ async function toggleTargetPanel(targetId) {
       renderTargets();
     }
     appendLog('error', error.message || 'Failed to update target panel.');
+  }
+}
+
+async function loadSourceChanges(targetId, sourceId) {
+  const key = sourceChangeKey(targetId, sourceId);
+  state.sourceChanges[key] = {
+    loading: true,
+    error: null,
+    data: null
+  };
+  renderSources();
+
+  try {
+    const data = await window.myBackup.getChangeList({ targetId, sourceId });
+    state.sourceChanges[key] = {
+      loading: false,
+      error: null,
+      data
+    };
+  } catch (error) {
+    state.sourceChanges[key] = {
+      loading: false,
+      error: error.message || 'Failed to load changes.',
+      data: null
+    };
+  }
+
+  renderSources();
+}
+
+function refreshOpenChangePanels() {
+  Object.entries(state.sourceChangeExpanded)
+    .filter(([, expanded]) => expanded)
+    .forEach(([key]) => {
+      const [targetId, sourceId] = key.split('::');
+      void loadSourceChanges(targetId, sourceId);
+    });
+}
+
+function toggleSourceChanges(targetId, sourceId) {
+  const key = sourceChangeKey(targetId, sourceId);
+  const nextExpanded = !state.sourceChangeExpanded[key];
+  state.sourceChangeExpanded[key] = nextExpanded;
+  renderSources();
+
+  if (nextExpanded) {
+    void loadSourceChanges(targetId, sourceId);
   }
 }
 
@@ -1039,6 +1162,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
     state.dashboard = dashboard;
     renderDashboard();
+    refreshOpenChangePanels();
   });
   window.myBackup.onLog((entry) => appendLog(entry.level, entry.message, entry.details));
   await refreshDashboard();

@@ -31,22 +31,22 @@
             "lastEventAt": "2026-06-14T05:23:10.168Z"
           },
           "backupStatus": {
-            "status": null,
-            "mode": null,
-            "runId": null,
-            "copiedBytes": 0,
-            "startedAt": null,
-            "updatedAt": null,
-            "completedAt": null,
+            "status": "completed",
+            "mode": "incremental",
+            "runId": "20260615-064441",
+            "copiedBytes": 226636,
+            "startedAt": "2026-06-15T06:44:41.163Z",
+            "updatedAt": "2026-06-15T06:44:41.163Z",
+            "completedAt": "2026-06-15T06:44:41.163Z",
             "cursor": null,
-            "scanSeq": null,
+            "scanSeq": 1,
             "error": null
           },
           "sourceSizeBytes": 6988655022,
           "backupSizeBytes": 6988655022,
-          "lastCompletedAt": "2026-06-14T04:01:03.312Z",
+          "lastCompletedAt": "2026-06-15T06:44:41.163Z",
           "createdAt": "2026-06-02T04:18:46.753Z",
-          "updatedAt": "2026-06-14T05:23:10.168Z",
+          "updatedAt": "2026-06-15T06:44:41.163Z",
           "scanState": {
             "status": "completed",
             "activeGeneration": "20260610-064603",
@@ -106,5 +106,5 @@
     "importedSourceCount": 0
   },
   "createdAt": "2026-06-10T06:30:28.970Z",
-  "updatedAt": "2026-06-14T21:33:45.944Z"
+  "updatedAt": "2026-06-15T06:44:51.597Z"
 }

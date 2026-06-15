@@ -58,6 +58,8 @@ const { buildFolderTraversalStack } = require('../src/core/scanner/folderWalker'
 const { parseIgnoreFile, shouldIgnorePath, buildIgnoreRules } = require('../src/core/ignoreMatcher');
 const { readJsonIfExists, writeJsonAtomic } = require('../src/core/jsonStore');
 const { createWatchService } = require('../src/core/watch/watchService');
+const { ChangeJournal } = require('../src/core/changeTracking/ChangeJournal');
+const { ChangeTracker } = require('../src/core/changeTracking/ChangeTracker');
 const {
   clearDirtyFolderIfUnchanged,
   ensureDirtyState,
@@ -391,11 +393,12 @@ describe('metadata foundation', () => {
 
     const state = await ensureDirtyState(tempRootPath, source, new Date('2026-06-10T10:00:00Z'));
     expect(state).toEqual({
-      version: 1,
+      version: 2,
       sourceId: source.sourceId,
       lastEventSeq: 0,
       updatedAt: '2026-06-10T10:00:00.000Z',
-      folders: {}
+      folders: {},
+      events: []
     });
 
     expect(await loadDirtyState(tempRootPath, source)).toEqual(state);
@@ -421,13 +424,33 @@ describe('metadata foundation', () => {
     expect(second.folders).toEqual({
       'IBM/SametimeTranscripts': {
         seq: 1,
-        changedAt: '2026-06-10T10:01:00.000Z'
+        changedAt: '2026-06-10T10:01:00.000Z',
+        eventCount: 1
       },
       'IBM/SametimeTranscripts/child': {
         seq: 2,
-        changedAt: '2026-06-10T10:02:00.000Z'
+        changedAt: '2026-06-10T10:02:00.000Z',
+        eventCount: 1
       }
     });
+    expect(second.events).toEqual([
+      {
+        seq: 1,
+        at: '2026-06-10T10:01:00.000Z',
+        relPath: 'IBM/SametimeTranscripts',
+        parentRelPath: 'IBM',
+        kind: 'folder',
+        action: 'changed'
+      },
+      {
+        seq: 2,
+        at: '2026-06-10T10:02:00.000Z',
+        relPath: 'IBM/SametimeTranscripts/child',
+        parentRelPath: 'IBM/SametimeTranscripts',
+        kind: 'folder',
+        action: 'changed'
+      }
+    ]);
   });
 
   test('clears a dirty folder only when unchanged since the scan snapshot', async () => {
@@ -453,7 +476,8 @@ describe('metadata foundation', () => {
     expect(cleared.folders).toEqual({
       'a/c': {
         seq: 2,
-        changedAt: '2026-06-10T10:02:00.000Z'
+        changedAt: '2026-06-10T10:02:00.000Z',
+        eventCount: 1
       }
     });
 
@@ -467,8 +491,276 @@ describe('metadata foundation', () => {
     );
     expect(preserved.folders['a/c']).toEqual({
       seq: 3,
-      changedAt: '2026-06-10T10:05:00.000Z'
+      changedAt: '2026-06-10T10:05:00.000Z',
+      eventCount: 2
     });
+  });
+
+  test('change journal normalizes version 1 dirty state into version 2 journal state', () => {
+    const journal = ChangeJournal.fromDocument({
+      version: 1,
+      sourceId: 'source-a',
+      lastEventSeq: 2,
+      updatedAt: '2026-06-10T10:03:00.000Z',
+      folders: {
+        docs: {
+          seq: 2,
+          changedAt: '2026-06-10T10:02:00.000Z'
+        }
+      }
+    });
+
+    expect(journal.toJSON()).toEqual({
+      version: 2,
+      sourceId: 'source-a',
+      lastEventSeq: 2,
+      updatedAt: '2026-06-10T10:03:00.000Z',
+      folders: {
+        docs: {
+          seq: 2,
+          changedAt: '2026-06-10T10:02:00.000Z',
+          eventCount: 0
+        }
+      },
+      events: []
+    });
+  });
+
+  test('change tracker records file events and returns legacy dirty state for the scanner', async () => {
+    const source = createSourceRecord({
+      machineId: 'machine-a',
+      sourcePath: path.join(tempRootPath, 'Documents'),
+      mergeEnabled: false
+    }, new Date('2026-06-10T10:00:00Z'));
+    const tracker = new ChangeTracker(tempRootPath);
+    await fs.ensureDir(path.join(source.sourcePath, 'docs'));
+
+    await tracker.recordFileChanged(
+      source,
+      path.join(source.sourcePath, 'docs', 'a.txt'),
+      new Date('2026-06-10T10:01:00Z')
+    );
+
+    const changeList = await tracker.getChangeList(source, new Date('2026-06-10T10:02:00Z'));
+    expect(changeList).toMatchObject({
+      sourceId: source.sourceId,
+      sourcePath: source.sourcePath,
+      scanSeq: 1,
+      listType: 'changed-folders',
+      items: [
+        {
+          relativePath: 'docs',
+          kind: 'folder',
+          seq: 1,
+          changedAt: '2026-06-10T10:01:00.000Z',
+          eventCount: 1
+        }
+      ],
+      legacyDirtyState: {
+        version: 1,
+        sourceId: source.sourceId,
+        lastEventSeq: 1,
+        folders: {
+          docs: {
+            seq: 1,
+            changedAt: '2026-06-10T10:01:00.000Z'
+          }
+        }
+      }
+    });
+
+    expect(await tracker.getRecentEvents(source, 10)).toEqual([
+      {
+        seq: 1,
+        at: '2026-06-10T10:01:00.000Z',
+        relPath: 'docs/a.txt',
+        parentRelPath: 'docs',
+        kind: 'file',
+        action: 'changed'
+      }
+    ]);
+  });
+
+  test('change tracker records folder changes and persists them as version 2 journal data', async () => {
+    const source = createSourceRecord({
+      machineId: 'machine-a',
+      sourcePath: path.join(tempRootPath, 'Documents'),
+      mergeEnabled: false
+    }, new Date('2026-06-10T11:00:00Z'));
+    const tracker = new ChangeTracker(tempRootPath);
+    await fs.ensureDir(path.join(source.sourcePath, 'albums'));
+
+    await tracker.recordFolderChanged(
+      source,
+      path.join(source.sourcePath, 'albums'),
+      new Date('2026-06-10T11:01:00Z')
+    );
+
+    const persisted = await loadDirtyState(tempRootPath, source);
+    expect(persisted).toEqual({
+      version: 2,
+      sourceId: source.sourceId,
+      lastEventSeq: 1,
+      updatedAt: '2026-06-10T11:01:00.000Z',
+      folders: {
+        albums: {
+          seq: 1,
+          changedAt: '2026-06-10T11:01:00.000Z',
+          eventCount: 1
+        }
+      },
+      events: [
+        {
+          seq: 1,
+          at: '2026-06-10T11:01:00.000Z',
+          relPath: 'albums',
+          parentRelPath: '.',
+          kind: 'folder',
+          action: 'changed'
+        }
+      ]
+    });
+  });
+
+  test('change tracker getChangeList returns changed-folders mode with legacy dirty state', async () => {
+    const source = createSourceRecord({
+      machineId: 'machine-a',
+      sourcePath: path.join(tempRootPath, 'Projects'),
+      mergeEnabled: false
+    }, new Date('2026-06-10T11:30:00Z'));
+    const tracker = new ChangeTracker(tempRootPath);
+    await fs.ensureDir(path.join(source.sourcePath, 'docs'));
+    await fs.writeFile(path.join(source.sourcePath, 'docs', 'a.txt'), 'a');
+
+    await tracker.recordFileChanged(
+      source,
+      path.join(source.sourcePath, 'docs', 'a.txt'),
+      new Date('2026-06-10T11:31:00Z')
+    );
+
+    const changeList = await tracker.getChangeList(source, new Date('2026-06-10T11:32:00Z'));
+    expect(changeList.listType).toBe('changed-folders');
+    expect(changeList.items).toEqual([
+      {
+        relativePath: 'docs',
+        kind: 'folder',
+        seq: 1,
+        changedAt: '2026-06-10T11:31:00.000Z',
+        eventCount: 1
+      }
+    ]);
+    expect(changeList.legacyDirtyState).toEqual({
+      version: 1,
+      sourceId: source.sourceId,
+      lastEventSeq: 1,
+      updatedAt: '2026-06-10T11:31:00.000Z',
+      folders: {
+        docs: {
+          seq: 1,
+          changedAt: '2026-06-10T11:31:00.000Z'
+        }
+      }
+    });
+  });
+
+  test('change tracker clears changed folders only when seq is within scanSeq', async () => {
+    const source = createSourceRecord({
+      machineId: 'machine-a',
+      sourcePath: path.join(tempRootPath, 'Source-A'),
+      mergeEnabled: false
+    }, new Date('2026-06-10T12:00:00Z'));
+    const tracker = new ChangeTracker(tempRootPath);
+    await fs.ensureDir(path.join(source.sourcePath, 'docs'));
+    await fs.writeFile(path.join(source.sourcePath, 'docs', 'a.txt'), 'a');
+    await fs.writeFile(path.join(source.sourcePath, 'docs', 'b.txt'), 'b');
+
+    await tracker.recordFileChanged(source, path.join(source.sourcePath, 'docs', 'a.txt'), new Date('2026-06-10T12:01:00Z'));
+    const snapshot = await tracker.getChangeList(source, new Date('2026-06-10T12:02:00Z'));
+
+    await tracker.clearChangeIfUnchanged(source, 'docs', snapshot.scanSeq, new Date('2026-06-10T12:03:00Z'));
+    expect((await tracker.getChangeList(source, new Date('2026-06-10T12:04:00Z'))).items).toEqual([]);
+
+    await tracker.recordFileChanged(source, path.join(source.sourcePath, 'docs', 'b.txt'), new Date('2026-06-10T12:05:00Z'));
+    const secondSnapshot = await tracker.getChangeList(source, new Date('2026-06-10T12:06:00Z'));
+    await tracker.recordFileChanged(source, path.join(source.sourcePath, 'docs', 'a.txt'), new Date('2026-06-10T12:07:00Z'));
+
+    await tracker.clearChangeIfUnchanged(source, 'docs', secondSnapshot.scanSeq, new Date('2026-06-10T12:08:00Z'));
+    expect((await tracker.getChangeList(source, new Date('2026-06-10T12:09:00Z'))).items).toEqual([
+      {
+        relativePath: 'docs',
+        kind: 'folder',
+        seq: 3,
+        changedAt: '2026-06-10T12:07:00.000Z',
+        eventCount: 2
+      }
+    ]);
+  });
+
+  test('change tracker clearAfterFullBackup clears folders while preserving version 2 persistence', async () => {
+    const source = createSourceRecord({
+      machineId: 'machine-a',
+      sourcePath: path.join(tempRootPath, 'Source-B'),
+      mergeEnabled: false
+    }, new Date('2026-06-10T12:30:00Z'));
+    const tracker = new ChangeTracker(tempRootPath);
+    await fs.ensureDir(path.join(source.sourcePath, 'docs'));
+    await fs.writeFile(path.join(source.sourcePath, 'docs', 'a.txt'), 'a');
+
+    await tracker.recordFileChanged(source, path.join(source.sourcePath, 'docs', 'a.txt'), new Date('2026-06-10T12:31:00Z'));
+    await tracker.clearAfterFullBackup(source, new Date('2026-06-10T12:32:00Z'));
+
+    expect(await loadDirtyState(tempRootPath, source)).toEqual({
+      version: 2,
+      sourceId: source.sourceId,
+      lastEventSeq: 1,
+      updatedAt: '2026-06-10T12:32:00.000Z',
+      folders: {},
+      events: []
+    });
+  });
+
+  test('change tracker events persist across reload and survive a tracker reload cycle', async () => {
+    const source = createSourceRecord({
+      machineId: 'machine-a',
+      sourcePath: path.join(tempRootPath, 'Source-C'),
+      mergeEnabled: false
+    }, new Date('2026-06-10T13:00:00Z'));
+    await fs.ensureDir(path.join(source.sourcePath, 'docs'));
+    await fs.writeFile(path.join(source.sourcePath, 'docs', 'a.txt'), 'a');
+    await fs.writeFile(path.join(source.sourcePath, 'docs', 'b.txt'), 'b');
+
+    const trackerA = new ChangeTracker(tempRootPath);
+    await trackerA.recordFileChanged(source, path.join(source.sourcePath, 'docs', 'a.txt'), new Date('2026-06-10T13:01:00Z'));
+    await trackerA.recordFileChanged(source, path.join(source.sourcePath, 'docs', 'b.txt'), new Date('2026-06-10T13:02:00Z'));
+
+    const trackerB = new ChangeTracker(tempRootPath);
+    expect(await trackerB.getRecentEvents(source, 10)).toEqual([
+      {
+        seq: 2,
+        at: '2026-06-10T13:02:00.000Z',
+        relPath: 'docs/b.txt',
+        parentRelPath: 'docs',
+        kind: 'file',
+        action: 'changed'
+      },
+      {
+        seq: 1,
+        at: '2026-06-10T13:01:00.000Z',
+        relPath: 'docs/a.txt',
+        parentRelPath: 'docs',
+        kind: 'file',
+        action: 'changed'
+      }
+    ]);
+    expect((await trackerB.getChangeList(source, new Date('2026-06-10T13:03:00Z'))).items).toEqual([
+      {
+        relativePath: 'docs',
+        kind: 'folder',
+        seq: 2,
+        changedAt: '2026-06-10T13:02:00.000Z',
+        eventCount: 2
+      }
+    ]);
   });
 
   test('watch service bootstraps enabled sources and marks dirty folders on file events', async () => {
@@ -540,6 +832,194 @@ describe('metadata foundation', () => {
     expect(backendState.stopped).toBe(true);
   });
 
+  test('watch service uses injected change tracker during bootstrap and event persistence', async () => {
+    const targetRoot = path.join(tempRootPath, 'target');
+    await addTarget(tempRootPath, targetRoot);
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'watch-injected-host',
+      displayName: 'Watch Injected Host',
+      platform: 'darwin',
+      seed: 'watch-injected-seed',
+      now: new Date('2026-06-10T12:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      targetRoot,
+      machineId: machine.machineId,
+      sourcePath: path.join(tempRootPath, 'watched-injected-source'),
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-10T12:01:00Z'));
+    await fs.ensureDir(path.join(source.sourcePath, 'docs'));
+
+    const calls = {
+      ensureJournal: [],
+      recordFileChanged: []
+    };
+    const changeTracker = {
+      async ensureJournal(trackedSource, now = new Date()) {
+        calls.ensureJournal.push({ trackedSource, now });
+        return {
+          sourceId: trackedSource.sourceId,
+          lastEventSeq: 0,
+          folders: {},
+          events: []
+        };
+      },
+      async recordFileChanged(trackedSource, eventPath, now = new Date()) {
+        calls.recordFileChanged.push({ trackedSource, eventPath, now });
+        return {
+          sourceId: trackedSource.sourceId,
+          lastEventSeq: 1,
+          folders: {
+            docs: {
+              seq: 1,
+              changedAt: now.toISOString(),
+              eventCount: 1
+            }
+          },
+          events: []
+        };
+      }
+    };
+    const backendState = {
+      sources: [],
+      handlers: null
+    };
+    const refreshCalls = [];
+    const backend = {
+      async sync(sources, handlers) {
+        backendState.sources = sources;
+        backendState.handlers = handlers;
+      },
+      async stop() {}
+    };
+
+    const service = createWatchService('darwin', {
+      appDataRoot: tempRootPath,
+      backend,
+      changeTracker,
+      onStateChanged: async () => {
+        refreshCalls.push(new Date().toISOString());
+      }
+    });
+
+    await service.bootstrap();
+
+    expect(calls.ensureJournal).toHaveLength(1);
+    expect(calls.ensureJournal[0].trackedSource).toMatchObject({
+      sourceId: source.sourceId,
+      sourcePath: source.sourcePath,
+      watchState: {
+        dirtyRef: `watch/${source.sourceId}.dirty.json`
+      }
+    });
+
+    const eventPath = path.join(source.sourcePath, 'docs', 'a.txt');
+    await backendState.handlers.onEvent(backendState.sources[0], {
+      kind: 'fs',
+      eventPath
+    });
+
+    expect(calls.recordFileChanged).toHaveLength(1);
+    expect(calls.recordFileChanged[0]).toMatchObject({
+      eventPath
+    });
+    expect(calls.recordFileChanged[0].trackedSource).toMatchObject({
+      sourceId: source.sourceId,
+      sourcePath: source.sourcePath,
+      watchState: {
+        dirtyRef: `watch/${source.sourceId}.dirty.json`
+      }
+    });
+    expect(refreshCalls).toHaveLength(1);
+
+    const updatedSource = await loadBackupSource(tempRootPath, targetRoot, machine.machineId, source.sourceId);
+    expect(updatedSource.watchState.lastEventAt).not.toBeNull();
+  });
+
+  test('watch service change tracking integrates with incremental backup and clears the changed folder after backup', async () => {
+    const targetRoot = path.join(tempRootPath, 'target');
+    await addTarget(tempRootPath, targetRoot);
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'change-flow-host',
+      displayName: 'Change Flow Host',
+      platform: 'darwin',
+      seed: 'change-flow-seed',
+      now: new Date('2026-06-11T08:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      targetRoot,
+      machineId: machine.machineId,
+      sourcePath: path.join(tempRootPath, 'change-flow-source'),
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-11T08:01:00Z'));
+    const sourceDocs = path.join(source.sourcePath, 'docs');
+    await fs.ensureDir(sourceDocs);
+    await fs.writeFile(path.join(sourceDocs, 'tracked.txt'), 'v1');
+
+    const backendState = {
+      sources: [],
+      handlers: null,
+      stopped: false
+    };
+    const backend = {
+      async sync(sources, handlers) {
+        backendState.sources = sources;
+        backendState.handlers = handlers;
+      },
+      async stop() {
+        backendState.stopped = true;
+      }
+    };
+    const service = createWatchService('darwin', {
+      appDataRoot: tempRootPath,
+      backend
+    });
+    await service.bootstrap();
+
+    const initial = await backupSource(targetRoot, machine.machineId, source.sourceId, {
+      appDataRoot: tempRootPath,
+      now: new Date('2026-06-11T08:05:00Z'),
+      forceNewScan: true
+    });
+    expect(initial.status).toBe('completed');
+    expect(await fs.readFile(targetFilePath(targetRoot, source, 'docs', 'tracked.txt'), 'utf8')).toBe('v1');
+
+    await fs.writeFile(path.join(sourceDocs, 'tracked.txt'), 'v2');
+    fs.utimesSync(
+      path.join(sourceDocs, 'tracked.txt'),
+      new Date('2026-06-11T08:10:00Z'),
+      new Date('2026-06-11T08:10:00Z')
+    );
+    await backendState.handlers.onEvent(backendState.sources[0], {
+      eventPath: path.join(sourceDocs, 'tracked.txt')
+    });
+
+    const tracker = new ChangeTracker(tempRootPath);
+    expect((await tracker.getChangeList(source, new Date('2026-06-11T08:11:00Z'))).items).toEqual([
+      {
+        relativePath: 'docs',
+        kind: 'folder',
+        seq: 1,
+        changedAt: expect.any(String),
+        eventCount: 1
+      }
+    ]);
+
+    const incremental = await backupSource(targetRoot, machine.machineId, source.sourceId, {
+      appDataRoot: tempRootPath,
+      now: new Date('2026-06-11T08:12:00Z'),
+      forceNewScan: false
+    });
+    expect(incremental.status).toBe('completed');
+    expect(await fs.readFile(targetFilePath(targetRoot, source, 'docs', 'tracked.txt'), 'utf8')).toBe('v2');
+    expect((await tracker.getChangeList(source, new Date('2026-06-11T08:13:00Z'))).items).toEqual([]);
+
+    await service.stop();
+    expect(backendState.stopped).toBe(true);
+  });
+
   test('watch service marks matching sources as needsRescan on watcher error', async () => {
     const targetRoot = path.join(tempRootPath, 'target');
     await addTarget(tempRootPath, targetRoot);
@@ -585,6 +1065,16 @@ describe('metadata foundation', () => {
       needsRescan: true
     });
     expect(updatedSource.watchState.lastEventAt).not.toBeNull();
+  });
+
+  test('watch service source file does not depend on dirtyStore directly', async () => {
+    const watchServiceSource = await fs.readFile(
+      path.join(__dirname, '..', 'src', 'core', 'watch', 'watchService.js'),
+      'utf8'
+    );
+
+    expect(watchServiceSource).not.toMatch(/dirtyStore/);
+    expect(watchServiceSource).toMatch(/ChangeTracker/);
   });
 
   test('bootstraps and reuses the local machine identity', async () => {

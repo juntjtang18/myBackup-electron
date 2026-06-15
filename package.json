@@ -1,9 +1,5 @@
 {
   "devDependencies": {
-    "@babel/core": "^7.25.2",
-    "@babel/preset-env": "^7.25.4",
-    "@babel/preset-react": "^7.24.7",
-    "babel-jest": "^29.7.0",
     "electron": "^32.0.2",
     "electron-builder": "^25.0.5",
     "jest": "^29.7.0"
@@ -31,8 +27,7 @@
     },
     "mac": {
       "target": [
-        "dmg",
-        "zip"
+        "dmg"
       ]
     },
     "win": {
@@ -67,7 +62,6 @@
   "description": "myBackup",
   "dependencies": {
     "bootstrap": "^5.3.3",
-    "fs-extra": "^11.2.0",
-    "ncp": "^2.0.0"
+    "fs-extra": "^11.2.0"
   }
 }

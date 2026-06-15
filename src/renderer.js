@@ -766,13 +766,20 @@ async function removeSourceFromTarget(targetId, targetRoot, machineId, sourceId,
 async function toggleTargetPanel(targetId) {
   const target = (state.dashboard.targets || []).find((entry) => entry.id === targetId);
   const collapsed = target ? !target.collapsed : false;
+  if (target) {
+    target.collapsed = collapsed;
+    renderTargets();
+  }
   try {
-    state.dashboard = await window.myBackup.setTargetCollapsed({
+    await window.myBackup.setTargetCollapsed({
       targetId,
       collapsed
     });
-    renderDashboard();
   } catch (error) {
+    if (target) {
+      target.collapsed = !collapsed;
+      renderTargets();
+    }
     appendLog('error', error.message || 'Failed to update target panel.');
   }
 }
@@ -897,6 +904,7 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
   const source = (target?.sources || []).find((entry) => entry.machineId === machineId && entry.sourceId === sourceId);
   if (target && target.collapsed) {
     target.collapsed = false;
+    renderTargets();
     window.myBackup.setTargetCollapsed({ targetId: target.id, collapsed: false }).catch(() => {});
   }
   try {

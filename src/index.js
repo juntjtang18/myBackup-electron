@@ -228,7 +228,10 @@ function registerIpcHandlers() {
     }
 
     await setTargetCollapsed(getAppDataRoot(), input.targetId, Boolean(input.collapsed));
-    return buildDashboardState();
+    return {
+      targetId: input.targetId,
+      collapsed: Boolean(input.collapsed)
+    };
   });
 
   ipcMain.handle('app:add-source', async (_event, input) => {

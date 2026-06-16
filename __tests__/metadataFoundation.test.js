@@ -397,8 +397,7 @@ describe('metadata foundation', () => {
       sourceId: source.sourceId,
       lastEventSeq: 0,
       updatedAt: '2026-06-10T10:00:00.000Z',
-      folders: {},
-      events: []
+      folders: {}
     });
 
     expect(await loadDirtyState(tempRootPath, source)).toEqual(state);
@@ -433,24 +432,6 @@ describe('metadata foundation', () => {
         eventCount: 1
       }
     });
-    expect(second.events).toEqual([
-      {
-        seq: 1,
-        at: '2026-06-10T10:01:00.000Z',
-        relPath: 'IBM/SametimeTranscripts',
-        parentRelPath: 'IBM',
-        kind: 'folder',
-        action: 'changed'
-      },
-      {
-        seq: 2,
-        at: '2026-06-10T10:02:00.000Z',
-        relPath: 'IBM/SametimeTranscripts/child',
-        parentRelPath: 'IBM/SametimeTranscripts',
-        kind: 'folder',
-        action: 'changed'
-      }
-    ]);
   });
 
   test('clears a dirty folder only when unchanged since the scan snapshot', async () => {
@@ -521,12 +502,51 @@ describe('metadata foundation', () => {
           changedAt: '2026-06-10T10:02:00.000Z',
           eventCount: 0
         }
-      },
-      events: []
+      }
     });
   });
 
-  test('change tracker records file events and returns legacy dirty state for the scanner', async () => {
+  test('change journal accepts legacy version 2 events and drops them on save', () => {
+    const journal = ChangeJournal.fromDocument({
+      version: 2,
+      sourceId: 'source-a',
+      lastEventSeq: 2,
+      updatedAt: '2026-06-10T10:03:00.000Z',
+      folders: {
+        docs: {
+          seq: 2,
+          changedAt: '2026-06-10T10:02:00.000Z',
+          eventCount: 2
+        }
+      },
+      events: [
+        {
+          seq: 2,
+          at: '2026-06-10T10:02:00.000Z',
+          relPath: 'docs/a.txt',
+          parentRelPath: 'docs',
+          kind: 'file',
+          action: 'changed'
+        }
+      ]
+    });
+
+    expect(journal.toJSON()).toEqual({
+      version: 2,
+      sourceId: 'source-a',
+      lastEventSeq: 2,
+      updatedAt: '2026-06-10T10:03:00.000Z',
+      folders: {
+        docs: {
+          seq: 2,
+          changedAt: '2026-06-10T10:02:00.000Z',
+          eventCount: 2
+        }
+      }
+    });
+  });
+
+  test('change tracker records file changes and returns legacy dirty state for the scanner', async () => {
     const source = createSourceRecord({
       machineId: 'machine-a',
       sourcePath: path.join(tempRootPath, 'Documents'),
@@ -569,16 +589,7 @@ describe('metadata foundation', () => {
       }
     });
 
-    expect(await tracker.getRecentEvents(source, 10)).toEqual([
-      {
-        seq: 1,
-        at: '2026-06-10T10:01:00.000Z',
-        relPath: 'docs/a.txt',
-        parentRelPath: 'docs',
-        kind: 'file',
-        action: 'changed'
-      }
-    ]);
+    expect(await tracker.getRecentEvents(source, 10)).toEqual([]);
   });
 
   test('change tracker records folder changes and persists them as version 2 journal data', async () => {
@@ -608,17 +619,7 @@ describe('metadata foundation', () => {
           changedAt: '2026-06-10T11:01:00.000Z',
           eventCount: 1
         }
-      },
-      events: [
-        {
-          seq: 1,
-          at: '2026-06-10T11:01:00.000Z',
-          relPath: 'albums',
-          parentRelPath: '.',
-          kind: 'folder',
-          action: 'changed'
-        }
-      ]
+      }
     });
   });
 
@@ -714,12 +715,11 @@ describe('metadata foundation', () => {
       sourceId: source.sourceId,
       lastEventSeq: 1,
       updatedAt: '2026-06-10T12:32:00.000Z',
-      folders: {},
-      events: []
+      folders: {}
     });
   });
 
-  test('change tracker events persist across reload and survive a tracker reload cycle', async () => {
+  test('change tracker folder counts persist across reload and survive a tracker reload cycle', async () => {
     const source = createSourceRecord({
       machineId: 'machine-a',
       sourcePath: path.join(tempRootPath, 'Source-C'),
@@ -734,24 +734,7 @@ describe('metadata foundation', () => {
     await trackerA.recordFileChanged(source, path.join(source.sourcePath, 'docs', 'b.txt'), new Date('2026-06-10T13:02:00Z'));
 
     const trackerB = new ChangeTracker(tempRootPath);
-    expect(await trackerB.getRecentEvents(source, 10)).toEqual([
-      {
-        seq: 2,
-        at: '2026-06-10T13:02:00.000Z',
-        relPath: 'docs/b.txt',
-        parentRelPath: 'docs',
-        kind: 'file',
-        action: 'changed'
-      },
-      {
-        seq: 1,
-        at: '2026-06-10T13:01:00.000Z',
-        relPath: 'docs/a.txt',
-        parentRelPath: 'docs',
-        kind: 'file',
-        action: 'changed'
-      }
-    ]);
+    expect(await trackerB.getRecentEvents(source, 10)).toEqual([]);
     expect((await trackerB.getChangeList(source, new Date('2026-06-10T13:03:00Z'))).items).toEqual([
       {
         relativePath: 'docs',
@@ -861,8 +844,7 @@ describe('metadata foundation', () => {
         return {
           sourceId: trackedSource.sourceId,
           lastEventSeq: 0,
-          folders: {},
-          events: []
+          folders: {}
         };
       },
       async recordFileChanged(trackedSource, eventPath, now = new Date()) {
@@ -876,8 +858,7 @@ describe('metadata foundation', () => {
               changedAt: now.toISOString(),
               eventCount: 1
             }
-          },
-          events: []
+          }
         };
       }
     };

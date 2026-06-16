@@ -23,8 +23,7 @@ function createDirtyState(sourceOrReference, now = new Date(), overrides = {}) {
     sourceId: overrides.sourceId || descriptor.sourceId,
     lastEventSeq: Number.isInteger(overrides.lastEventSeq) ? overrides.lastEventSeq : 0,
     updatedAt: overrides.updatedAt || now.toISOString(),
-    folders: overrides.folders || {},
-    events: overrides.events || []
+    folders: overrides.folders || {}
   }, now);
   return journal.toJSON();
 }

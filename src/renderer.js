@@ -249,7 +249,7 @@ function renderSourceChangePanel(target, source) {
               <div class="changes-item-path">${escapeHtml(item.relativePath)}</div>
               <div class="changes-item-meta">
                 <span>${escapeHtml(formatTimestamp(item.changedAt))}</span>
-                <span>${escapeHtml(String(item.eventCount || 0))} event${item.eventCount === 1 ? '' : 's'}</span>
+                <span>~${escapeHtml(String(item.eventCount || 0))} file change${item.eventCount === 1 ? '' : 's'}</span>
               </div>
             </li>
           `).join('')}

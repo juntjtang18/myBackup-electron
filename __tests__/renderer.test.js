@@ -69,8 +69,8 @@ describe('renderer target offline behavior', () => {
     expect(targetsContainer.innerHTML).toContain('target-unavailable-banner');
     expect(targetsContainer.innerHTML).toContain('/Users/James/Documents');
     expect(targetsContainer.innerHTML).toContain('documents/Documents');
-    expect(targetsContainer.innerHTML).toContain('run-backup-button');
-    expect(targetsContainer.innerHTML).toContain('run-backup-button" data-target-root="/Volumes/ST/Backup" data-machine-id="machine-a" data-source-id="source-a" disabled');
+    expect(targetsContainer.innerHTML).toMatch(/run-backup-button/);
+    expect(targetsContainer.innerHTML).toMatch(/run-backup-button"[^>]*data-target-root="\/Volumes\/ST\/Backup"[^>]*data-machine-id="machine-a"[^>]*data-source-id="source-a"[^>]*disabled/);
   });
 
   test('offline target keeps non-backup buttons visible', () => {
@@ -96,7 +96,7 @@ describe('renderer target offline behavior', () => {
 
     expect(targetsContainer.innerHTML).not.toContain('target-unavailable-banner');
     expect(targetsContainer.innerHTML).toContain('/Users/James/Documents');
-    expect(targetsContainer.innerHTML).toContain('run-backup-button');
-    expect(targetsContainer.innerHTML).not.toContain('run-backup-button" data-target-root="/Volumes/ST/Backup" data-machine-id="machine-a" data-source-id="source-a" disabled');
+    expect(targetsContainer.innerHTML).toMatch(/run-backup-button/);
+    expect(targetsContainer.innerHTML).not.toMatch(/run-backup-button"[^>]*data-target-root="\/Volumes\/ST\/Backup"[^>]*data-machine-id="machine-a"[^>]*data-source-id="source-a"[^>]*disabled/);
   });
 });

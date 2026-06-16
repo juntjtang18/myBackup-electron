@@ -63,8 +63,7 @@ class ChangeJournal {
       sourceId,
       lastEventSeq: 0,
       updatedAt: nowIso(now),
-      folders: {},
-      events: []
+      folders: {}
     });
   }
 
@@ -90,8 +89,7 @@ class ChangeJournal {
         sourceId: document.sourceId,
         lastEventSeq: document.lastEventSeq,
         updatedAt: document.updatedAt || nowIso(now),
-        folders,
-        events: []
+        folders
       });
     }
 
@@ -121,35 +119,12 @@ class ChangeJournal {
       };
     }
 
-    const events = Array.isArray(document.events) ? document.events.map((event, index) => {
-      if (!event || typeof event !== 'object') {
-        throw new Error(`events.${index} must be an object.`);
-      }
-      assertNonNegativeInteger(event.seq, `events.${index}.seq`);
-      assertNonEmptyString(event.at, `events.${index}.at`);
-      assertNonEmptyString(event.relPath, `events.${index}.relPath`);
-      assertNonEmptyString(event.parentRelPath, `events.${index}.parentRelPath`);
-      assertNonEmptyString(event.kind, `events.${index}.kind`);
-      assertNonEmptyString(event.action, `events.${index}.action`);
-      return {
-        seq: event.seq,
-        at: event.at,
-        relPath: event.kind === 'folder'
-          ? normalizeFolderPath(event.relPath)
-          : normalizeFilePath(event.relPath),
-        parentRelPath: normalizeFolderPath(event.parentRelPath),
-        kind: event.kind,
-        action: event.action
-      };
-    }) : [];
-
     return new ChangeJournal({
       version: CHANGE_JOURNAL_VERSION,
       sourceId: document.sourceId,
       lastEventSeq: document.lastEventSeq,
       updatedAt: document.updatedAt,
-      folders,
-      events
+      folders
     });
   }
 
@@ -159,8 +134,7 @@ class ChangeJournal {
       sourceId: this.document.sourceId,
       lastEventSeq: this.document.lastEventSeq,
       updatedAt: this.document.updatedAt,
-      folders: { ...this.document.folders },
-      events: Array.isArray(this.document.events) ? this.document.events.slice() : []
+      folders: { ...this.document.folders }
     };
   }
 
@@ -181,29 +155,13 @@ class ChangeJournal {
   recordFileChanged(relativeFilePath, now = new Date()) {
     const normalizedFilePath = normalizeFilePath(relativeFilePath);
     const parentRelPath = parentFolderOf(normalizedFilePath);
-    const seq = this.touchFolder(parentRelPath, now);
-    this.document.events.push({
-      seq,
-      at: nowIso(now),
-      relPath: normalizedFilePath,
-      parentRelPath,
-      kind: 'file',
-      action: 'changed'
-    });
+    this.touchFolder(parentRelPath, now);
     return this.toJSON();
   }
 
   recordFolderChanged(relativeFolderPath, now = new Date()) {
     const normalizedFolderPath = normalizeFolderPath(relativeFolderPath);
-    const seq = this.touchFolder(normalizedFolderPath, now);
-    this.document.events.push({
-      seq,
-      at: nowIso(now),
-      relPath: normalizedFolderPath,
-      parentRelPath: parentOfFolder(normalizedFolderPath),
-      kind: 'folder',
-      action: 'changed'
-    });
+    this.touchFolder(normalizedFolderPath, now);
     return this.toJSON();
   }
 
@@ -221,7 +179,6 @@ class ChangeJournal {
 
   clearAfterFullBackup(now = new Date()) {
     this.document.folders = {};
-    this.document.events = [];
     this.document.updatedAt = nowIso(now);
     return this.toJSON();
   }
@@ -261,11 +218,8 @@ class ChangeJournal {
   }
 
   getRecentEvents(limit = 100) {
-    const max = Math.max(0, Number(limit || 0));
-    return this.document.events
-      .slice()
-      .sort((left, right) => right.seq - left.seq)
-      .slice(0, max);
+    void limit;
+    return [];
   }
 }
 

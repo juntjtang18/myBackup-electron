@@ -69,8 +69,8 @@ class ChangeTracker {
   }
 
   async getRecentEvents(source, limit = 100) {
-    const journal = await this.store.ensure(source);
-    return journal.getRecentEvents(limit);
+    const journal = await this.store.load(source);
+    return journal ? journal.getRecentEvents(limit) : [];
   }
 
   async clearAfterFullBackup(source, now = new Date()) {

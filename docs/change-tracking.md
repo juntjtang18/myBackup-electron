@@ -15,7 +15,7 @@ This module is the boundary between:
 
 - watch-time change capture
 - backup-time changed-folder scanning
-- future UI/debug inspection of recent change events
+- UI display of changed folders and approximate change counts
 
 ## Current implementation
 
@@ -27,8 +27,6 @@ That means:
 - those changes are collapsed into changed folders
 - backup scans those changed folders and processes direct child files
 
-Two data layers exist in the journal:
-
 ### `folders`
 
 `folders` is the **backup-safe source of truth**.
@@ -36,20 +34,15 @@ Two data layers exist in the journal:
 It is used by the backup engine to decide which folders need scanning.
 This is the part of the journal that the current backup flow depends on.
 
-### `events`
+Each folder entry stores:
 
-`events` is **not** used by the current backup algorithm.
+- `seq`
+- `changedAt`
+- `eventCount`
 
-It exists for:
-
-- UI/debug visibility
-- future detailed change tracking
-- future evolution toward file-level action lists
-
-Current rule:
-
-- `folders` drives backup behavior
-- `events` is auxiliary only
+`eventCount` is a lightweight approximation of how many change signals have
+been observed for that folder since it was last cleared. It is suitable for UI
+display, but it is not a durable file-level event log.
 
 ## Current persistence
 
@@ -100,17 +93,7 @@ The current module:
       "changedAt": "2026-06-10T10:01:00.000Z",
       "eventCount": 3
     }
-  },
-  "events": [
-    {
-      "seq": 128,
-      "at": "2026-06-10T10:02:00.000Z",
-      "relPath": "a/b/file.txt",
-      "parentRelPath": "a/b",
-      "kind": "file",
-      "action": "changed"
-    }
-  ]
+  }
 }
 ```
 
@@ -143,7 +126,6 @@ It owns:
 - journal normalization
 - mutation rules
 - sequence advancement
-- event append logic
 - changed-folder clearing rules
 - compatibility projection back to the legacy dirty-state shape
 
@@ -174,7 +156,7 @@ Current behavior:
 2. computes the parent folder relative path
 3. increments `lastEventSeq`
 4. updates the parent folder entry in `folders`
-5. appends a file event to `events`
+5. increments that folder's `eventCount`
 
 This is the normal path used for watched file changes.
 
@@ -187,7 +169,7 @@ Current behavior:
 1. resolves `absPath` relative to the source root
 2. increments `lastEventSeq`
 3. updates that folder entry in `folders`
-4. appends a folder event to `events`
+4. increments that folder's `eventCount`
 
 ### `getChangeList(source, now = new Date())`
 
@@ -244,9 +226,10 @@ This preserves the current crash-safe incremental behavior.
 
 ### `getRecentEvents(source, limit = 100)`
 
-Returns recent journal events for UI/debug/future inspection.
+Compatibility method.
 
-This is not used by the current backup algorithm.
+The simplified journal no longer persists per-event history, so this currently
+returns an empty list.
 
 ### `clearAfterFullBackup(source, now = new Date())`
 
@@ -255,7 +238,6 @@ Clears change state after a successful full backup.
 Current behavior:
 
 - clears `folders`
-- clears `events`
 - updates `updatedAt`
 
 This resets the journal to a clean baseline state.
@@ -272,7 +254,7 @@ Current backup rule:
 
 - backup reads the change list
 - backup uses `legacyDirtyState` to preserve the current folder-scan flow
-- backup does not depend on `events`
+- backup does not depend on per-event history
 
 Important restrictions:
 
@@ -290,6 +272,7 @@ UI access rule:
 
 - renderer accesses change data through IPC only
 - renderer does not open or parse `watch/<sourceId>.dirty.json`
+- renderer shows changed folders and approximate `eventCount` values only
 
 Reason:
 
@@ -328,4 +311,4 @@ Current contract:
 
 - `listType` is `"changed-folders"`
 - backup remains folder-scan based
-- `events` is retained for visibility and future growth, not current backup decisions
+- persisted change tracking is folder-based only

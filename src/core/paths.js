@@ -24,6 +24,26 @@ function backupSchemaPath(appDataRoot) {
   return path.join(appMetadataRoot(appDataRoot), 'backup_target.json');
 }
 
+function targetsPath(appDataRoot) {
+  return path.join(appMetadataRoot(appDataRoot), 'targets.json');
+}
+
+function sourcesRoot(appDataRoot) {
+  return path.join(appMetadataRoot(appDataRoot), 'sources');
+}
+
+function sourceDefinitionPath(appDataRoot, sourceId) {
+  return path.join(sourcesRoot(appDataRoot), `${sourceId}.json`);
+}
+
+function statusRoot(appDataRoot) {
+  return path.join(appMetadataRoot(appDataRoot), 'status');
+}
+
+function sourceStatusPath(appDataRoot, sourceId) {
+  return path.join(statusRoot(appDataRoot), `${sourceId}.json`);
+}
+
 function watchStateRoot(appDataRoot) {
   return path.join(appMetadataRoot(appDataRoot), 'watch');
 }
@@ -136,6 +156,9 @@ module.exports = {
   backupSourcesPath,
   backupSchemaPath,
   dirtyStatePath,
+  sourceDefinitionPath,
+  sourceStatusPath,
+  sourcesRoot,
   schemaMigrationMarkerPath,
   configPath,
   errorReportPath,
@@ -155,7 +178,9 @@ module.exports = {
   resolveTargetRoot,
   scanCurrentPath,
   sourcePath,
+  statusRoot,
   targetMetadataRoot,
+  targetsPath,
   tempRoot,
   toPosixPath,
   watchStateRoot

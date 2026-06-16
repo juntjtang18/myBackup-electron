@@ -63,6 +63,21 @@ function createBackupStatus(input = {}, now = new Date()) {
   };
 }
 
+function createSourceStatusRecord(input = {}, now = new Date()) {
+  assertNonEmptyString(input.sourceId, 'sourceId');
+  const statusInput = input.status && typeof input.status === 'object' && !Array.isArray(input.status)
+    ? input.status
+    : input;
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    sourceId: input.sourceId,
+    status: createBackupStatus(statusInput, now),
+    needsRescan: Boolean(input.needsRescan),
+    lastEventAt: input.lastEventAt || null,
+    updatedAt: input.updatedAt || nowIso(now)
+  };
+}
+
 function createAppConfig(overrides = {}, now = new Date()) {
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -125,6 +140,41 @@ function createSourceRecord(input, now = new Date()) {
       lastEventAt: input.watchState?.lastEventAt || null
     },
     backupStatus: createBackupStatus(backupStatusInput, now),
+    sourceSizeBytes: input.sourceSizeBytes === undefined || input.sourceSizeBytes === null
+      ? null
+      : Number(input.sourceSizeBytes),
+    backupSizeBytes: input.backupSizeBytes === undefined || input.backupSizeBytes === null
+      ? null
+      : Number(input.backupSizeBytes),
+    lastCompletedAt: input.lastCompletedAt || null,
+    createdAt: input.createdAt || nowIso(now),
+    updatedAt: input.updatedAt || nowIso(now)
+  };
+}
+
+function createSourceDefinitionRecord(input, now = new Date()) {
+  assertNonEmptyString(input.machineId, 'machineId');
+  assertNonEmptyString(input.sourcePath, 'sourcePath');
+
+  const resolvedSourcePath = path.resolve(input.sourcePath);
+  const sourceId = input.sourceId || createSourceId(resolvedSourcePath);
+  const watchEnabled = input.watchEnabled === undefined ? true : Boolean(input.watchEnabled);
+  const backupIntervalMinutes = input.backupIntervalMinutes === undefined || input.backupIntervalMinutes === null
+    ? null
+    : Number(input.backupIntervalMinutes);
+  const targetFolder = normalizeTargetFolder(input.targetFolder);
+
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    machineId: input.machineId,
+    sourceId,
+    targetId: input.targetId || null,
+    sourcePath: resolvedSourcePath,
+    targetFolder,
+    watchEnabled,
+    backupIntervalMinutes,
+    baselineAt: input.baselineAt || null,
+    dirtyRef: input.dirtyRef || input.watchState?.dirtyRef || `watch/${sourceId}.dirty.json`,
     sourceSizeBytes: input.sourceSizeBytes === undefined || input.sourceSizeBytes === null
       ? null
       : Number(input.sourceSizeBytes),
@@ -285,6 +335,66 @@ function validateSourceRecord(record) {
   return record;
 }
 
+function validateSourceDefinitionRecord(record) {
+  if (!record || typeof record !== 'object') {
+    throw new Error('source definition record must be an object.');
+  }
+  if (record.schemaVersion !== SCHEMA_VERSION) {
+    throw new Error(`Unsupported source definition schema version: ${record.schemaVersion}`);
+  }
+  assertNonEmptyString(record.machineId, 'machineId');
+  assertNonEmptyString(record.sourceId, 'sourceId');
+  assertNonEmptyString(record.sourcePath, 'sourcePath');
+  if (record.targetId !== null && record.targetId !== undefined) {
+    assertNonEmptyString(record.targetId, 'targetId');
+  }
+  if (record.targetFolder !== '') {
+    assertNonEmptyString(record.targetFolder, 'targetFolder');
+  }
+  assertBoolean(record.watchEnabled, 'watchEnabled');
+  assertNullableNonNegativeInteger(record.backupIntervalMinutes, 'backupIntervalMinutes');
+  assertNullableString(record.baselineAt, 'baselineAt');
+  assertNonEmptyString(record.dirtyRef, 'dirtyRef');
+  assertNullableNonNegativeInteger(record.sourceSizeBytes, 'sourceSizeBytes');
+  assertNullableNonNegativeInteger(record.backupSizeBytes, 'backupSizeBytes');
+  assertNullableString(record.lastCompletedAt, 'lastCompletedAt');
+  return record;
+}
+
+function validateSourceStatusRecord(record) {
+  if (!record || typeof record !== 'object') {
+    throw new Error('source status record must be an object.');
+  }
+  if (record.schemaVersion !== SCHEMA_VERSION) {
+    throw new Error(`Unsupported source status schema version: ${record.schemaVersion}`);
+  }
+  assertNonEmptyString(record.sourceId, 'sourceId');
+  if (!record.status || typeof record.status !== 'object') {
+    throw new Error('status must be an object.');
+  }
+  assertNullableString(record.status.status, 'status.status');
+  assertNullableString(record.status.mode, 'status.mode');
+  assertNullableString(record.status.runId, 'status.runId');
+  assertNullableNonNegativeInteger(record.status.copiedBytes, 'status.copiedBytes');
+  assertNullableString(record.status.startedAt, 'status.startedAt');
+  assertNullableString(record.status.updatedAt, 'status.updatedAt');
+  assertNullableString(record.status.completedAt, 'status.completedAt');
+  if (record.status.cursor !== null && record.status.cursor !== undefined) {
+    if (typeof record.status.cursor !== 'object') {
+      throw new Error('status.cursor must be an object or null.');
+    }
+    assertNullableString(record.status.cursor.relativePath, 'status.cursor.relativePath');
+    assertNullableString(record.status.cursor.status, 'status.cursor.status');
+    assertNullableString(record.status.cursor.updatedAt, 'status.cursor.updatedAt');
+  }
+  assertNullableNonNegativeInteger(record.status.scanSeq, 'status.scanSeq');
+  assertNullableString(record.status.error, 'status.error');
+  assertBoolean(record.needsRescan, 'needsRescan');
+  assertNullableString(record.lastEventAt, 'lastEventAt');
+  assertNullableString(record.updatedAt, 'updatedAt');
+  return record;
+}
+
 function validateHashRecord(record) {
   if (!record || typeof record !== 'object') {
     throw new Error('hash record must be an object.');
@@ -333,9 +443,13 @@ module.exports = {
   createMachineRecord,
   createScanState,
   createSourceRecord,
+  createSourceDefinitionRecord,
+  createSourceStatusRecord,
   validateAppConfig,
   validateHashRecord,
   validateMachineRecord,
   validateScanState,
-  validateSourceRecord
+  validateSourceDefinitionRecord,
+  validateSourceRecord,
+  validateSourceStatusRecord
 };

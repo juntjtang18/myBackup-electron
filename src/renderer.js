@@ -259,17 +259,13 @@ function renderSourceChangePanel(target, source) {
   }
 
   return `
-    <tr class="source-changes-row">
-      <td colspan="5">
-        <section class="source-changes-panel">
-          <div class="source-changes-header">
-            <div class="source-changes-title">Changes since last backup</div>
-            <div class="source-changes-meta">${entry?.data?.generatedAt ? escapeHtml(formatTimestamp(entry.data.generatedAt)) : ''}</div>
-          </div>
-          ${body}
-        </section>
-      </td>
-    </tr>
+    <section class="source-changes-panel">
+      <div class="source-changes-header">
+        <div class="source-changes-title">Changes since last backup</div>
+        <div class="source-changes-meta">${entry?.data?.generatedAt ? escapeHtml(formatTimestamp(entry.data.generatedAt)) : ''}</div>
+      </div>
+      ${body}
+    </section>
   `;
 }
 
@@ -500,9 +496,6 @@ function renderTargetSourcesTable(target) {
     const requiresFullBackup = !source.baselineAt
       || missingSourceSize
       || Boolean(source.watchState?.needsRescan);
-    const sourceStatus = activeProgress
-      ? (isPausing ? 'pausing' : (activeProgress.progress?.status || 'running'))
-      : (pausedCursor ? 'paused' : (requiresFullBackup ? 'full backup required' : 'ready'));
     const restoreDisabled = targetUnavailable || Boolean(activeProgress);
     const deleteDisabled = Boolean(activeProgress);
     const backupLabel = activeProgress
@@ -516,38 +509,55 @@ function renderTargetSourcesTable(target) {
     const sourceSizeLabel = source.sourceSizeBytes === null || source.sourceSizeBytes === undefined
       ? '-'
       : formatBytes(source.sourceSizeBytes);
-    const backupSizeLabel = source.backupSizeBytes === null || source.backupSizeBytes === undefined
-      ? '-'
-      : formatBytes(source.backupSizeBytes);
     const sourceChangeEntry = state.sourceChanges[changeKey];
     const sourceChangeCount = sourceChangeEntry?.data?.items?.length || 0;
     const sourceChangeLabel = sourceChangeCount > 0 ? `Changes (${sourceChangeCount})` : 'Changes';
 
     return `
-      <tr>
-        <td>
-          <div class="path-cell">${escapeHtml(source.sourcePath)}</div>
-          <div class="small muted mt-1">Source Size: ${escapeHtml(sourceSizeLabel)}</div>
-        </td>
-        <td>
-          <div class="path-cell">${escapeHtml(targetRootLabel)}</div>
-          <div class="small muted mt-1">Backed Up: ${escapeHtml(backupSizeLabel)}</div>
-        </td>
-        <td>
-          ${renderScanBadge(sourceStatus)}
-        </td>
-        <td>${renderCompletedCell(source.lastCompletedAt)}</td>
-        <td>
-          <div class="actions-row">
-            <button class="btn btn-sm btn-outline-secondary btn-action btn-action-changes toggle-changes-button${state.sourceChangeExpanded[changeKey] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(sourceChangeLabel)}">${escapeHtml(sourceChangeLabel)}</button>
-            <button class="btn btn-sm ${backupClass} btn-action btn-action-backup run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(backupLabel)}"${backupDisabled ? ' disabled' : ''}>${backupLabel}</button>
-            <button class="btn btn-sm btn-outline-secondary btn-action btn-action-restore restore-source-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${restoreDisabled ? ' disabled' : ''}>Restore</button>
-            ${showDeleteButtons ? `<button class="btn btn-sm btn-outline-danger btn-action btn-action-delete delete-source-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}"${deleteDisabled ? ' disabled' : ''}>Delete</button>` : ''}
+      <div class="source-card-stack">
+        <article class="source-card" data-source-id="${escapeHtml(source.sourceId)}">
+          <div class="source-card-top">
+            <section class="source-card-side source-card-target">
+              <div class="source-card-label">Target</div>
+              <div class="source-card-path" title="${escapeHtml(targetRootLabel)}">${escapeHtml(targetRootLabel)}</div>
+            </section>
+            <section class="source-card-center">
+              <div class="source-card-size">${escapeHtml(sourceSizeLabel)}</div>
+              <div class="source-card-arrow" aria-hidden="true">
+                <svg viewBox="0 0 132 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M118 9H44"></path>
+                  <path d="M54 4L44 9L54 14"></path>
+                </svg>
+              </div>
+            </section>
+            <section class="source-card-side source-card-source">
+              <div class="source-card-label">Source</div>
+              <div class="source-card-path" title="${escapeHtml(source.sourcePath)}">${escapeHtml(source.sourcePath)}</div>
+            </section>
           </div>
-        </td>
-      </tr>
-      ${renderSourceChangePanel(target, source)}
-      ${renderProgressPanel(targetRoot, source)}
+          <div class="source-card-bottom">
+            <div class="source-card-meta">
+              <div class="source-card-backup-line">
+                <span class="source-card-clock" aria-hidden="true">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="8" cy="8" r="5.5"></circle>
+                    <path d="M8 4.8V8l2.2 1.6"></path>
+                  </svg>
+                </span>
+                <span class="source-card-backup-text">Last backup ${escapeHtml(formatTimestamp(source.lastCompletedAt))}</span>
+              </div>
+            </div>
+            <div class="actions-row">
+              <button class="btn btn-sm btn-outline-secondary btn-action btn-action-changes toggle-changes-button${state.sourceChangeExpanded[changeKey] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(sourceChangeLabel)}">${escapeHtml(sourceChangeLabel)}</button>
+              <button class="btn btn-sm ${backupClass} btn-action btn-action-backup run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(backupLabel)}"${backupDisabled ? ' disabled' : ''}>${backupLabel}</button>
+              <button class="btn btn-sm btn-outline-secondary btn-action btn-action-restore restore-source-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${restoreDisabled ? ' disabled' : ''}>Restore</button>
+              ${showDeleteButtons ? `<button class="btn btn-sm btn-outline-danger btn-action btn-action-delete delete-source-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}"${deleteDisabled ? ' disabled' : ''}>Delete</button>` : ''}
+            </div>
+          </div>
+        </article>
+        ${renderSourceChangePanel(target, source)}
+        ${renderProgressPanel(targetRoot, source)}
+      </div>
     `;
   }).join('');
 
@@ -557,25 +567,7 @@ function renderTargetSourcesTable(target) {
         Target volume is not mounted. Backup and restore actions are unavailable until the drive is reconnected.${target.unavailableReason ? ` <span class="muted">${escapeHtml(target.unavailableReason)}</span>` : ''}
       </div>
     ` : ''}
-    <table class="source-table">
-      <colgroup>
-        <col class="source-col-source">
-        <col class="source-col-target">
-        <col class="source-col-status">
-        <col class="source-col-completed">
-        <col class="source-col-actions">
-      </colgroup>
-      <thead>
-        <tr>
-          <th>Source</th>
-          <th>Target</th>
-          <th>Scan</th>
-          <th>Completed</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
+    <div class="source-card-list">${rows}</div>
   `;
 }
 

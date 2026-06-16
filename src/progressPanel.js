@@ -346,16 +346,12 @@
     const view = createProgressViewModel(entry);
     const showQueueDetails = Boolean(input.showProgressQueueDetails);
     return `
-      <tr class="source-progress-row">
-        <td colspan="5">
-          <div class="source-progress-panel" id="progress-panel-${safeKey}">
-            ${renderSummary(view.summary)}
-            <div class="progress-pools">
-              ${renderPoolPanel(view.pools.file || view.pools.hash, safeKey, showQueueDetails)}
-            </div>
-          </div>
-        </td>
-      </tr>
+      <div class="source-progress-panel" id="progress-panel-${safeKey}">
+        ${renderSummary(view.summary)}
+        <div class="progress-pools">
+          ${renderPoolPanel(view.pools.file || view.pools.hash, safeKey, showQueueDetails)}
+        </div>
+      </div>
     `;
   }
 

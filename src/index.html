@@ -565,59 +565,140 @@
       cursor: not-allowed;
     }
 
-    /* Source table */
-    .source-table {
-      width: 100%;
-      border-collapse: collapse;
-      table-layout: fixed;
-      font-size: 0.84rem;
+    .source-card-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
     }
 
-    .source-col-source { width: 40%; }
-    .source-col-target { width: 22%; }
-    .source-col-status { width: 96px; }
-    .source-col-completed { width: 108px; }
-    .source-col-actions { width: 404px; }
-
-    .source-table th,
-    .source-table td {
-      padding: 11px 10px;
-      vertical-align: top;
-      text-align: left;
-      border-bottom: 1px solid var(--line);
+    .source-card-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
     }
 
-    .source-table th {
-      position: sticky;
-      top: 0;
-      z-index: 1;
-      background: var(--panel);
-      color: var(--muted);
-      font-size: 0.7rem;
-      font-weight: 650;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
+    .source-card {
+      border: 1px solid #dbe4f0;
+      border-radius: 14px;
+      background: #ffffff;
+      padding: 14px 22px 14px;
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.85) inset;
     }
 
-    .source-table tbody tr:last-child td {
-      border-bottom: none;
+    .source-card-top {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 168px minmax(0, 1fr);
+      align-items: center;
+      gap: 18px;
     }
 
-    .source-progress-row td {
-      background: #f8fafb;
-      padding: 0 10px 12px;
-      border-bottom: 1px solid var(--line);
+    .source-card-side {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
     }
 
-    .source-changes-row td {
-      background: #f8fafb;
-      padding: 0 10px 12px;
-      border-bottom: 1px solid var(--line);
-    }
-
-    .source-table th:last-child,
-    .source-table td:last-child {
+    .source-card-source {
       text-align: right;
+      align-items: flex-end;
+    }
+
+    .source-card-label {
+      font-size: 0.72rem;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #b0bccd;
+    }
+
+    .source-card-path {
+      font-size: 1rem;
+      line-height: 1.25;
+      color: #1f2937;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .source-card-center {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      color: #a6b2c3;
+      padding-top: 2px;
+    }
+
+    .source-card-size {
+      font-size: 0.96rem;
+      font-weight: 500;
+      color: #64748b;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .source-card-arrow {
+      width: 132px;
+      height: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #b4bfce;
+    }
+
+    .source-card-arrow svg {
+      width: 132px;
+      height: 18px;
+      display: block;
+    }
+
+    .source-card-bottom {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      margin-top: 14px;
+    }
+
+    .source-card-meta {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      color: #a6b2c3;
+    }
+
+    .source-card-backup-line {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .source-card-clock {
+      width: 16px;
+      height: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #c0cad8;
+      flex-shrink: 0;
+    }
+
+    .source-card-clock svg {
+      width: 16px;
+      height: 16px;
+      display: block;
+    }
+
+    .source-card-backup-text {
+      font-size: 0.79rem;
+      color: #a6b2c3;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .path-cell {
@@ -755,6 +836,12 @@
       background: #2563eb;
       border-color: #2563eb;
       color: #ffffff;
+    }
+
+    .source-changes-panel,
+    .source-progress-panel {
+      margin: 0;
+      border-radius: 12px;
     }
 
     .muted { color: var(--muted); }
@@ -1275,13 +1362,24 @@
         --log-dock-control-inset: 12px;
       }
       .progress-pools { grid-template-columns: 1fr; }
-      .source-col-source,
-      .source-col-target,
-      .source-col-status,
-      .source-col-completed,
-      .source-col-actions { width: auto; }
-      .source-table th:nth-child(4),
-      .source-table td:nth-child(4) { display: none; }
+      .source-card {
+        padding: 12px 14px 14px;
+      }
+      .source-card-top {
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+      .source-card-center {
+        order: 2;
+      }
+      .source-card-source {
+        text-align: left;
+        align-items: flex-start;
+      }
+      .source-card-bottom {
+        flex-direction: column;
+        align-items: stretch;
+      }
       .actions-row { flex-wrap: wrap; }
       .worker-line { grid-template-columns: 38px minmax(0, 1fr) 120px; }
       .worker-bytes { grid-column: 3; }

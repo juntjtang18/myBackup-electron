@@ -1,6 +1,7 @@
 const path = require('path');
 const { loadBackupSchema } = require('../backupSchema');
-const { ChangeTracker } = require('../changeTracking/ChangeTracker');
+const { ChangeTracker, relativeToSource } = require('../changeTracking/ChangeTracker');
+const { loadIgnoreMatcher } = require('../ignoreMatcher');
 const { createLogger } = require('../logger');
 const { updateSourceWatchState } = require('../sourceRegistry');
 const { createDarwinWatcherBackend } = require('./backends/darwin');
@@ -85,7 +86,25 @@ function createWatchService(platformInput, options = {}) {
 
   async function loadWatchedSources() {
     const schema = await loadBackupSchema(appDataRoot);
-    return flattenWatchedSources(schema || { targets: [] });
+    const sources = flattenWatchedSources(schema || { targets: [] });
+    return Promise.all(sources.map(async (source) => ({
+      ...source,
+      ignoreMatcher: await loadIgnoreMatcher(source.sourcePath)
+    })));
+  }
+
+  function shouldIgnoreEvent(source, eventPath) {
+    if (!source.ignoreMatcher) {
+      return false;
+    }
+    const relativePath = relativeToSource({
+      sourcePath: source.sourcePath
+    }, eventPath);
+    if (relativePath === '.') {
+      return false;
+    }
+    return source.ignoreMatcher.shouldIgnore(relativePath, false)
+      || source.ignoreMatcher.shouldIgnore(relativePath, true);
   }
 
   async function flushSourceWatchState(source, now = new Date()) {
@@ -131,6 +150,9 @@ function createWatchService(platformInput, options = {}) {
   }
 
   async function persistDirtyEvent(source, eventPath, now = new Date()) {
+    if (shouldIgnoreEvent(source, eventPath)) {
+      return null;
+    }
     await changeTracker.recordFileChanged({
       sourceId: source.sourceId,
       sourcePath: source.sourcePath,
@@ -139,6 +161,7 @@ function createWatchService(platformInput, options = {}) {
       }
     }, eventPath, now);
     await queueSourceWatchStateFlush(source, now);
+    return true;
   }
 
   async function markSourceNeedsRescan(source, error, now = new Date()) {

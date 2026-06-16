@@ -918,6 +918,61 @@ describe('metadata foundation', () => {
     expect(updatedSource.watchState.lastEventAt).not.toBeNull();
   });
 
+  test('watch service ignores events under .mbignore paths', async () => {
+    const targetRoot = path.join(tempRootPath, 'target');
+    await addTarget(tempRootPath, targetRoot);
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'watch-ignore-host',
+      displayName: 'Watch Ignore Host',
+      platform: 'darwin',
+      seed: 'watch-ignore-seed',
+      now: new Date('2026-06-10T12:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      targetRoot,
+      machineId: machine.machineId,
+      sourcePath: path.join(tempRootPath, 'watched-ignore-source')
+    }, new Date('2026-06-10T12:01:00Z'));
+
+    await fs.ensureDir(path.join(source.sourcePath, 'data', 'watch'));
+    await fs.writeFile(path.join(source.sourcePath, '.mbignore'), 'data/\n');
+
+    const backendState = {
+      sources: [],
+      handlers: null
+    };
+    const refreshCalls = [];
+    const backend = {
+      async sync(sources, handlers) {
+        backendState.sources = sources;
+        backendState.handlers = handlers;
+      },
+      async stop() {}
+    };
+
+    const service = createWatchService('darwin', {
+      appDataRoot: tempRootPath,
+      backend,
+      onStateChanged: async () => {
+        refreshCalls.push(new Date().toISOString());
+      }
+    });
+
+    await service.bootstrap();
+    await backendState.handlers.onEvent(backendState.sources[0], {
+      kind: 'fs',
+      eventPath: path.join(source.sourcePath, 'data', 'watch', 'x.json')
+    });
+
+    const dirtyState = await loadDirtyState(tempRootPath, source);
+    expect(dirtyState.lastEventSeq).toBe(0);
+    expect(dirtyState.folders).toEqual({});
+    expect(refreshCalls).toHaveLength(0);
+
+    const updatedSource = await loadBackupSource(tempRootPath, targetRoot, machine.machineId, source.sourceId);
+    expect(updatedSource.watchState.lastEventAt).toBeNull();
+  });
+
   test('watch service change tracking integrates with incremental backup and clears the changed folder after backup', async () => {
     const targetRoot = path.join(tempRootPath, 'target');
     await addTarget(tempRootPath, targetRoot);

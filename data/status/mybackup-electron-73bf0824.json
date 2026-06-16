@@ -3,23 +3,17 @@
   "sourceId": "mybackup-electron-73bf0824",
   "status": {
     "status": "running",
-    "mode": null,
-    "runId": null,
-    "copiedBytes": 434212184,
-    "startedAt": null,
-    "updatedAt": "2026-06-16T06:53:14.130Z",
+    "mode": "incremental",
+    "runId": "20260616-070420",
+    "copiedBytes": 0,
+    "startedAt": "2026-06-16T07:04:20.675Z",
+    "updatedAt": "2026-06-16T07:04:20.675Z",
     "completedAt": null,
-    "cursor": {
-      "backupId": "20260616-065314",
-      "relativePath": "dist/mac/MyBackup.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/ko.lproj",
-      "folderHash": "ko.lproj-94eec4be7f",
-      "status": "running",
-      "updatedAt": "2026-06-16T06:53:14.130Z"
-    },
-    "scanSeq": null,
+    "cursor": null,
+    "scanSeq": 23,
     "error": null
   },
   "needsRescan": false,
-  "lastEventAt": "2026-06-16T06:53:38.269Z",
-  "updatedAt": "2026-06-16T06:53:14.130Z"
+  "lastEventAt": "2026-06-16T07:05:50.628Z",
+  "updatedAt": "2026-06-16T07:04:20.675Z"
 }

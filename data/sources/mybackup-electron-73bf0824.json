@@ -7,11 +7,11 @@
   "targetFolder": "",
   "watchEnabled": true,
   "backupIntervalMinutes": null,
-  "baselineAt": null,
+  "baselineAt": "2026-06-16T07:01:56.641Z",
   "dirtyRef": "watch/mybackup-electron-73bf0824.dirty.json",
-  "sourceSizeBytes": null,
-  "backupSizeBytes": null,
-  "lastCompletedAt": null,
+  "sourceSizeBytes": 853517,
+  "backupSizeBytes": 853517,
+  "lastCompletedAt": "2026-06-16T07:01:56.641Z",
   "createdAt": "2026-06-16T06:20:59.495Z",
-  "updatedAt": "2026-06-16T06:53:38.269Z"
+  "updatedAt": "2026-06-16T07:05:50.628Z"
 }

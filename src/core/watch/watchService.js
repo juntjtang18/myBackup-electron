@@ -79,6 +79,7 @@ function createWatchService(platformInput, options = {}) {
     ? options.onStateChanged
     : async () => {};
   const changeTracker = options.changeTracker || new ChangeTracker(appDataRoot);
+  const pendingWatchStateFlushes = new Map();
 
   let started = false;
 
@@ -87,14 +88,7 @@ function createWatchService(platformInput, options = {}) {
     return flattenWatchedSources(schema || { targets: [] });
   }
 
-  async function persistDirtyEvent(source, eventPath, now = new Date()) {
-    await changeTracker.recordFileChanged({
-      sourceId: source.sourceId,
-      sourcePath: source.sourcePath,
-      watchState: {
-        dirtyRef: source.dirtyRef
-      }
-    }, eventPath, now);
+  async function flushSourceWatchState(source, now = new Date()) {
     await updateSourceWatchState(
       appDataRoot,
       source.machineId,
@@ -107,6 +101,44 @@ function createWatchService(platformInput, options = {}) {
       { sourcePath: source.sourcePath }
     );
     await scheduleDashboardRefresh();
+  }
+
+  function queueSourceWatchStateFlush(source, now = new Date()) {
+    const watchKey = source.watchKey;
+    const existing = pendingWatchStateFlushes.get(watchKey);
+    if (existing) {
+      existing.latestNow = now;
+      return existing.promise;
+    }
+
+    const entry = {
+      latestNow: now,
+      promise: null
+    };
+    entry.promise = (async () => {
+      try {
+        while (entry.latestNow) {
+          const flushNow = entry.latestNow;
+          entry.latestNow = null;
+          await flushSourceWatchState(source, flushNow);
+        }
+      } finally {
+        pendingWatchStateFlushes.delete(watchKey);
+      }
+    })();
+    pendingWatchStateFlushes.set(watchKey, entry);
+    return entry.promise;
+  }
+
+  async function persistDirtyEvent(source, eventPath, now = new Date()) {
+    await changeTracker.recordFileChanged({
+      sourceId: source.sourceId,
+      sourcePath: source.sourcePath,
+      watchState: {
+        dirtyRef: source.dirtyRef
+      }
+    }, eventPath, now);
+    await queueSourceWatchStateFlush(source, now);
   }
 
   async function markSourceNeedsRescan(source, error, now = new Date()) {

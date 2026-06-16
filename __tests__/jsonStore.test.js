@@ -39,4 +39,18 @@ describe('jsonStore.writeJsonAtomic', () => {
     expect(siblings.filter((entry) => entry.startsWith('backup_target.json.'))).toEqual([]);
     moveSpy.mockRestore();
   });
+
+  test('serializes concurrent writes and leaves no atomic temp siblings behind', async () => {
+    const filePath = path.join(tempRoot, 'backup_target.json');
+
+    await Promise.all([
+      writeJsonAtomic(filePath, { seq: 1 }),
+      writeJsonAtomic(filePath, { seq: 2 }),
+      writeJsonAtomic(filePath, { seq: 3 })
+    ]);
+
+    const siblings = await fs.readdir(tempRoot);
+    expect(siblings.filter((entry) => entry.startsWith('backup_target.json.'))).toEqual([]);
+    await expect(readJson(filePath)).resolves.toEqual({ seq: 3 });
+  });
 });

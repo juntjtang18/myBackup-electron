@@ -33,6 +33,18 @@ function sourceChangeKey(targetId, sourceId) {
   return `${targetId}::${sourceId}`;
 }
 
+function collapseSourceChanges(targetId, sourceId) {
+  if (!targetId || !sourceId) {
+    return false;
+  }
+  const key = sourceChangeKey(targetId, sourceId);
+  if (!state.sourceChangeExpanded[key]) {
+    return false;
+  }
+  delete state.sourceChangeExpanded[key];
+  return true;
+}
+
 function clearBackupUiState(key) {
   delete state.backupProgress[key];
   delete state.pauseRequests[key];
@@ -1051,6 +1063,9 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
 
   const target = currentTarget;
   const source = (target?.sources || []).find((entry) => entry.machineId === machineId && entry.sourceId === sourceId);
+  if (collapseSourceChanges(target?.id, sourceId)) {
+    renderSources();
+  }
   if (target && target.collapsed) {
     target.collapsed = false;
     renderTargets();
@@ -1275,8 +1290,10 @@ if (typeof module !== 'undefined') {
   module.exports = {
     __test__: {
       state,
+      collapseSourceChanges,
       renderTargetSourcesTable,
-      renderTargets
+      renderTargets,
+      runBackup
     }
   };
 }

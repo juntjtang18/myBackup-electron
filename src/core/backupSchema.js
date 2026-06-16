@@ -474,8 +474,14 @@ async function updateBackupSource(appDataRoot, targetRoot, machineId, sourceId, 
 
   const { sourceStore, statusStore } = createStoreContext(appDataRoot);
   const { definition, status } = splitMergedSource(merged, source.targetId, now);
-  await sourceStore.save(definition, now);
-  await statusStore.save(status, now);
+  const currentDefinition = await sourceStore.load(sourceId, now);
+  const currentStatus = await statusStore.ensure(sourceId, now);
+  if (!currentDefinition || JSON.stringify(currentDefinition) !== JSON.stringify(definition)) {
+    await sourceStore.save(definition, now);
+  }
+  if (!currentStatus || JSON.stringify(currentStatus) !== JSON.stringify(status)) {
+    await statusStore.save(status, now);
+  }
   return mergeSource(definition, status, now);
 }
 

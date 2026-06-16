@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "machineId": "macbook-pro.local-e98619af",
+  "sourceId": "mybackup-electron-73bf0824",
+  "targetId": "97938548d6f4",
+  "sourcePath": "/Users/James/develop/backup-tool/myBackup-electron",
+  "targetFolder": "",
+  "watchEnabled": true,
+  "backupIntervalMinutes": null,
+  "baselineAt": null,
+  "dirtyRef": "watch/mybackup-electron-73bf0824.dirty.json",
+  "sourceSizeBytes": null,
+  "backupSizeBytes": null,
+  "lastCompletedAt": null,
+  "createdAt": "2026-06-16T06:20:59.495Z",
+  "updatedAt": "2026-06-16T06:53:38.269Z"
+}

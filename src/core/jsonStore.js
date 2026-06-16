@@ -17,7 +17,18 @@ async function readJsonIfExists(filePath, validator) {
     return await readJson(filePath, validator);
   } catch (error) {
     if (error && error.code === 'ENOENT') {
-      return null;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      if (!(await fs.pathExists(filePath))) {
+        return null;
+      }
+      try {
+        return await readJson(filePath, validator);
+      } catch (retryError) {
+        if (retryError && retryError.code === 'ENOENT') {
+          return null;
+        }
+        throw retryError;
+      }
     }
     throw error;
   }

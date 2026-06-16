@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "migratedAt": "2026-06-16T06:08:28.113Z",
-  "mode": "fresh",
-  "importedTargetCount": 0,
-  "importedSourceCount": 0
+  "migratedAt": "2026-06-16T06:53:07.429Z",
+  "mode": "backup-target-imported",
+  "importedTargetCount": 1,
+  "importedSourceCount": 2
 }

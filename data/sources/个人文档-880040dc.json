@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "machineId": "macbook-pro.local-e98619af",
+  "sourceId": "个人文档-880040dc",
+  "targetId": "97938548d6f4",
+  "sourcePath": "/Users/James/Documents/James/个人文档",
+  "targetFolder": "",
+  "watchEnabled": true,
+  "backupIntervalMinutes": null,
+  "baselineAt": "2026-06-16T06:15:07.023Z",
+  "dirtyRef": "watch/个人文档-880040dc.dirty.json",
+  "sourceSizeBytes": 1401287510,
+  "backupSizeBytes": 1401287510,
+  "lastCompletedAt": "2026-06-16T06:20:35.707Z",
+  "createdAt": "2026-06-16T06:10:16.796Z",
+  "updatedAt": "2026-06-16T06:20:35.707Z"
+}

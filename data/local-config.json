@@ -1,9 +1,0 @@
-{
-  "targetRoot": null,
-  "logLevel": "info",
-  "workerPools": {
-    "hash": 6,
-    "copy": 6
-  },
-  "updatedAt": "2026-06-16T06:08:28.044Z"
-}

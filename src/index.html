@@ -1256,6 +1256,32 @@
       user-select: text;
       cursor: text;
       background: #1f1f1f;
+      scrollbar-color: #5a5a5a #1f1f1f;
+      scrollbar-width: thin;
+    }
+
+    .log-list::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+      background: #1f1f1f;
+    }
+
+    .log-list::-webkit-scrollbar-track {
+      background: #1f1f1f;
+    }
+
+    .log-list::-webkit-scrollbar-thumb {
+      background: #5a5a5a;
+      border-radius: 0;
+      border: 0;
+    }
+
+    .log-list::-webkit-scrollbar-thumb:hover {
+      background: #6b6b6b;
+    }
+
+    .log-list::-webkit-scrollbar-corner {
+      background: #1f1f1f;
     }
 
     .log-line {

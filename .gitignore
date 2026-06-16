@@ -1,7 +1,4 @@
 dist/
 node_modules/
 bootstrap-5.3.3-dist/
-backup_target.json
-schema-migration.json
-data/run/
-data/watch/
+data/

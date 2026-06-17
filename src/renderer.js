@@ -469,6 +469,30 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
+function formatAnimationSeconds(value) {
+  if (!Number.isFinite(value)) {
+    return '0s';
+  }
+  return `${value.toFixed(3)}s`;
+}
+
+function buildSourceArrowPhaseStyle(progressEntry) {
+  const startedAtValue = progressEntry?.progress?.startedAt || null;
+  if (!startedAtValue) {
+    return '';
+  }
+
+  const startedAt = new Date(startedAtValue).getTime();
+  if (!Number.isFinite(startedAt)) {
+    return '';
+  }
+
+  const cycleMs = 1750;
+  const elapsedMs = Math.max(0, Date.now() - startedAt);
+  const phaseSeconds = -((elapsedMs % cycleMs) / 1000);
+  return ` style="--arrow-phase:${formatAnimationSeconds(phaseSeconds)}"`;
+}
+
 function renderProgressPanel(targetRoot, source) {
   const key = progressKey(targetRoot, source.machineId, source.sourceId);
   const entry = state.backupProgress[key];
@@ -517,6 +541,7 @@ function renderTargetSourcesTable(target) {
       ? 'btn-outline-warning'
       : (requiresFullBackup ? 'btn-outline-warning' : 'btn-outline-primary');
     const backupDisabled = targetUnavailable || Boolean(activeProgress);
+    const isCopying = Boolean(activeProgress) && !pauseRequested && !isPausing;
     const targetRootLabel = source.targetSubdir;
     const sourceSizeLabel = source.sourceSizeBytes === null || source.sourceSizeBytes === undefined
       ? '-'
@@ -524,10 +549,11 @@ function renderTargetSourcesTable(target) {
     const sourceChangeEntry = state.sourceChanges[changeKey];
     const sourceChangeCount = sourceChangeEntry?.data?.items?.length || 0;
     const sourceChangeLabel = sourceChangeCount > 0 ? `Changes (${sourceChangeCount})` : 'Changes';
+    const arrowPhaseStyle = isCopying ? buildSourceArrowPhaseStyle(activeProgress) : '';
 
     return `
       <div class="source-card-stack">
-        <article class="source-card" data-source-id="${escapeHtml(source.sourceId)}">
+        <article class="source-card${isCopying ? ' is-copying' : ''}" data-source-id="${escapeHtml(source.sourceId)}">
           <div class="source-card-top">
             <section class="source-card-side source-card-target">
               <div class="source-card-label">Target</div>
@@ -535,11 +561,12 @@ function renderTargetSourcesTable(target) {
             </section>
             <section class="source-card-center">
               <div class="source-card-size">${escapeHtml(sourceSizeLabel)}</div>
-              <div class="source-card-arrow" aria-hidden="true">
-                <svg viewBox="0 0 132 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M118 9H44"></path>
-                  <path d="M54 4L44 9L54 14"></path>
-                </svg>
+              <div class="source-card-arrow${isCopying ? ' is-copying' : ''}" aria-hidden="true"${arrowPhaseStyle}>
+                <span class="source-card-arrow-shaft"></span>
+                <span class="source-card-arrow-head"></span>
+                <span class="source-card-arrow-dot source-card-arrow-dot-1"></span>
+                <span class="source-card-arrow-dot source-card-arrow-dot-2"></span>
+                <span class="source-card-arrow-dot source-card-arrow-dot-3"></span>
               </div>
             </section>
             <section class="source-card-side source-card-source">
@@ -1078,6 +1105,7 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
       machineId,
       sourceId,
       progress: {
+        startedAt: new Date().toISOString(),
         status: 'running',
         filesProcessed: 0,
         filesCopied: 0,

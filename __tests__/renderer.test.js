@@ -138,4 +138,32 @@ describe('renderer target offline behavior', () => {
       forceNewScan: false
     });
   });
+
+  test('active backup renders the source card arrow in copying state', () => {
+    const testApi = loadRendererTestApi();
+    testApi.state.dashboard.targets = [createTarget()];
+    testApi.state.backupProgress['/Volumes/ST/Backup::machine-a::source-a'] = {
+      targetRoot: '/Volumes/ST/Backup',
+      machineId: 'machine-a',
+      sourceId: 'source-a',
+      progress: {
+        startedAt: '2026-06-16T07:00:00.000Z',
+        status: 'running',
+        filesProcessed: 1,
+        filesCopied: 1,
+        copiedBytes: 128,
+        workers: {}
+      },
+      event: null
+    };
+
+    testApi.renderTargets();
+
+    expect(targetsContainer.innerHTML).toContain('source-card is-copying');
+    expect(targetsContainer.innerHTML).toContain('source-card-arrow is-copying');
+    expect(targetsContainer.innerHTML).toContain('--arrow-phase:');
+    expect(targetsContainer.innerHTML).toContain('source-card-arrow-dot-1');
+    expect(targetsContainer.innerHTML).toContain('source-card-arrow-dot-2');
+    expect(targetsContainer.innerHTML).toContain('source-card-arrow-dot-3');
+  });
 });

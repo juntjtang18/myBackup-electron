@@ -583,6 +583,13 @@
       background: #ffffff;
       padding: 14px 22px 14px;
       box-shadow: 0 1px 0 rgba(255, 255, 255, 0.85) inset;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+    }
+
+    .source-card.is-copying {
+      border-color: #c9d7f3;
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.85) inset, 0 0 0 1px rgba(99, 102, 241, 0.08);
+      background: linear-gradient(180deg, #ffffff 0%, #fafcff 100%);
     }
 
     .source-card-top {
@@ -626,7 +633,7 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
       color: #a6b2c3;
       padding-top: 2px;
     }
@@ -640,18 +647,107 @@
     }
 
     .source-card-arrow {
-      width: 132px;
-      height: 18px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
+      position: relative;
+      --arrow-phase: 0s;
+      width: 160px;
+      height: 24px;
+      display: block;
       color: #b4bfce;
+      overflow: hidden;
     }
 
-    .source-card-arrow svg {
-      width: 132px;
-      height: 18px;
-      display: block;
+    .source-card-arrow-shaft {
+      position: absolute;
+      left: 32px;
+      right: 10px;
+      top: 11px;
+      height: 2px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(203, 213, 225, 0.1) 0%, #cbd5e1 18%, #d8e0ea 100%);
+    }
+
+    .source-card-arrow-head {
+      position: absolute;
+      left: 14px;
+      top: 6px;
+      width: 12px;
+      height: 12px;
+      border-left: 2px solid currentColor;
+      border-bottom: 2px solid currentColor;
+      transform: rotate(45deg);
+      color: #aab6c7;
+    }
+
+    .source-card-arrow-dot {
+      position: absolute;
+      top: 7px;
+      right: 14px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      opacity: 0;
+      transform: translateX(0);
+      background: #7c90cf;
+      box-shadow: 0 0 0 3px rgba(124, 144, 207, 0.16);
+    }
+
+    .source-card-arrow.is-copying .source-card-arrow-shaft {
+      background:
+        linear-gradient(90deg, rgba(124, 144, 207, 0.16) 0%, rgba(124, 144, 207, 0.38) 14%, rgba(124, 144, 207, 0.1) 100%);
+    }
+
+    .source-card-arrow.is-copying .source-card-arrow-head {
+      animation: source-card-arrow-head-pulse 1.75s ease-out infinite;
+      animation-delay: var(--arrow-phase);
+    }
+
+    .source-card-arrow.is-copying .source-card-arrow-dot {
+      animation: source-card-arrow-flow 1.75s linear infinite;
+      animation-delay: calc(var(--arrow-phase) + var(--arrow-dot-delay, 0s));
+    }
+
+    .source-card-arrow.is-copying .source-card-arrow-dot-2 {
+      --arrow-dot-delay: 0.24s;
+    }
+
+    .source-card-arrow.is-copying .source-card-arrow-dot-3 {
+      --arrow-dot-delay: 0.48s;
+    }
+
+    @keyframes source-card-arrow-flow {
+      0% {
+        opacity: 0;
+        transform: translateX(0);
+      }
+      10% {
+        opacity: 1;
+      }
+      92% {
+        opacity: 1;
+      }
+      98% {
+        opacity: 1;
+      }
+      100% {
+        opacity: 0;
+        transform: translateX(-124px);
+      }
+    }
+
+    @keyframes source-card-arrow-head-pulse {
+      0%,
+      88% {
+        color: #aab6c7;
+        filter: none;
+      }
+      96% {
+        color: #7c90cf;
+        filter: drop-shadow(0 0 3px rgba(124, 144, 207, 0.35));
+      }
+      100% {
+        color: #9aa7bb;
+        filter: none;
+      }
     }
 
     .source-card-bottom {

@@ -6,6 +6,7 @@ const {
   backupSchemaPath,
   backupSourcesPath,
   dirtyStatePath,
+  sourceStatusPath,
 } = require('../src/core/paths');
 const {
   configPath,
@@ -1728,6 +1729,11 @@ describe('metadata foundation', () => {
 
     expect(summary.status).toBe('paused');
     expect(summary.filesCopied).toBe(0);
+    const pausedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(pausedSource.backupStatus).toMatchObject({
+      status: 'paused',
+      copiedBytes: 0
+    });
     expect(await cleanupTempFiles(tempRootPath)).toBe(0);
     expect(await fs.pathExists(path.join(
       tempRootPath,
@@ -1738,6 +1744,56 @@ describe('metadata foundation', () => {
       'docs',
       'big.bin'
     ))).toBe(false);
+  });
+
+  test('coalesces running checkpoint writes and persists pause bytes correctly', async () => {
+    const sourceRoot = path.join(tempRootPath, 'persist-after-file-source');
+    const firstContent = Buffer.alloc(4096, 'a');
+    const secondContent = Buffer.alloc(4 * 1024 * 1024, 'b');
+    writeFixture(path.join(sourceRoot, 'docs', 'a-first.bin'), firstContent);
+    writeFixture(path.join(sourceRoot, 'docs', 'z-second.bin'), secondContent);
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'persist-after-file-host',
+      seed: 'persist-after-file-seed',
+      now: new Date('2026-06-09T09:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-09T09:05:00Z'));
+
+    let pauseRequested = false;
+    const summary = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-09T09:10:00Z'),
+      forceNewScan: true,
+      initialWorkers: 1,
+      stageChunkSize: 64 * 1024,
+      shouldPause: () => pauseRequested,
+      onProgress: (payload) => {
+        if (payload.event?.type !== 'file-progress'
+          || payload.event.sourceRelativePath !== 'docs/z-second.bin'
+          || payload.progress?.status !== 'running') {
+          return;
+        }
+        const statusDocument = fs.readJsonSync(sourceStatusPath(tempRootPath, source.sourceId));
+        expect(typeof statusDocument.status.copiedBytes).toBe('number');
+        pauseRequested = true;
+      }
+    });
+
+    expect(summary.status).toBe('paused');
+    expect(summary.filesCopied).toBe(1);
+    const pausedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(pausedSource.backupStatus).toMatchObject({
+      status: 'paused',
+      copiedBytes: firstContent.length
+    });
+    expect(await cleanupTempFiles(tempRootPath)).toBe(0);
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'a-first.bin'))).toBe(true);
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'z-second.bin'))).toBe(false);
   });
 
   test('backup start removes stale temp debris from previous crash', async () => {
@@ -1902,6 +1958,61 @@ describe('metadata foundation', () => {
 
     expect(await fs.readFile(targetFilePath(tempRootPath, source, 'a', 'one.txt'), 'utf8')).toBe('one');
     expect(await fs.readFile(targetFilePath(tempRootPath, source, 'b', 'two.txt'), 'utf8')).toBe('two');
+  });
+
+  test('resumed backup progress starts from persisted copied bytes', async () => {
+    const sourceRoot = path.join(tempRootPath, 'resume-copied-bytes-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha');
+    writeFixture(path.join(sourceRoot, 'docs', 'b.txt'), 'beta');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'resume-copied-bytes-host',
+      seed: 'resume-copied-bytes-seed',
+      now: new Date('2026-06-10T08:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-10T08:05:00Z'));
+
+    await updateBackupSource(
+      tempRootPath,
+      tempRootPath,
+      machine.machineId,
+      source.sourceId,
+      (current) => ({
+        backupStatus: {
+          ...(current.backupStatus || {}),
+          status: 'paused',
+          mode: 'full',
+          runId: '20260610-081000',
+          copiedBytes: 5,
+          startedAt: '2026-06-10T08:10:00.000Z',
+          cursor: {
+            backupId: '20260610-081000',
+            relativePath: '.',
+            folderHash: createFolderHash('.'),
+            status: 'paused',
+            updatedAt: '2026-06-10T08:10:00.000Z'
+          }
+        }
+      }),
+      new Date('2026-06-10T08:10:00Z')
+    );
+
+    const progressEvents = [];
+    const completed = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-10T08:20:00Z'),
+      onProgress: (payload) => progressEvents.push(payload)
+    });
+
+    expect(completed.status).toBe('completed');
+    const started = progressEvents.find((payload) => payload.event?.type === 'backup-started');
+    expect(started.progress.copiedBytes).toBe(5);
+    expect(started.summary.copiedBytes).toBe(5);
+    expect(completed.scanId).toBe('20260610-081000');
   });
 
   test('second backup skips unchanged files and overwrites changed files for separated sources', async () => {

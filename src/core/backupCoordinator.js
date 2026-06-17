@@ -14,6 +14,7 @@ const { processFileTask } = require('./engine/fileTaskProcessor');
 const { ChangeTracker } = require('./changeTracking/ChangeTracker');
 const { createScanId } = require('./ids');
 const { createLogger } = require('./logger');
+const { createStatusCheckpointWriter } = require('./statusCheckpointWriter');
 
 const logger = createLogger('BackupCoordinator', 'backupCoordinator.js');
 
@@ -172,6 +173,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     startedAt: nowIso(now),
     status: 'running',
     mode,
+    resumed: false,
     foldersProcessed: 0,
     filesProcessed: 0,
     filesCopied: 0,
@@ -253,6 +255,8 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       scanId,
       backupId: scanId,
       resumed,
+      copiedBytesReadFromStatus: Number(existingBackupStatus?.copiedBytes || 0),
+      copiedBytesInitialized: Number(backupStatus.copiedBytes || 0),
       cursor: resumeFrom
         ? {
             relativePath: resumeFrom.relativePath,
@@ -272,6 +276,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       && existingBackupStatus.cursor.relativePath)
       ? existingBackupStatus.cursor.relativePath
       : null;
+    resumed = Boolean(resumeFrom);
     selectedDirtyFolders = selectDirtyFolders(dirtyStateSnapshot.legacyDirtyState, dirtyScanSeq, resumeFrom)
       .map((entry) => entry.relativePath);
     scanId = existingBackupStatus && existingBackupStatus.mode === 'incremental' && existingBackupStatus.status === 'paused'
@@ -299,6 +304,17 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         error: null
       }
     }), now)).backupStatus;
+    logger.info('Resume run initialized.', {
+      machineId,
+      sourceId,
+      scanId,
+      backupId: scanId,
+      resumed,
+      mode: 'incremental',
+      copiedBytesReadFromStatus: Number(existingBackupStatus?.copiedBytes || 0),
+      copiedBytesInitialized: Number(backupStatus.copiedBytes || 0),
+      cursor: resumeFrom ? { relativePath: resumeFrom } : null
+    });
   }
 
   summary.scanId = scanId;
@@ -307,6 +323,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   summary.reportPath = errorReport.reportPath;
   progress.scanId = scanId;
   progress.copiedBytes = summary.copiedBytes;
+  progress.resumed = resumed;
 
   function refreshQueues() {
     const fileSnapshot = fileQueue.snapshot();
@@ -386,6 +403,26 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     backupStatus = updated.backupStatus;
     return updated;
   }
+  let checkpointCursor = backupStatus.cursor ? cloneBackupCursor(backupStatus.cursor, now) : null;
+  const statusCheckpointWriter = createStatusCheckpointWriter({
+    buildSnapshot: () => ({
+      status: 'running',
+      copiedBytes: summary.copiedBytes,
+      cursor: checkpointCursor,
+      scanSeq: dirtyScanSeq
+    }),
+    persistSnapshot: async (snapshot, snapshotNow) => {
+      await persistBackupStatusState(snapshot, snapshotNow);
+      logger.debug('Persisted coalesced running checkpoint.', {
+        machineId,
+        sourceId,
+        scanId,
+        copiedBytes: snapshot.copiedBytes,
+        cursor: snapshot.cursor ? snapshot.cursor.relativePath : null
+      });
+    },
+    nowFactory: () => new Date()
+  });
 
   function updateCompletedResult(result, stats) {
     if (!result) {
@@ -405,6 +442,17 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     progress.copiedBytes = summary.copiedBytes;
     progress.filesIndexed = summary.filesIndexed;
     progress.conflicts = summary.conflicts;
+    if (resumed) {
+      logger.info('Resume copied bytes trace: accumulated completed file bytes.', {
+        machineId,
+        sourceId,
+        scanId,
+        sourceRelativePath: result.sourceRelativePath || null,
+        bytesProcessed: result.bytesProcessed || 0,
+        copiedBytesAccumulated: summary.copiedBytes,
+        resumed
+      });
+    }
   }
 
   async function handleFileError(error, fileItem) {
@@ -450,10 +498,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     });
 
     return tracked
-      .then((result) => {
-        updateCompletedResult(result, fileItem.stats);
-        return result;
-      })
+      .then((result) => result)
       .catch((error) => handleFileError(error, fileItem));
   }
 
@@ -496,6 +541,8 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           return null;
         }
 
+        updateCompletedResult(result, item.stats);
+        statusCheckpointWriter.markDirty();
         item.resolveFile(result);
         throughputBytesProcessed += result.bytesProcessed || 0;
         progress.throughputBytesPerSecond = Date.now() > startedAt
@@ -615,16 +662,13 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       filesCopied: summary.filesCopied
     });
 
-    await persistBackupStatusState({
-      status: 'running',
-      copiedBytes: summary.copiedBytes,
-      cursor: {
-        backupId: scanId,
-        relativePath: folder.relativePath,
-        folderHash,
-        status: 'running'
-      }
-    }, now);
+    checkpointCursor = {
+      backupId: scanId,
+      relativePath: folder.relativePath,
+      folderHash,
+      status: 'running'
+    };
+    statusCheckpointWriter.markDirty();
   }
 
   async function handleFolderCompleted(folder) {
@@ -639,10 +683,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     if (mode === 'incremental') {
       completedDirtyFolders.add(folder.relativePath);
       await changeTracker.clearChangeIfUnchanged(source, folder.relativePath, dirtyScanSeq, now);
-      await persistBackupStatusState({
-        copiedBytes: summary.copiedBytes,
-        scanSeq: dirtyScanSeq
-      }, now);
+      statusCheckpointWriter.markDirty();
     }
 
     emitProgress({ type: 'folder-completed', relativePath: folder.relativePath }, true);
@@ -663,10 +704,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     if (mode === 'incremental') {
       completedDirtyFolders.add(folder.relativePath);
       await changeTracker.clearChangeIfUnchanged(source, folder.relativePath, dirtyScanSeq, now);
-      await persistBackupStatusState({
-        copiedBytes: summary.copiedBytes,
-        scanSeq: dirtyScanSeq
-      }, now);
+      statusCheckpointWriter.markDirty();
     }
     emitProgress({ type: 'folder-skipped', relativePath: folder.relativePath }, true);
   }
@@ -760,6 +798,17 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         folderHash: backupStatus.cursor.folderHash || createFolderHash(backupStatus.cursor.relativePath)
       } : null);
 
+    await statusCheckpointWriter.flushPending();
+    const pauseCleanedTempFiles = await cleanupTempFiles(targetRoot);
+    if (pauseCleanedTempFiles > 0) {
+      logger.info('Pause: removed unfinished temp files.', {
+        machineId,
+        sourceId,
+        scanId,
+        pauseCleanedTempFiles
+      });
+    }
+
     await persistBackupStatusState({
       status: 'paused',
       copiedBytes: summary.copiedBytes,
@@ -770,7 +819,8 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         status: 'paused'
       } : null,
       scanSeq: dirtyScanSeq
-    }, now);
+    }, new Date());
+    await statusCheckpointWriter.close();
     progress.status = 'paused';
     delete progress.pausePhase;
     emitProgress({ type: 'backup-paused' }, true);
@@ -791,12 +841,14 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     await changeTracker.clearAfterFullBackup(source, now);
   }
 
+  await statusCheckpointWriter.flushPending();
   await persistBackupStatusState({
       status: 'completed',
       copiedBytes: summary.copiedBytes,
       cursor: null,
       completedAt: nowIso(now)
-  }, now);
+  }, new Date());
+  await statusCheckpointWriter.close();
 
   const backupSizeBytes = mode === 'full'
     ? discoveredSourceBytes

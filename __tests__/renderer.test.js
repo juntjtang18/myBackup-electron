@@ -14,6 +14,7 @@ describe('renderer target offline behavior', () => {
       myBackupProgressPanel: null,
       myBackup: {
         runBackup: jest.fn(async () => ({ dashboard: { targets: [] }, summary: { status: 'completed' } })),
+        pauseBackup: jest.fn(async () => ({ accepted: true })),
         setTargetCollapsed: jest.fn(() => Promise.resolve())
       }
     };
@@ -161,9 +162,86 @@ describe('renderer target offline behavior', () => {
 
     expect(targetsContainer.innerHTML).toContain('source-card is-copying');
     expect(targetsContainer.innerHTML).toContain('source-card-arrow is-copying');
+    expect(targetsContainer.innerHTML).toContain('source-progress-node is-live');
+    expect(targetsContainer.innerHTML).toContain('source-progress-node-size">128 B');
     expect(targetsContainer.innerHTML).toContain('--arrow-phase:');
     expect(targetsContainer.innerHTML).toContain('source-card-arrow-dot-1');
     expect(targetsContainer.innerHTML).toContain('source-card-arrow-dot-2');
     expect(targetsContainer.innerHTML).toContain('source-card-arrow-dot-3');
+  });
+
+  test('active backup progress panel only opens from progress circle', () => {
+    const testApi = loadRendererTestApi();
+    global.window.myBackupProgressPanel = {
+      renderBackupProgressPanel: jest.fn(() => '<div class="source-progress-panel">progress details</div>'),
+      normalizeProgress: jest.fn(() => ({
+        summary: { status: 'running' },
+        fileProgress: { workers: [], queue: { waitingItems: [], activeItems: [] } }
+      })),
+      shouldRenderImmediatelyForProgress: jest.fn(() => true)
+    };
+    const key = '/Volumes/ST/Backup::machine-a::source-a';
+    testApi.state.dashboard.targets = [createTarget()];
+    testApi.state.backupProgress[key] = {
+      targetRoot: '/Volumes/ST/Backup',
+      machineId: 'machine-a',
+      sourceId: 'source-a',
+      progress: {
+        startedAt: '2026-06-16T07:00:00.000Z',
+        status: 'running',
+        filesProcessed: 1,
+        filesCopied: 1,
+        copiedBytes: 128,
+        workers: {}
+      },
+      event: null
+    };
+
+    testApi.renderTargets();
+
+    expect(targetsContainer.innerHTML).toContain('source-progress-node is-live');
+    expect(targetsContainer.innerHTML).not.toContain('source-progress-panel');
+    expect(global.window.myBackupProgressPanel.renderBackupProgressPanel).not.toHaveBeenCalled();
+
+    testApi.openSourceProgressPanel('/Volumes/ST/Backup', 'machine-a', 'source-a');
+
+    expect(testApi.state.progressPanelExpanded[key]).toBe(true);
+    expect(targetsContainer.innerHTML).toContain('source-progress-panel');
+    expect(global.window.myBackupProgressPanel.renderBackupProgressPanel).toHaveBeenCalled();
+  });
+
+  test('active backup keeps pause button enabled and sends pause request', async () => {
+    const testApi = loadRendererTestApi();
+    testApi.state.dashboard.targets = [createTarget()];
+    const key = '/Volumes/ST/Backup::machine-a::source-a';
+    testApi.state.backupProgress[key] = {
+      targetRoot: '/Volumes/ST/Backup',
+      machineId: 'machine-a',
+      sourceId: 'source-a',
+      progress: {
+        startedAt: '2026-06-16T07:00:00.000Z',
+        status: 'running',
+        filesProcessed: 1,
+        filesCopied: 1,
+        copiedBytes: 128,
+        workers: {}
+      },
+      event: null
+    };
+
+    testApi.renderTargets();
+
+    expect(targetsContainer.innerHTML).toContain('>Pause<');
+    expect(targetsContainer.innerHTML).not.toMatch(/run-backup-button"[^>]*disabled/);
+
+    await testApi.runBackup('/Volumes/ST/Backup', 'machine-a', 'source-a');
+
+    expect(testApi.state.pauseRequests[key]).toBe(true);
+    expect(global.window.myBackup.pauseBackup).toHaveBeenCalledWith({
+      targetRoot: '/Volumes/ST/Backup',
+      machineId: 'machine-a',
+      sourceId: 'source-a'
+    });
+    expect(global.window.myBackup.runBackup).not.toHaveBeenCalled();
   });
 });

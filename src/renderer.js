@@ -7,6 +7,7 @@ const state = {
   logs: [],
   backupProgress: {},
   pauseRequests: {},
+  progressPanelExpanded: {},
   sourceDeleteExpanded: {},
   sourceChangeExpanded: {},
   sourceChanges: {},
@@ -48,6 +49,7 @@ function collapseSourceChanges(targetId, sourceId) {
 function clearBackupUiState(key) {
   delete state.backupProgress[key];
   delete state.pauseRequests[key];
+  delete state.progressPanelExpanded[key];
   delete state.lastProgressTraceAt[key];
 }
 
@@ -67,6 +69,89 @@ const TARGET_HEADER_ICON = `
     </svg>
   </span>
 `;
+
+const BUTTON_ICON_PLUS = `
+  <span class="btn-icon" aria-hidden="true">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+      <path d="M8 3.25v9.5"></path>
+      <path d="M3.25 8h9.5"></path>
+    </svg>
+  </span>
+`;
+
+const BUTTON_ICON_TRASH = `
+  <span class="btn-icon" aria-hidden="true">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3.5 4.5h9"></path>
+      <path d="M6.25 2.75h3.5"></path>
+      <path d="M5 4.5v7.25c0 .55.45 1 1 1h4c.55 0 1-.45 1-1V4.5"></path>
+      <path d="M6.75 6.5v4"></path>
+      <path d="M9.25 6.5v4"></path>
+    </svg>
+  </span>
+`;
+
+const BUTTON_ICON_GEAR = `
+  <span class="btn-icon" aria-hidden="true">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 2.75l1 .4.95-.3.85 1.45-.65.75.1 1 .8.55-.3 1.65-1 .15-.7.7.15 1-.95.8-.9-.45-.95.25-.5.95H7l-.5-.95-.95-.25-.9.45-.95-.8.15-1-.7-.7-1-.15-.3-1.65.8-.55.1-1-.65-.75.85-1.45.95.3z"></path>
+      <circle cx="8" cy="8" r="1.9"></circle>
+    </svg>
+  </span>
+`;
+
+const BUTTON_ICON_CHANGES = `
+  <span class="btn-icon" aria-hidden="true">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="5" cy="4" r="1.55"></circle>
+      <circle cx="11" cy="12" r="1.55"></circle>
+      <path d="M6.55 4H9.5c.85 0 1.5.65 1.5 1.5v4.95"></path>
+      <path d="M9.25 8.7 11 10.45l1.75-1.75"></path>
+      <path d="M9.45 12H6.5c-.85 0-1.5-.65-1.5-1.5V5.55"></path>
+      <path d="M6.75 7.3 5 5.55 3.25 7.3"></path>
+    </svg>
+  </span>
+`;
+
+const BUTTON_ICON_BACKUP = `
+  <span class="btn-icon" aria-hidden="true">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M13 8A5 5 0 1 1 8 3"></path>
+      <path d="M10.75 3H13v2.25"></path>
+      <path d="M13 3L9.75 6.25"></path>
+    </svg>
+  </span>
+`;
+
+const BUTTON_ICON_PLAY = `
+  <span class="btn-icon" aria-hidden="true">
+    <svg viewBox="0 0 16 16" fill="currentColor">
+      <path d="M5 3.75v8.5a.45.45 0 0 0 .7.38l6.1-4.25a.45.45 0 0 0 0-.76L5.7 3.37a.45.45 0 0 0-.7.38z"></path>
+    </svg>
+  </span>
+`;
+
+const BUTTON_ICON_PAUSE = `
+  <span class="btn-icon" aria-hidden="true">
+    <svg viewBox="0 0 16 16" fill="currentColor">
+      <path d="M5 3.5h2.1v9H5z"></path>
+      <path d="M8.9 3.5H11v9H8.9z"></path>
+    </svg>
+  </span>
+`;
+
+const BUTTON_ICON_RESTORE = `
+  <span class="btn-icon" aria-hidden="true">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 5.25H2.75V3"></path>
+      <path d="M2.9 5.15A5.25 5.25 0 1 1 3.5 11.5"></path>
+    </svg>
+  </span>
+`;
+
+function withButtonIcon(icon, text) {
+  return `${icon}<span class="btn-label">${escapeHtml(text)}</span>`;
+}
 
 function formatTargetHeaderLabel(targetPath, maxLength = 60) {
   const name = pathBasename(targetPath);
@@ -496,7 +581,7 @@ function buildSourceArrowPhaseStyle(progressEntry) {
 function renderProgressPanel(targetRoot, source) {
   const key = progressKey(targetRoot, source.machineId, source.sourceId);
   const entry = state.backupProgress[key];
-  if (!entry || !entry.progress || !window.myBackupProgressPanel) {
+  if (!entry || !entry.progress || !state.progressPanelExpanded[key] || !window.myBackupProgressPanel) {
     return '';
   }
 
@@ -509,6 +594,25 @@ function renderProgressPanel(targetRoot, source) {
   });
   traceProgressPanelRendered(key, entry, html);
   return html;
+}
+
+function getBackedUpSizeLabel(source, activeProgress) {
+  const copiedBytes = activeProgress?.progress?.copiedBytes;
+  if (Number.isFinite(Number(copiedBytes))) {
+    return formatBytes(Number(copiedBytes));
+  }
+
+  const statusCopiedBytes = source.backupStatus?.copiedBytes;
+  if (Number.isFinite(Number(statusCopiedBytes)) && Number(statusCopiedBytes) > 0) {
+    return formatBytes(Number(statusCopiedBytes));
+  }
+
+  const backupSizeBytes = source.backupSizeBytes;
+  if (Number.isFinite(Number(backupSizeBytes)) && Number(backupSizeBytes) > 0) {
+    return formatBytes(Number(backupSizeBytes));
+  }
+
+  return '0 B';
 }
 
 function renderTargetSourcesTable(target) {
@@ -540,12 +644,10 @@ function renderTargetSourcesTable(target) {
     const backupClass = activeProgress
       ? 'btn-outline-warning'
       : (requiresFullBackup ? 'btn-outline-warning' : 'btn-outline-primary');
-    const backupDisabled = targetUnavailable || Boolean(activeProgress);
+    const backupDisabled = targetUnavailable || Boolean(pauseRequested) || isPausing;
     const isCopying = Boolean(activeProgress) && !pauseRequested && !isPausing;
     const targetRootLabel = source.targetSubdir;
-    const sourceSizeLabel = source.sourceSizeBytes === null || source.sourceSizeBytes === undefined
-      ? '-'
-      : formatBytes(source.sourceSizeBytes);
+    const backedUpSizeLabel = getBackedUpSizeLabel(source, activeProgress);
     const sourceChangeEntry = state.sourceChanges[changeKey];
     const sourceChangeCount = sourceChangeEntry?.data?.items?.length || 0;
     const sourceChangeLabel = sourceChangeCount > 0 ? `Changes (${sourceChangeCount})` : 'Changes';
@@ -560,13 +662,17 @@ function renderTargetSourcesTable(target) {
               <div class="source-card-path" title="${escapeHtml(targetRootLabel)}">${escapeHtml(targetRootLabel)}</div>
             </section>
             <section class="source-card-center">
-              <div class="source-card-size">${escapeHtml(sourceSizeLabel)}</div>
-              <div class="source-card-arrow${isCopying ? ' is-copying' : ''}" aria-hidden="true"${arrowPhaseStyle}>
-                <span class="source-card-arrow-shaft"></span>
-                <span class="source-card-arrow-head"></span>
-                <span class="source-card-arrow-dot source-card-arrow-dot-1"></span>
-                <span class="source-card-arrow-dot source-card-arrow-dot-2"></span>
-                <span class="source-card-arrow-dot source-card-arrow-dot-3"></span>
+              <div class="source-card-transfer">
+                <div class="source-card-arrow${isCopying ? ' is-copying' : ''}" aria-hidden="true"${arrowPhaseStyle}>
+                  <span class="source-card-arrow-shaft"></span>
+                  <span class="source-card-arrow-head"></span>
+                  <span class="source-card-arrow-dot source-card-arrow-dot-1"></span>
+                  <span class="source-card-arrow-dot source-card-arrow-dot-2"></span>
+                  <span class="source-card-arrow-dot source-card-arrow-dot-3"></span>
+                </div>
+                <button type="button" class="source-progress-node${isCopying ? ' is-live' : ''}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="Open backup progress">
+                  <span class="source-progress-node-size">${escapeHtml(backedUpSizeLabel)}</span>
+                </button>
               </div>
             </section>
             <section class="source-card-side source-card-source">
@@ -574,6 +680,7 @@ function renderTargetSourcesTable(target) {
               <div class="source-card-path" title="${escapeHtml(source.sourcePath)}">${escapeHtml(source.sourcePath)}</div>
             </section>
           </div>
+          <div class="source-card-divider" aria-hidden="true"></div>
           <div class="source-card-bottom">
             <div class="source-card-meta">
               <div class="source-card-backup-line">
@@ -587,10 +694,10 @@ function renderTargetSourcesTable(target) {
               </div>
             </div>
             <div class="actions-row">
-              <button class="btn btn-sm btn-outline-secondary btn-action btn-action-changes toggle-changes-button${state.sourceChangeExpanded[changeKey] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(sourceChangeLabel)}">${escapeHtml(sourceChangeLabel)}</button>
-              <button class="btn btn-sm ${backupClass} btn-action btn-action-backup run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(backupLabel)}"${backupDisabled ? ' disabled' : ''}>${backupLabel}</button>
-              <button class="btn btn-sm btn-outline-secondary btn-action btn-action-restore restore-source-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${restoreDisabled ? ' disabled' : ''}>Restore</button>
-              ${showDeleteButtons ? `<button class="btn btn-sm btn-outline-danger btn-action btn-action-delete delete-source-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}"${deleteDisabled ? ' disabled' : ''}>Delete</button>` : ''}
+              <button class="btn btn-sm btn-outline-secondary btn-action btn-action-changes toggle-changes-button${state.sourceChangeExpanded[changeKey] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(sourceChangeLabel)}">${withButtonIcon(BUTTON_ICON_CHANGES, sourceChangeLabel)}</button>
+              <button class="btn btn-sm ${backupClass} btn-action btn-action-backup run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(backupLabel)}"${backupDisabled ? ' disabled' : ''}>${withButtonIcon(activeProgress ? BUTTON_ICON_PAUSE : pausedCursor ? BUTTON_ICON_PLAY : BUTTON_ICON_BACKUP, backupLabel)}</button>
+              <button class="btn btn-sm btn-outline-secondary btn-action btn-action-restore restore-source-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${restoreDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_RESTORE, 'Restore')}</button>
+              ${showDeleteButtons ? `<button class="btn btn-sm btn-outline-danger btn-action btn-action-delete delete-source-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}"${deleteDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_TRASH, 'Delete')}</button>` : ''}
             </div>
           </div>
         </article>
@@ -648,6 +755,17 @@ function bindTargetPanelActions(container) {
       button.dataset.sourceId,
       button
     ));
+  });
+
+  container.querySelectorAll('.source-progress-node').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      openSourceProgressPanel(
+        button.dataset.targetRoot,
+        button.dataset.machineId,
+        button.dataset.sourceId
+      );
+    });
   });
 
   container.querySelectorAll('.toggle-changes-button').forEach((button) => {
@@ -711,9 +829,9 @@ function renderTargets() {
             <span class="target-count-badge">${sourceCount} source${sourceCount === 1 ? '' : 's'}</span>
           </div>
           <div class="target-panel-actions">
-            <button type="button" class="btn-target-action add-source-button" data-target-root="${escapeHtml(target.path)}">+ Source</button>
-            <button type="button" class="btn-target-action danger remove-target-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(target.path)}" title="Remove from list">Remove</button>
-            <button type="button" class="btn-target-action icon-only toggle-source-delete-button${state.sourceDeleteExpanded[target.id] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" title="Toggle source delete mode" aria-label="Toggle source delete mode">⚙</button>
+            <button type="button" class="btn-target-action add-source-button" data-target-root="${escapeHtml(target.path)}">${withButtonIcon(BUTTON_ICON_PLUS, 'Source')}</button>
+            <button type="button" class="btn-target-action danger remove-target-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(target.path)}" title="Remove from list">${withButtonIcon(BUTTON_ICON_TRASH, 'Remove')}</button>
+            <button type="button" class="btn-target-action settings toggle-source-delete-button${state.sourceDeleteExpanded[target.id] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" title="Toggle source delete mode" aria-label="Toggle source delete mode">${withButtonIcon(BUTTON_ICON_GEAR, 'Settings')}</button>
           </div>
         </div>
         <div class="target-panel-body">
@@ -872,6 +990,16 @@ async function removeTarget(targetId, targetRoot) {
 
 function toggleSourceDeleteMode(targetId) {
   state.sourceDeleteExpanded[targetId] = !state.sourceDeleteExpanded[targetId];
+  renderSources();
+}
+
+function openSourceProgressPanel(targetRoot, machineId, sourceId) {
+  const key = progressKey(targetRoot, machineId, sourceId);
+  if (!state.backupProgress[key]) {
+    appendLog('info', 'No active backup progress to show for this source.');
+    return;
+  }
+  state.progressPanelExpanded[key] = true;
   renderSources();
 }
 
@@ -1321,6 +1449,7 @@ if (typeof module !== 'undefined') {
       collapseSourceChanges,
       renderTargetSourcesTable,
       renderTargets,
+      openSourceProgressPanel,
       runBackup
     }
   };

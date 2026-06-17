@@ -68,6 +68,7 @@
 
     /* Title bar / Hero */
     .titlebar {
+      position: relative;
       flex-shrink: 0;
       height: var(--titlebar-h);
       margin: 0;
@@ -159,10 +160,24 @@
     }
 
     .window-controls {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 2;
       display: inline-flex;
       align-items: center;
       gap: 8px;
       flex-shrink: 0;
+      height: var(--titlebar-h);
+      padding-left: 12px;
+    }
+
+    body.platform-darwin .titlebar-inner {
+      padding-left: 84px;
+    }
+
+    body:not(.platform-darwin) .titlebar-inner {
+      padding-left: 156px;
     }
 
     body.platform-darwin .window-controls-win {
@@ -212,7 +227,6 @@
 
     .window-controls-win {
       gap: 0;
-      margin-left: 6px;
       border-radius: 6px;
       overflow: hidden;
       border: 1px solid rgba(255, 255, 255, 0.18);
@@ -653,25 +667,62 @@
 
     .source-card-side {
       min-width: 0;
+    }
+
+    .source-card-path-row {
       display: flex;
-      flex-direction: column;
-      gap: 6px;
+      align-items: center;
+      gap: 9px;
+      min-width: 0;
     }
 
     .source-card-source {
-      text-align: right;
-      align-items: flex-end;
+      display: flex;
+      justify-content: flex-end;
     }
 
-    .source-card-label {
-      font-size: 0.72rem;
-      font-weight: 500;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: #838c9a;
+    .source-card-source .source-card-path-row {
+      width: 100%;
+      justify-content: flex-end;
+    }
+
+    .source-card-source .source-card-path {
+      flex: 1 1 0;
+      text-align: right;
+    }
+
+    .source-card-source .source-card-side-icon {
+      flex-shrink: 0;
+    }
+
+    .source-card-side-icon {
+      flex-shrink: 0;
+      width: 24px;
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 7px;
+    }
+
+    .source-card-side-icon svg {
+      width: 15px;
+      height: 15px;
+      display: block;
+    }
+
+    .source-card-target-icon {
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .source-card-source-icon {
+      color: #4f6b9a;
+      background: #eef3fa;
     }
 
     .source-card-path {
+      min-width: 0;
       font-size: 0.82rem;
       line-height: 1.25;
       color: #1f2937;
@@ -1437,7 +1488,7 @@
     .log-dock-header {
       flex-shrink: 0;
       min-height: 36px;
-      padding: 8px calc(var(--log-toggle-size) + 12px) 8px 8px;
+      padding: 8px calc(2 * var(--log-toggle-size) + 64px + var(--log-dock-control-inset)) 8px 8px;
       font-size: 0.76rem;
       font-weight: 600;
       text-transform: uppercase;
@@ -1445,24 +1496,24 @@
       color: #aeb7c6;
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 10px;
       border-bottom: 1px solid #383838;
     }
 
-    .log-actions {
-      display: flex;
-      align-items: center;
+    .log-dock-controls {
+      position: absolute;
+      top: 6px;
+      right: var(--log-dock-control-inset);
+      z-index: 2;
+      display: inline-flex;
+      align-items: flex-start;
       gap: 6px;
-      text-transform: none;
-      letter-spacing: 0;
-      margin-left: auto;
     }
 
     .log-copy-status {
       color: #8fb6ff;
       font-size: 0.68rem;
       min-width: 42px;
+      line-height: var(--log-toggle-size);
       text-align: right;
     }
 
@@ -1471,8 +1522,10 @@
       display: inline-flex;
       align-items: center;
       justify-content: center;
+      flex-shrink: 0;
+      width: var(--log-toggle-size);
       min-width: var(--log-toggle-size);
-      height: 24px;
+      height: var(--log-toggle-size);
       border: 1px solid #4c5563;
       border-radius: 6px;
       background: #242a32;
@@ -1483,10 +1536,7 @@
     }
 
     .log-toggle-button {
-      position: absolute;
-      top: 6px;
-      right: var(--log-dock-control-inset);
-      z-index: 2;
+      position: static;
     }
 
     .log-copy-button svg,
@@ -1727,8 +1777,13 @@
         order: 2;
       }
       .source-card-source {
+        justify-content: flex-start;
+      }
+      .source-card-source .source-card-path-row {
+        justify-content: flex-start;
+      }
+      .source-card-source .source-card-path {
         text-align: left;
-        align-items: flex-start;
       }
       .source-card-bottom {
         flex-direction: column;
@@ -1742,13 +1797,21 @@
 </head>
 <body>
   <header class="titlebar" id="appTitlebar">
+    <div class="window-controls window-controls-mac" aria-label="Window controls">
+      <button type="button" class="window-control window-control-close" data-window-action="close" aria-label="Close"></button>
+      <button type="button" class="window-control window-control-minimize" data-window-action="minimize" aria-label="Minimize"></button>
+      <button type="button" class="window-control window-control-maximize" data-window-action="maximize" aria-label="Maximize"></button>
+    </div>
+    <div class="window-controls window-controls-win" aria-label="Window controls">
+      <button type="button" class="window-control window-control-minimize" data-window-action="minimize" aria-label="Minimize">&#8722;</button>
+      <button type="button" class="window-control window-control-maximize" data-window-action="maximize" aria-label="Maximize">
+        <span class="window-icon window-icon-maximize" aria-hidden="true">&#9633;</span>
+        <span class="window-icon window-icon-restore" aria-hidden="true">&#10697;</span>
+      </button>
+      <button type="button" class="window-control window-control-close" data-window-action="close" aria-label="Close">&#10005;</button>
+    </div>
     <div class="titlebar-inner">
       <div class="titlebar-left">
-        <div class="window-controls window-controls-mac" aria-label="Window controls">
-          <button type="button" class="window-control window-control-close" data-window-action="close" aria-label="Close"></button>
-          <button type="button" class="window-control window-control-minimize" data-window-action="minimize" aria-label="Minimize"></button>
-          <button type="button" class="window-control window-control-maximize" data-window-action="maximize" aria-label="Maximize"></button>
-        </div>
         <div class="hero-brand">
           <h1 class="hero-title">MyBackup</h1>
           <span class="hero-version">v1.0.0</span>
@@ -1763,14 +1826,6 @@
           <option value="error">error</option>
           <option value="off">off</option>
         </select>
-        <div class="window-controls window-controls-win" aria-label="Window controls">
-          <button type="button" class="window-control window-control-minimize" data-window-action="minimize" aria-label="Minimize">&#8722;</button>
-          <button type="button" class="window-control window-control-maximize" data-window-action="maximize" aria-label="Maximize">
-            <span class="window-icon window-icon-maximize" aria-hidden="true">&#9633;</span>
-            <span class="window-icon window-icon-restore" aria-hidden="true">&#10697;</span>
-          </button>
-          <button type="button" class="window-control window-control-close" data-window-action="close" aria-label="Close">&#10005;</button>
-        </div>
       </div>
     </div>
   </header>
@@ -1789,24 +1844,24 @@
     <div class="log-dock-inner">
       <div class="log-dock-header">
         <span>Activity</span>
-        <div class="log-actions">
-          <span class="log-copy-status" id="logCopyStatus" aria-live="polite"></span>
-          <button type="button" class="log-copy-button" id="copyLogsButton" aria-label="Copy logs" title="Copy logs">
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <rect x="5" y="4" width="8" height="10" rx="1.5"></rect>
-              <path d="M4 11H3.5A1.5 1.5 0 0 1 2 9.5v-7A1.5 1.5 0 0 1 3.5 1h7A1.5 1.5 0 0 1 12 2.5V3"></path>
-            </svg>
-          </button>
-        </div>
       </div>
-      <button type="button" class="log-toggle-button" id="toggleLogDockButton" aria-expanded="true" aria-controls="logList" aria-label="Hide activity log" title="Hide activity log">
-        <svg class="log-toggle-icon log-toggle-icon-hide" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M3 6l5 5 5-5"></path>
-        </svg>
-        <svg class="log-toggle-icon log-toggle-icon-show" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M3 10l5-5 5 5"></path>
-        </svg>
-      </button>
+      <div class="log-dock-controls">
+        <span class="log-copy-status" id="logCopyStatus" aria-live="polite"></span>
+        <button type="button" class="log-copy-button" id="copyLogsButton" aria-label="Copy logs" title="Copy logs">
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="5" y="4" width="8" height="10" rx="1.5"></rect>
+            <path d="M4 11H3.5A1.5 1.5 0 0 1 2 9.5v-7A1.5 1.5 0 0 1 3.5 1h7A1.5 1.5 0 0 1 12 2.5V3"></path>
+          </svg>
+        </button>
+        <button type="button" class="log-toggle-button" id="toggleLogDockButton" aria-expanded="true" aria-controls="logList" aria-label="Hide activity log" title="Hide activity log">
+          <svg class="log-toggle-icon log-toggle-icon-hide" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M3 6l5 5 5-5"></path>
+          </svg>
+          <svg class="log-toggle-icon log-toggle-icon-show" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M3 10l5-5 5 5"></path>
+          </svg>
+        </button>
+      </div>
       <ul class="log-list" id="logList"></ul>
     </div>
   </section>

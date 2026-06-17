@@ -129,6 +129,29 @@ const TARGET_HEADER_ICON = `
   </span>
 `;
 
+const SOURCE_CARD_TARGET_ICON = `
+  <span class="source-card-side-icon source-card-target-icon" title="Target" aria-label="Target">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 4h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"></path>
+      <circle cx="12" cy="11" r="2.25"></circle>
+      <path d="M6 17.5h12"></path>
+    </svg>
+  </span>
+`;
+
+function sourceCardSideIcon(label = 'Source') {
+  const safeLabel = escapeHtml(label);
+  return `
+  <span class="source-card-side-icon source-card-source-icon" title="${safeLabel}" aria-label="${safeLabel}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2.5" y="4.5" width="19" height="12.5" rx="2"></rect>
+      <path d="M2 19.5h20"></path>
+      <path d="M12 19.5V22"></path>
+      <circle cx="12" cy="10.75" r="1.75"></circle>
+    </svg>
+  </span>`;
+}
+
 const BUTTON_ICON_PLUS = `
   <span class="btn-icon" aria-hidden="true">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
@@ -794,8 +817,10 @@ function renderTargetSourcesTable(target) {
         <article class="source-card${isCopying ? ' is-copying' : ''}" data-source-id="${escapeHtml(source.sourceId)}">
           <div class="source-card-top">
             <section class="source-card-side source-card-target">
-              <div class="source-card-label">Target</div>
-              <div class="source-card-path" title="${escapeHtml(targetRootLabel)}">${escapeHtml(targetRootLabel)}</div>
+              <div class="source-card-path-row">
+                ${SOURCE_CARD_TARGET_ICON}
+                <div class="source-card-path" title="${escapeHtml(targetRootLabel)}">${escapeHtml(targetRootLabel)}</div>
+              </div>
             </section>
             <section class="source-card-center">
               <div class="source-card-transfer">
@@ -812,8 +837,10 @@ function renderTargetSourcesTable(target) {
               </div>
             </section>
             <section class="source-card-side source-card-source">
-              <div class="source-card-label">${escapeHtml(sourceSideLabel)}</div>
-              <div class="source-card-path" title="${escapeHtml(sourceSidePath)}">${escapeHtml(sourceSidePath)}</div>
+              <div class="source-card-path-row">
+                <div class="source-card-path" title="${escapeHtml(sourceSidePath)}">${escapeHtml(sourceSidePath)}</div>
+                ${sourceCardSideIcon(sourceSideLabel)}
+              </div>
             </section>
           </div>
           <!--<div class="source-card-divider" aria-hidden="true"></div>-->

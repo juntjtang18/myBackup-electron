@@ -1,6 +1,6 @@
 process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || '16';
 
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, screen } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs-extra');
@@ -624,18 +624,33 @@ function registerIpcHandlers() {
   });
 }
 
+function getLaunchWindowBounds() {
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  return display.workArea;
+}
+
 function createWindow() {
+  const launchBounds = getLaunchWindowBounds();
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 860,
+    x: launchBounds.x,
+    y: launchBounds.y,
+    width: launchBounds.width,
+    height: launchBounds.height,
     minWidth: 1120,
     minHeight: 720,
     frame: false,
     backgroundColor: '#eef1f5',
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false
+    }
+  });
+
+  mainWindow.once('ready-to-show', () => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.show();
     }
   });
 

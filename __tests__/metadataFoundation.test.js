@@ -2409,8 +2409,9 @@ dist/**
     });
 
     expect(summary.restoredFiles).toBe(2);
-    expect(await fs.readFile(path.join(restoreRoot, 'docs', 'a.txt'), 'utf8')).toBe('alpha');
-    expect(await fs.readFile(path.join(restoreRoot, 'docs', 'nested', 'b.txt'), 'utf8')).toBe('beta');
+    expect(summary.destinationRoot).toBe(path.join(restoreRoot, 'restore-source'));
+    expect(await fs.readFile(path.join(restoreRoot, 'restore-source', 'docs', 'a.txt'), 'utf8')).toBe('alpha');
+    expect(await fs.readFile(path.join(restoreRoot, 'restore-source', 'docs', 'nested', 'b.txt'), 'utf8')).toBe('beta');
   });
 
   test('restores a single logical file by logical path', async () => {

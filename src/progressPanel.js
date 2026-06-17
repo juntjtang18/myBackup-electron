@@ -361,10 +361,14 @@
     return eventType === 'backup-paused'
       || eventType === 'backup-completed'
       || eventType === 'backup-started'
+      || eventType === 'restore-started'
+      || eventType === 'restore-completed'
+      || eventType === 'restore-failed'
       || eventType === 'copy-progress'
       || eventType === 'file-progress'
       || ((eventPool === 'copy' || eventPool === 'file') && (eventType === 'task-started' || eventType === 'task-completed'))
-      || payload?.progress?.status === 'paused';
+      || payload?.progress?.status === 'paused'
+      || payload?.progress?.status === 'failed';
   }
 
   return {

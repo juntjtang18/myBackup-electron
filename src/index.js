@@ -21,6 +21,7 @@ let mainWindow = null;
 const logger = createLogger('MainProcess', 'index.js');
 const activeBackupProgress = new Map();
 const activeBackups = new Map();
+const activeRestores = new Map();
 let progressForwardTraceCount = 0;
 const PROGRESS_FORWARD_TRACE_LIMIT = 160;
 const appPlatform = normalizePlatform(process.platform);
@@ -449,7 +450,7 @@ function registerIpcHandlers() {
       sourceId: input.sourceId,
       queues: queueSnapshot
     });
-    logToRenderer('info', 'Pause requested. Finishing in-flight work and cancelling queued files...', {
+    logToRenderer('info', 'Pause requested. Cancelling queued files and stopping in-flight copy work...', {
       sourceId: input.sourceId,
       queues: queueSnapshot
     });
@@ -458,6 +459,14 @@ function registerIpcHandlers() {
 
   ipcMain.handle('app:restore-source', async (_event, input) => {
     const targetRoot = await requireTargetRoot(input);
+    const key = backupKey(targetRoot, input.machineId, input.sourceId);
+    if (activeBackups.has(key)) {
+      throw new Error('Cannot start restore while backup is running for this source.');
+    }
+    if (activeRestores.has(key)) {
+      throw new Error('Restore already running for this source.');
+    }
+
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory', 'createDirectory'],
       title: 'Select Restore Destination'
@@ -467,14 +476,103 @@ function registerIpcHandlers() {
       return null;
     }
 
-    const summary = await restoreSource(targetRoot, {
+    const destinationRoot = result.filePaths[0];
+    const workerPools = await loadWorkerPoolsForBackup();
+    logger.info('Source restore requested.', {
+      targetRoot,
       machineId: input.machineId,
       sourceId: input.sourceId,
-      destinationRoot: result.filePaths[0]
+      destinationRoot,
+      restoreWorkers: workerPools.copy
     });
-    logger.info('Source restore completed.', summary);
-    logToRenderer('info', 'Source restore completed.', summary);
-    return summary;
+    logToRenderer('info', 'Source restore started.', {
+      targetRoot,
+      sourceId: input.sourceId,
+      destinationRoot
+    });
+
+    activeRestores.set(key, {
+      targetRoot,
+      machineId: input.machineId,
+      sourceId: input.sourceId,
+      destinationRoot
+    });
+
+    try {
+      const summary = await restoreSource(targetRoot, {
+        appDataRoot: getAppDataRoot(),
+        machineId: input.machineId,
+        sourceId: input.sourceId,
+        destinationRoot,
+        maxWorkers: workerPools.copy,
+        onProgress: ({ summary: progressSummary, progress, event }) => {
+          const payload = {
+            targetRoot,
+            machineId: input.machineId,
+            sourceId: input.sourceId,
+            summary: progressSummary,
+            progress,
+            event,
+            trace: {
+              stage: 'restore-forwarding',
+              sequence: progressSummary.restoredFiles
+            }
+          };
+          activeBackupProgress.set(key, payload);
+          sendProgressToRenderer(payload);
+        }
+      });
+      activeBackupProgress.delete(key);
+      logger.info('Source restore completed.', summary);
+      logToRenderer('info', 'Source restore completed.', summary);
+      return {
+        summary,
+        dashboard: await buildDashboardState()
+      };
+    } catch (error) {
+      const lastPayload = activeBackupProgress.get(key) || null;
+      sendProgressToRenderer({
+        targetRoot,
+        machineId: input.machineId,
+        sourceId: input.sourceId,
+        summary: {
+          machineId: input.machineId,
+          sourceId: input.sourceId,
+          destinationRoot,
+          restoredFiles: lastPayload?.summary?.restoredFiles || 0,
+          skippedRecords: 0,
+          copiedBytes: lastPayload?.summary?.copiedBytes || 0,
+          totalBytes: lastPayload?.summary?.totalBytes || 0,
+          error: error.message
+        },
+        progress: {
+          mode: 'restore',
+          status: 'failed',
+          startedAt: lastPayload?.progress?.startedAt || new Date().toISOString(),
+          destinationRoot,
+          filesProcessed: lastPayload?.progress?.filesProcessed || 0,
+          filesCopied: lastPayload?.progress?.filesCopied || 0,
+          copiedBytes: lastPayload?.progress?.copiedBytes || 0,
+          totalBytes: lastPayload?.progress?.totalBytes || 0,
+          throughputBytesPerSecond: 0,
+          workers: lastPayload?.progress?.workers || {},
+          queues: lastPayload?.progress?.queues || { file: { depth: 0, pending: 0, active: 0, waitingItems: [], activeItems: [] } }
+        },
+        event: {
+          type: 'restore-failed',
+          pool: 'file',
+          message: error.message
+        },
+        trace: {
+          stage: 'restore-forwarding',
+          sequence: -1
+        }
+      });
+      throw error;
+    } finally {
+      activeBackupProgress.delete(key);
+      activeRestores.delete(key);
+    }
   });
 
   ipcMain.handle('app:restore-merged', async (_event, input) => {

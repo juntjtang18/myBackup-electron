@@ -16,6 +16,7 @@ const state = {
     showProgressQueueDetails: false
   },
   lastProgressTraceAt: {},
+  lastSizeTraceAt: {},
   progressPayloadTraceCount: 0,
   progressRenderTraceCount: 0,
   logDockCollapsed: false
@@ -55,6 +56,64 @@ function clearBackupUiState(key) {
 
 function progressKeyFromPayload(payload) {
   return progressKey(payload.targetRoot, payload.machineId, payload.sourceId);
+}
+
+function findDashboardSource(targetRoot, machineId, sourceId) {
+  const target = (state.dashboard.targets || []).find((entry) => entry.path === targetRoot);
+  const source = (target?.sources || []).find((entry) => (
+    entry.machineId === machineId
+    && entry.sourceId === sourceId
+  ));
+  return { target, source };
+}
+
+function traceCopiedBytes(key, message, details = {}, options = {}) {
+  if (!state.runtimeFlags.traceProgressUi && !options.force) {
+    return;
+  }
+  const traceKey = `${key}:${message}`;
+  const current = JSON.stringify(details);
+  if (!options.force && state.lastSizeTraceAt[traceKey] === current) {
+    return;
+  }
+  state.lastSizeTraceAt[traceKey] = current;
+  appendLog('info', message, {
+    key,
+    ...details
+  });
+}
+
+function applyTerminalProgressToDashboardSource(payload) {
+  const status = payload?.progress?.status || null;
+  if (status !== 'paused' && status !== 'completed') {
+    return;
+  }
+
+  const target = (state.dashboard.targets || []).find((entry) => entry.path === payload.targetRoot);
+  const source = (target?.sources || []).find((entry) => (
+    entry.machineId === payload.machineId
+    && entry.sourceId === payload.sourceId
+  ));
+  if (!source) {
+    return;
+  }
+
+  const copiedBytes = Number(
+    payload.progress?.copiedBytes
+    ?? payload.summary?.copiedBytes
+    ?? source.backupStatus?.copiedBytes
+    ?? 0
+  );
+  source.backupStatus = {
+    ...(source.backupStatus || {}),
+    status,
+    mode: payload.progress?.mode || source.backupStatus?.mode || null,
+    runId: payload.progress?.scanId || payload.summary?.scanId || source.backupStatus?.runId || null,
+    copiedBytes: Number.isFinite(copiedBytes) ? copiedBytes : 0,
+    completedAt: status === 'completed'
+      ? (payload.summary?.completedAt || source.backupStatus?.completedAt || null)
+      : null
+  };
 }
 
 function pathBasename(value) {
@@ -445,16 +504,23 @@ function setBusy(button, busy, label) {
   }
 
   button.disabled = busy;
-  if (!button.dataset.label) {
-    button.dataset.label = button.textContent;
+  if (!button.dataset.labelHtml) {
+    button.dataset.labelHtml = button.innerHTML;
   }
 
   if (busy) {
     if (label) {
-      button.textContent = label;
+      const labelNode = button.querySelector('.btn-label');
+      if (labelNode) {
+        labelNode.textContent = label;
+      } else {
+        button.textContent = label;
+      }
     }
   } else {
-    button.textContent = button.dataset.label;
+    if (button.dataset.labelHtml) {
+      button.innerHTML = button.dataset.labelHtml;
+    }
   }
 }
 
@@ -596,22 +662,84 @@ function renderProgressPanel(targetRoot, source) {
   return html;
 }
 
-function getBackedUpSizeLabel(source, activeProgress) {
+function getBackedUpSizeLabel(source, activeProgress, key = '') {
+  const mode = activeProgress?.progress?.mode || null;
+  if (mode === 'restore') {
+    const copiedBytes = Number(activeProgress?.progress?.copiedBytes || 0);
+    const totalBytes = Number(
+      activeProgress?.progress?.totalBytes
+      ?? source.backupSizeBytes
+      ?? 0
+    );
+    const remainingBytes = Math.max(0, totalBytes - copiedBytes);
+    const label = formatBytes(remainingBytes);
+    traceCopiedBytes(key, 'Restore copied bytes trace: size circle rendered.', {
+      sourceId: source.sourceId,
+      sourcePath: source.sourcePath,
+      source: 'restore-remaining',
+      copiedBytes,
+      totalBytes,
+      remainingBytes,
+      label
+    });
+    return label;
+  }
+
   const copiedBytes = activeProgress?.progress?.copiedBytes;
+  const forceResumeTrace = source.backupStatus?.status === 'paused' || activeProgress?.progress?.resumed === true;
   if (Number.isFinite(Number(copiedBytes))) {
-    return formatBytes(Number(copiedBytes));
+    const label = formatBytes(Number(copiedBytes));
+    traceCopiedBytes(key, 'Resume copied bytes trace: size circle rendered.', {
+      sourceId: source.sourceId,
+      sourcePath: source.sourcePath,
+      source: 'active-progress',
+      activeProgressCopiedBytes: Number(copiedBytes),
+      statusCopiedBytes: Number(source.backupStatus?.copiedBytes || 0),
+      backupSizeBytes: Number(source.backupSizeBytes || 0),
+      label
+    }, { force: forceResumeTrace });
+    return label;
   }
 
   const statusCopiedBytes = source.backupStatus?.copiedBytes;
   if (Number.isFinite(Number(statusCopiedBytes)) && Number(statusCopiedBytes) > 0) {
-    return formatBytes(Number(statusCopiedBytes));
+    const label = formatBytes(Number(statusCopiedBytes));
+    traceCopiedBytes(key, 'Resume copied bytes trace: size circle rendered.', {
+      sourceId: source.sourceId,
+      sourcePath: source.sourcePath,
+      source: 'backup-status',
+      activeProgressCopiedBytes: null,
+      statusCopiedBytes: Number(statusCopiedBytes),
+      backupSizeBytes: Number(source.backupSizeBytes || 0),
+      label
+    }, { force: forceResumeTrace });
+    return label;
   }
 
   const backupSizeBytes = source.backupSizeBytes;
   if (Number.isFinite(Number(backupSizeBytes)) && Number(backupSizeBytes) > 0) {
-    return formatBytes(Number(backupSizeBytes));
+    const label = formatBytes(Number(backupSizeBytes));
+    traceCopiedBytes(key, 'Resume copied bytes trace: size circle rendered.', {
+      sourceId: source.sourceId,
+      sourcePath: source.sourcePath,
+      source: 'backup-size',
+      activeProgressCopiedBytes: null,
+      statusCopiedBytes: Number(source.backupStatus?.copiedBytes || 0),
+      backupSizeBytes: Number(backupSizeBytes),
+      label
+    }, { force: forceResumeTrace });
+    return label;
   }
 
+  traceCopiedBytes(key, 'Resume copied bytes trace: size circle rendered.', {
+    sourceId: source.sourceId,
+    sourcePath: source.sourcePath,
+    source: 'zero',
+    activeProgressCopiedBytes: null,
+    statusCopiedBytes: Number(source.backupStatus?.copiedBytes || 0),
+    backupSizeBytes: Number(source.backupSizeBytes || 0),
+    label: '0 B'
+  }, { force: forceResumeTrace });
   return '0 B';
 }
 
@@ -629,6 +757,8 @@ function renderTargetSourcesTable(target) {
     const key = progressKey(targetRoot, source.machineId, source.sourceId);
     const changeKey = sourceChangeKey(target.id, source.sourceId);
     const activeProgress = state.backupProgress[key];
+    const activeMode = activeProgress?.progress?.mode || 'backup';
+    const restoreInProgress = activeMode === 'restore';
     const pauseRequested = state.pauseRequests[key];
     const isPausing = activeProgress?.progress?.status === 'pausing';
     const pausedCursor = source.backupStatus?.status === 'paused';
@@ -638,16 +768,22 @@ function renderTargetSourcesTable(target) {
       || Boolean(source.watchState?.needsRescan);
     const restoreDisabled = targetUnavailable || Boolean(activeProgress);
     const deleteDisabled = Boolean(activeProgress);
-    const backupLabel = activeProgress
+    const idleBackupLabel = pausedCursor ? 'Resume' : (requiresFullBackup ? 'Full Backup' : 'Backup Changes');
+    const backupLabel = activeProgress && !restoreInProgress
       ? (pauseRequested || isPausing ? 'Pausing...' : 'Pause')
-      : (pausedCursor ? 'Resume' : (requiresFullBackup ? 'Full Backup' : 'Backup Changes'));
+      : idleBackupLabel;
     const backupClass = activeProgress
       ? 'btn-outline-warning'
       : (requiresFullBackup ? 'btn-outline-warning' : 'btn-outline-primary');
-    const backupDisabled = targetUnavailable || Boolean(pauseRequested) || isPausing;
+    const backupDisabled = targetUnavailable || Boolean(pauseRequested) || isPausing || restoreInProgress;
     const isCopying = Boolean(activeProgress) && !pauseRequested && !isPausing;
     const targetRootLabel = source.targetSubdir;
-    const backedUpSizeLabel = getBackedUpSizeLabel(source, activeProgress);
+    const sourceSideLabel = restoreInProgress ? 'Destination' : 'Source';
+    const sourceSidePath = restoreInProgress
+      ? (activeProgress?.progress?.destinationRoot || source.sourcePath)
+      : source.sourcePath;
+    const restoreLabel = restoreInProgress ? 'Restoring...' : 'Restore';
+    const backedUpSizeLabel = getBackedUpSizeLabel(source, activeProgress, key);
     const sourceChangeEntry = state.sourceChanges[changeKey];
     const sourceChangeCount = sourceChangeEntry?.data?.items?.length || 0;
     const sourceChangeLabel = sourceChangeCount > 0 ? `Changes (${sourceChangeCount})` : 'Changes';
@@ -663,7 +799,7 @@ function renderTargetSourcesTable(target) {
             </section>
             <section class="source-card-center">
               <div class="source-card-transfer">
-                <div class="source-card-arrow${isCopying ? ' is-copying' : ''}" aria-hidden="true"${arrowPhaseStyle}>
+                <div class="source-card-arrow${isCopying ? ' is-copying' : ''}${restoreInProgress ? ' is-restore' : ''}" aria-hidden="true"${arrowPhaseStyle}>
                   <span class="source-card-arrow-shaft"></span>
                   <span class="source-card-arrow-head"></span>
                   <span class="source-card-arrow-dot source-card-arrow-dot-1"></span>
@@ -676,11 +812,11 @@ function renderTargetSourcesTable(target) {
               </div>
             </section>
             <section class="source-card-side source-card-source">
-              <div class="source-card-label">Source</div>
-              <div class="source-card-path" title="${escapeHtml(source.sourcePath)}">${escapeHtml(source.sourcePath)}</div>
+              <div class="source-card-label">${escapeHtml(sourceSideLabel)}</div>
+              <div class="source-card-path" title="${escapeHtml(sourceSidePath)}">${escapeHtml(sourceSidePath)}</div>
             </section>
           </div>
-          <div class="source-card-divider" aria-hidden="true"></div>
+          <!--<div class="source-card-divider" aria-hidden="true"></div>-->
           <div class="source-card-bottom">
             <div class="source-card-meta">
               <div class="source-card-backup-line">
@@ -695,8 +831,8 @@ function renderTargetSourcesTable(target) {
             </div>
             <div class="actions-row">
               <button class="btn btn-sm btn-outline-secondary btn-action btn-action-changes toggle-changes-button${state.sourceChangeExpanded[changeKey] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(sourceChangeLabel)}">${withButtonIcon(BUTTON_ICON_CHANGES, sourceChangeLabel)}</button>
-              <button class="btn btn-sm ${backupClass} btn-action btn-action-backup run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(backupLabel)}"${backupDisabled ? ' disabled' : ''}>${withButtonIcon(activeProgress ? BUTTON_ICON_PAUSE : pausedCursor ? BUTTON_ICON_PLAY : BUTTON_ICON_BACKUP, backupLabel)}</button>
-              <button class="btn btn-sm btn-outline-secondary btn-action btn-action-restore restore-source-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${restoreDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_RESTORE, 'Restore')}</button>
+              <button class="btn btn-sm ${backupClass} btn-action btn-action-backup run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(backupLabel)}"${backupDisabled ? ' disabled' : ''}>${withButtonIcon(activeProgress && !restoreInProgress ? BUTTON_ICON_PAUSE : pausedCursor ? BUTTON_ICON_PLAY : BUTTON_ICON_BACKUP, backupLabel)}</button>
+              <button class="btn btn-sm btn-outline-secondary btn-action btn-action-restore restore-source-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${restoreDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_RESTORE, restoreLabel)}</button>
               ${showDeleteButtons ? `<button class="btn btn-sm btn-outline-danger btn-action btn-action-delete delete-source-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}"${deleteDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_TRASH, 'Delete')}</button>` : ''}
             </div>
           </div>
@@ -1184,8 +1320,85 @@ async function registerSource(event) {
   }
 }
 
+function handleBackupProgressPayload(payload) {
+  const key = progressKeyFromPayload(payload);
+  if (state.progressPayloadTraceCount < PROGRESS_TRACE_LOG_LIMIT) {
+    appendLog('info', 'Progress trace: IPC payload received.', {
+      key,
+      sequence: payload.trace?.sequence || null,
+      eventType: payload.event?.type || null,
+      eventPool: payload.event?.pool || null,
+      status: payload.progress?.status || null,
+      workerCount: Object.keys(payload.progress?.workers || {}).length,
+      fileQueueDepth: payload.progress?.queues?.file?.depth || 0
+    });
+  }
+  const status = payload.progress?.status || null;
+  const mode = payload.progress?.mode || null;
+  const isTerminal = status === 'paused' || status === 'completed' || status === 'failed';
+  if (payload.event?.type === 'backup-started'
+    || payload.event?.type === 'file-progress'
+    || payload.event?.type === 'copy-progress'
+    || payload.event?.type === 'backup-paused'
+    || payload.event?.type === 'backup-completed') {
+    traceCopiedBytes(key, 'Resume copied bytes trace: progress payload accumulated.', {
+      eventType: payload.event?.type || null,
+      status,
+      resumed: payload.progress?.resumed === true,
+      progressCopiedBytes: Number(payload.progress?.copiedBytes || 0),
+      summaryCopiedBytes: Number(payload.summary?.copiedBytes || 0)
+    });
+  }
+  if (isTerminal) {
+    if (mode !== 'restore') {
+      applyTerminalProgressToDashboardSource(payload);
+      const { source } = findDashboardSource(payload.targetRoot, payload.machineId, payload.sourceId);
+      traceCopiedBytes(key, 'Resume copied bytes trace: terminal status applied to dashboard.', {
+        status: source?.backupStatus?.status || null,
+        runId: source?.backupStatus?.runId || null,
+        copiedBytes: Number(source?.backupStatus?.copiedBytes || 0)
+      }, { force: true });
+    }
+    clearBackupUiState(key);
+  } else {
+    state.backupProgress[key] = payload;
+  }
+  traceProgressRender(key, payload);
+  if (payload.event?.type === 'backup-pausing' && payload.event?.phase) {
+    appendLog('info', `Backup pausing: ${payload.event.phase}.`, payload.progress?.queues || null);
+  }
+  if (payload.event?.type === 'restore-failed') {
+    appendLog('error', 'Restore failed.', {
+      key,
+      message: payload.event?.message || payload.summary?.error || 'Unknown error'
+    });
+  }
+
+  const shouldRenderImmediately = window.myBackupProgressPanel
+    ? window.myBackupProgressPanel.shouldRenderImmediatelyForProgress(payload)
+    : payload.event?.type === 'backup-paused'
+      || payload.event?.type === 'backup-completed'
+      || payload.event?.type === 'backup-started'
+      || payload.event?.type === 'restore-started'
+      || payload.event?.type === 'restore-completed'
+      || payload.event?.type === 'restore-failed'
+      || payload.progress?.status === 'paused'
+      || payload.progress?.status === 'failed';
+
+  if (shouldRenderImmediately) {
+    flushProgressRender();
+  } else {
+    scheduleProgressRender();
+  }
+}
+
 async function runBackup(targetRoot, machineId, sourceId, button) {
   const key = progressKey(targetRoot, machineId, sourceId);
+  const activeMode = state.backupProgress[key]?.progress?.mode || null;
+  if (activeMode === 'restore') {
+    appendLog('warn', 'Restore is running for this source. Wait until it completes before starting backup.');
+    return;
+  }
   appendLog('info', 'Backup UI action invoked.', {
     key,
     targetRoot,
@@ -1193,11 +1406,7 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
     sourceId,
     hasExistingProgress: Boolean(state.backupProgress[key])
   });
-  const currentTarget = (state.dashboard.targets || []).find((entry) => entry.path === targetRoot);
-  if (currentTarget && currentTarget.available === false) {
-    appendLog('warn', 'Backup target is unavailable.');
-    return;
-  }
+
   if (state.backupProgress[key]) {
     try {
       state.pauseRequests[key] = true;
@@ -1216,18 +1425,20 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
     return;
   }
 
-  const target = currentTarget;
-  const source = (target?.sources || []).find((entry) => entry.machineId === machineId && entry.sourceId === sourceId);
-  if (collapseSourceChanges(target?.id, sourceId)) {
-    renderSources();
-  }
-  if (target && target.collapsed) {
-    target.collapsed = false;
-    renderTargets();
-    window.myBackup.setTargetCollapsed({ targetId: target.id, collapsed: false }).catch(() => {});
-  }
   try {
-    const persistedCopiedBytes = Number(source?.backupStatus?.copiedBytes || 0);
+    const { target, source } = findDashboardSource(targetRoot, machineId, sourceId);
+    if (target && target.available === false) {
+      appendLog('warn', 'Backup target is unavailable.');
+      return;
+    }
+    if (collapseSourceChanges(target?.id, sourceId)) {
+      renderSources();
+    }
+    if (target && target.collapsed) {
+      target.collapsed = false;
+      renderTargets();
+      window.myBackup.setTargetCollapsed({ targetId: target.id, collapsed: false }).catch(() => {});
+    }
     state.backupProgress[key] = {
       targetRoot,
       machineId,
@@ -1237,7 +1448,8 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
         status: 'running',
         filesProcessed: 0,
         filesCopied: 0,
-        copiedBytes: persistedCopiedBytes,
+        copiedBytes: 0,
+        resumed: false,
         workers: {}
       },
       event: null
@@ -1247,19 +1459,24 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
       progressPanelLoaded: Boolean(window.myBackupProgressPanel)
     });
     renderSources();
-    const forceNewScan = !source?.baselineAt
-      || source?.sourceSizeBytes === null
-      || source?.sourceSizeBytes === undefined
-      || Boolean(source?.watchState?.needsRescan);
     const result = await window.myBackup.runBackup({
       targetRoot,
       machineId,
       sourceId,
-      forceNewScan
+      forceNewScan: false
     });
     clearBackupUiState(key);
     state.dashboard = result.dashboard;
     renderDashboard();
+    if (result?.summary?.status === 'completed') {
+      const { target } = findDashboardSource(targetRoot, machineId, sourceId);
+      if (target?.id) {
+        const changeKey = sourceChangeKey(target.id, sourceId);
+        delete state.sourceChanges[changeKey];
+        delete state.sourceChangeExpanded[changeKey];
+        await loadSourceChanges(target.id, sourceId);
+      }
+    }
     appendLog('info', result.summary.status === 'paused' ? 'Backup paused.' : 'Backup summary.', result.summary);
   } catch (error) {
     clearBackupUiState(key);
@@ -1269,6 +1486,14 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
 }
 
 async function runRestoreSource(targetRoot, machineId, sourceId, button) {
+  const key = progressKey(targetRoot, machineId, sourceId);
+  const activeMode = state.backupProgress[key]?.progress?.mode || null;
+  if (activeMode) {
+    appendLog('warn', activeMode === 'restore'
+      ? 'Restore is already running for this source.'
+      : 'Backup is running for this source. Pause or wait before restoring.');
+    return;
+  }
   const currentTarget = (state.dashboard.targets || []).find((entry) => entry.path === targetRoot);
   if (currentTarget && currentTarget.available === false) {
     appendLog('warn', 'Backup target is unavailable.');
@@ -1276,13 +1501,22 @@ async function runRestoreSource(targetRoot, machineId, sourceId, button) {
   }
   try {
     setBusy(button, true, 'Restoring...');
-    const summary = await window.myBackup.restoreSource({ targetRoot, machineId, sourceId });
-    if (summary) {
-      appendLog('info', 'Source restore summary.', summary);
+    const result = await window.myBackup.restoreSource({ targetRoot, machineId, sourceId });
+    if (result?.summary) {
+      appendLog('info', 'Source restore summary.', result.summary);
+      if (result.dashboard) {
+        state.dashboard = result.dashboard;
+        renderDashboard();
+      }
+    } else if (result) {
+      appendLog('info', 'Source restore summary.', result);
     }
   } catch (error) {
     appendLog('error', error.message || 'Source restore failed.');
   } finally {
+    // Keep UI consistent even if terminal restore progress payload is delayed or dropped.
+    clearBackupUiState(key);
+    renderSources();
     setBusy(button, false);
   }
 }
@@ -1389,44 +1623,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('sourceForm').addEventListener('submit', registerSource);
   document.getElementById('logLevelSelect').addEventListener('change', updateLogLevel);
   document.getElementById('copyLogsButton')?.addEventListener('click', copyLogsToClipboard);
-  window.myBackup.onBackupProgress((payload) => {
-    const key = progressKeyFromPayload(payload);
-    if (state.progressPayloadTraceCount < PROGRESS_TRACE_LOG_LIMIT) {
-      appendLog('info', 'Progress trace: IPC payload received.', {
-        key,
-        sequence: payload.trace?.sequence || null,
-        eventType: payload.event?.type || null,
-        eventPool: payload.event?.pool || null,
-        status: payload.progress?.status || null,
-        workerCount: Object.keys(payload.progress?.workers || {}).length,
-        fileQueueDepth: payload.progress?.queues?.file?.depth || 0
-      });
-    }
-    const status = payload.progress?.status || null;
-    const isTerminal = status === 'paused' || status === 'completed';
-    if (isTerminal) {
-      clearBackupUiState(key);
-    } else {
-      state.backupProgress[key] = payload;
-    }
-    traceProgressRender(key, payload);
-    if (payload.event?.type === 'backup-pausing' && payload.event?.phase) {
-      appendLog('info', `Backup pausing: ${payload.event.phase}.`, payload.progress?.queues || null);
-    }
-
-    const shouldRenderImmediately = window.myBackupProgressPanel
-      ? window.myBackupProgressPanel.shouldRenderImmediatelyForProgress(payload)
-      : payload.event?.type === 'backup-paused'
-        || payload.event?.type === 'backup-completed'
-        || payload.event?.type === 'backup-started'
-        || payload.progress?.status === 'paused';
-
-    if (shouldRenderImmediately) {
-      flushProgressRender();
-    } else {
-      scheduleProgressRender();
-    }
-  });
+  window.myBackup.onBackupProgress(handleBackupProgressPayload);
   window.myBackup.onDashboardUpdated((dashboard) => {
     lastDashboardPushAt = Date.now();
     appendLog('info', 'Dashboard update received from main process.', {
@@ -1447,10 +1644,13 @@ if (typeof module !== 'undefined') {
     __test__: {
       state,
       collapseSourceChanges,
+      applyTerminalProgressToDashboardSource,
+      handleBackupProgressPayload,
       renderTargetSourcesTable,
       renderTargets,
       toggleSourceProgressPanel,
-      runBackup
+      runBackup,
+      setBusy
     }
   };
 }

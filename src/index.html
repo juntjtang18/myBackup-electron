@@ -640,6 +640,10 @@
       background: linear-gradient(180deg, #ffffff 0%, #fafcff 100%);
     }
 
+    .source-card:hover {
+      border-color: #000000;
+    }
+
     .source-card-top {
       display: grid;
       grid-template-columns: minmax(0, 1fr) 168px minmax(0, 1fr);
@@ -711,6 +715,12 @@
       display: block;
       color: #b4bfce;
       overflow: hidden;
+      transform-origin: center center;
+      transition: transform 0.24s ease;
+    }
+
+    .source-card-arrow.is-restore {
+      transform: scaleX(-1);
     }
 
     .source-progress-node {

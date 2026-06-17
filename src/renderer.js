@@ -760,7 +760,7 @@ function bindTargetPanelActions(container) {
   container.querySelectorAll('.source-progress-node').forEach((button) => {
     button.addEventListener('click', (event) => {
       event.stopPropagation();
-      openSourceProgressPanel(
+      toggleSourceProgressPanel(
         button.dataset.targetRoot,
         button.dataset.machineId,
         button.dataset.sourceId
@@ -993,13 +993,13 @@ function toggleSourceDeleteMode(targetId) {
   renderSources();
 }
 
-function openSourceProgressPanel(targetRoot, machineId, sourceId) {
+function toggleSourceProgressPanel(targetRoot, machineId, sourceId) {
   const key = progressKey(targetRoot, machineId, sourceId);
   if (!state.backupProgress[key]) {
     appendLog('info', 'No active backup progress to show for this source.');
     return;
   }
-  state.progressPanelExpanded[key] = true;
+  state.progressPanelExpanded[key] = !state.progressPanelExpanded[key];
   renderSources();
 }
 
@@ -1449,7 +1449,7 @@ if (typeof module !== 'undefined') {
       collapseSourceChanges,
       renderTargetSourcesTable,
       renderTargets,
-      openSourceProgressPanel,
+      toggleSourceProgressPanel,
       runBackup
     }
   };

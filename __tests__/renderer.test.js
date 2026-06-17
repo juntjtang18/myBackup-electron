@@ -170,7 +170,7 @@ describe('renderer target offline behavior', () => {
     expect(targetsContainer.innerHTML).toContain('source-card-arrow-dot-3');
   });
 
-  test('active backup progress panel only opens from progress circle', () => {
+  test('active backup progress panel toggles from progress circle', () => {
     const testApi = loadRendererTestApi();
     global.window.myBackupProgressPanel = {
       renderBackupProgressPanel: jest.fn(() => '<div class="source-progress-panel">progress details</div>'),
@@ -203,11 +203,16 @@ describe('renderer target offline behavior', () => {
     expect(targetsContainer.innerHTML).not.toContain('source-progress-panel');
     expect(global.window.myBackupProgressPanel.renderBackupProgressPanel).not.toHaveBeenCalled();
 
-    testApi.openSourceProgressPanel('/Volumes/ST/Backup', 'machine-a', 'source-a');
+    testApi.toggleSourceProgressPanel('/Volumes/ST/Backup', 'machine-a', 'source-a');
 
     expect(testApi.state.progressPanelExpanded[key]).toBe(true);
     expect(targetsContainer.innerHTML).toContain('source-progress-panel');
     expect(global.window.myBackupProgressPanel.renderBackupProgressPanel).toHaveBeenCalled();
+
+    testApi.toggleSourceProgressPanel('/Volumes/ST/Backup', 'machine-a', 'source-a');
+
+    expect(testApi.state.progressPanelExpanded[key]).toBe(false);
+    expect(targetsContainer.innerHTML).not.toContain('source-progress-panel');
   });
 
   test('active backup keeps pause button enabled and sends pause request', async () => {

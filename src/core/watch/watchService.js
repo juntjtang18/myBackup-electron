@@ -83,6 +83,7 @@ function createWatchService(platformInput, options = {}) {
   const pendingWatchStateFlushes = new Map();
 
   let started = false;
+  let lastSyncedSources = [];
 
   async function loadWatchedSources() {
     const schema = await loadBackupSchema(appDataRoot);
@@ -188,6 +189,7 @@ function createWatchService(platformInput, options = {}) {
 
   async function sync() {
     const sources = await loadWatchedSources();
+    lastSyncedSources = sources;
     for (const source of sources) {
       await changeTracker.ensureJournal({
         sourceId: source.sourceId,
@@ -246,11 +248,52 @@ function createWatchService(platformInput, options = {}) {
 
   async function stop() {
     started = false;
+    lastSyncedSources = [];
     await backend.stop();
+  }
+
+  async function getStatus() {
+    const watchedPaths = lastSyncedSources
+      .map((source) => source.sourcePath)
+      .filter((value) => typeof value === 'string' && value.trim() !== '');
+
+    const journalSnapshots = await Promise.all(
+      lastSyncedSources.map(async (source) => {
+        try {
+          const journal = await changeTracker.store.load(source);
+          return journal ? journal.toJSON() : null;
+        } catch (error) {
+          logger.warn('Failed to load change journal for daemon status.', {
+            sourceId: source.sourceId,
+            sourcePath: source.sourcePath,
+            message: error.message
+          });
+          return null;
+        }
+      })
+    );
+
+    let eventCount = 0;
+    for (const journal of journalSnapshots) {
+      if (!journal || typeof journal !== 'object') {
+        continue;
+      }
+      for (const entry of Object.values(journal.folders || {})) {
+        eventCount += Number(entry?.eventCount || 0);
+      }
+    }
+
+    return {
+      running: started,
+      watchedSources: watchedPaths.length,
+      watchedPaths,
+      eventCount
+    };
   }
 
   return {
     bootstrap,
+    getStatus,
     refresh,
     start,
     stop

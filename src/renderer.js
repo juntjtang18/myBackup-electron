@@ -22,6 +22,131 @@ const state = {
   logDockCollapsed: false
 };
 
+class DaemonStatusController {
+  constructor({
+    pillElement,
+    valueElement,
+    panelElement,
+    panelWatchingCountElement,
+    panelWatchedPathElement,
+    panelEventCountElement
+  }) {
+    this.pillElement = pillElement || null;
+    this.valueElement = valueElement || null;
+    this.panelElement = panelElement || null;
+    this.panelWatchingCountElement = panelWatchingCountElement || null;
+    this.panelWatchedPathElement = panelWatchedPathElement || null;
+    this.panelEventCountElement = panelEventCountElement || null;
+    this.panelOpen = false;
+    this.lastStatus = {
+      running: false,
+      watchedSources: 0,
+      updatedAt: null
+    };
+    this.handleDocumentClick = this.handleDocumentClick.bind(this);
+    this.handleDocumentKeyDown = this.handleDocumentKeyDown.bind(this);
+    this.handlePillClick = this.handlePillClick.bind(this);
+    this.handlePillKeyDown = this.handlePillKeyDown.bind(this);
+    this.bindEvents();
+  }
+
+  bindEvents() {
+    if (!this.pillElement) {
+      return;
+    }
+    this.pillElement.addEventListener('click', this.handlePillClick);
+    this.pillElement.addEventListener('keydown', this.handlePillKeyDown);
+    document.addEventListener('click', this.handleDocumentClick);
+    document.addEventListener('keydown', this.handleDocumentKeyDown);
+  }
+
+  handlePillClick(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    this.togglePanel();
+  }
+
+  handlePillKeyDown(event) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      this.togglePanel();
+    }
+  }
+
+  handleDocumentClick(event) {
+    if (!this.panelOpen) {
+      return;
+    }
+    const target = event.target;
+    if (this.pillElement?.contains(target) || this.panelElement?.contains(target)) {
+      return;
+    }
+    this.togglePanel(false);
+  }
+
+  handleDocumentKeyDown(event) {
+    if (event.key !== 'Escape' || !this.panelOpen) {
+      return;
+    }
+    this.togglePanel(false);
+  }
+
+  togglePanel(forceOpen) {
+    if (!this.panelElement || !this.pillElement) {
+      return;
+    }
+    const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !this.panelOpen;
+    this.panelOpen = nextOpen;
+    this.panelElement.classList.toggle('open', nextOpen);
+    this.panelElement.setAttribute('aria-hidden', nextOpen ? 'false' : 'true');
+    this.pillElement.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+    if (nextOpen && window.myBackup?.getDaemonStatus) {
+      window.myBackup.getDaemonStatus()
+        .then((status) => this.setStatus(status))
+        .catch(() => {});
+    }
+  }
+
+  setStatus(payload) {
+    if (!this.pillElement || !this.valueElement) {
+      return;
+    }
+
+    const running = Boolean(payload?.running);
+    const watchedSources = Number(payload?.watchedSources || 0);
+    const updatedAt = payload?.updatedAt || null;
+    this.lastStatus = { running, watchedSources, updatedAt };
+    this.pillElement.classList.toggle('running', running);
+    this.pillElement.classList.toggle('stopped', !running);
+    this.valueElement.textContent = running ? 'Running' : 'Stopped';
+    this.pillElement.setAttribute('title', running
+      ? `Watch daemon running${watchedSources > 0 ? ` • ${watchedSources} sources` : ''}`
+      : 'Watch daemon stopped');
+
+    if (this.panelWatchingCountElement) {
+      this.panelWatchingCountElement.textContent = `${watchedSources} ${watchedSources === 1 ? 'path' : 'paths'}`;
+    }
+    if (this.panelWatchedPathElement) {
+      const watchedPaths = Array.isArray(payload?.watchedPaths)
+        ? payload.watchedPaths.filter((value) => typeof value === 'string' && value.trim() !== '')
+        : [];
+      const watchedPathLabel = watchedPaths.length === 0
+        ? 'n/a'
+        : watchedPaths.length === 1
+          ? watchedPaths[0]
+          : `${watchedPaths[0]} +${watchedPaths.length - 1}`;
+      this.panelWatchedPathElement.textContent = watchedPathLabel;
+      this.panelWatchedPathElement.title = watchedPaths.join('\n');
+    }
+    if (this.panelEventCountElement) {
+      const eventCount = Number(payload?.eventCount);
+      this.panelEventCountElement.textContent = Number.isFinite(eventCount)
+        ? `${eventCount}`
+        : `${watchedSources}`;
+    }
+  }
+}
+
 let lastDashboardPushAt = 0;
 const PROGRESS_TRACE_LOG_LIMIT = 160;
 let logRenderTimer = null;
@@ -281,6 +406,7 @@ function targetHasActiveBackup(target) {
 
 let progressRenderTimer = null;
 const PROGRESS_RENDER_MS = 200;
+let daemonStatusController = null;
 
 function scheduleProgressRender() {
   if (progressRenderTimer) {
@@ -650,20 +776,12 @@ function formatAnimationSeconds(value) {
   return `${value.toFixed(3)}s`;
 }
 
-function buildSourceArrowPhaseStyle(progressEntry) {
-  const startedAtValue = progressEntry?.progress?.startedAt || null;
-  if (!startedAtValue) {
-    return '';
-  }
-
-  const startedAt = new Date(startedAtValue).getTime();
-  if (!Number.isFinite(startedAt)) {
-    return '';
-  }
-
+function buildSourceArrowPhaseStyle() {
+  // Keep arrow animation on a global time clock so motion is independent
+  // from backup payload cadence and copied-byte updates.
   const cycleMs = 1750;
-  const elapsedMs = Math.max(0, Date.now() - startedAt);
-  const phaseSeconds = -((elapsedMs % cycleMs) / 1000);
+  const nowMs = Date.now();
+  const phaseSeconds = -((nowMs % cycleMs) / 1000);
   return ` style="--arrow-phase:${formatAnimationSeconds(phaseSeconds)}"`;
 }
 
@@ -810,7 +928,7 @@ function renderTargetSourcesTable(target) {
     const sourceChangeEntry = state.sourceChanges[changeKey];
     const sourceChangeCount = sourceChangeEntry?.data?.items?.length || 0;
     const sourceChangeLabel = sourceChangeCount > 0 ? `Changes (${sourceChangeCount})` : 'Changes';
-    const arrowPhaseStyle = isCopying ? buildSourceArrowPhaseStyle(activeProgress) : '';
+    const arrowPhaseStyle = isCopying ? buildSourceArrowPhaseStyle() : '';
 
     return `
       <div class="source-card-stack">
@@ -1574,6 +1692,30 @@ function initializeLogDockToggle() {
   });
 }
 
+function initializeDaemonStatus() {
+  daemonStatusController = new DaemonStatusController({
+    pillElement: document.getElementById('daemonStatusPill'),
+    valueElement: document.getElementById('daemonStatusValue'),
+    panelElement: document.getElementById('daemonStatusPanel'),
+    panelWatchingCountElement: document.getElementById('daemonPanelWatchingCount'),
+    panelWatchedPathElement: document.getElementById('daemonPanelWatchedPath'),
+    panelEventCountElement: document.getElementById('daemonPanelEventCount')
+  });
+  daemonStatusController.setStatus({ running: false });
+
+  if (window.myBackup?.getDaemonStatus) {
+    window.myBackup.getDaemonStatus()
+      .then((status) => daemonStatusController?.setStatus(status))
+      .catch(() => {});
+  }
+
+  if (window.myBackup?.onDaemonStatus) {
+    window.myBackup.onDaemonStatus((status) => {
+      daemonStatusController?.setStatus(status);
+    });
+  }
+}
+
 function initializeWindowChrome() {
   if (!window.myBackup?.getPlatform) {
     return;
@@ -1617,9 +1759,26 @@ function initializeWindowChrome() {
   syncWindowMaximizedState().catch(() => {});
 }
 
+async function initializeAppVersionLabel() {
+  const versionElement = document.getElementById('heroVersionLabel');
+  if (!versionElement || !window.myBackup?.getAppVersion) {
+    return;
+  }
+  try {
+    const version = await window.myBackup.getAppVersion();
+    if (typeof version === 'string' && version.trim() !== '') {
+      versionElement.textContent = `v${version.trim()}`;
+    }
+  } catch (_error) {
+    // Keep default fallback when version retrieval fails.
+  }
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
+  await initializeAppVersionLabel();
   initializeWindowChrome();
   initializeLogDockToggle();
+  initializeDaemonStatus();
   try {
     state.runtimeFlags = {
       ...state.runtimeFlags,

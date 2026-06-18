@@ -122,34 +122,188 @@
     }
 
     .hero-tools {
-      display: flex;
-      align-items: center;
-      gap: 10px;
+      display: none;
     }
 
-    .hero-tools label {
-      font-size: 0.72rem;
-      opacity: 0.8;
-      margin: 0;
-    }
-
+    .hero-tools label,
     .hero-tools .form-select {
-      min-width: 96px;
-      font-size: 0.78rem;
-      padding: 4px 28px 4px 10px;
-      border: 1px solid rgba(255, 255, 255, 0.25);
-      background-color: rgba(255, 255, 255, 0.12);
-      color: #ffffff;
-      border-radius: 6px;
+      display: none;
     }
 
-    .hero-tools .form-select:focus {
-      border-color: rgba(255, 255, 255, 0.45);
-      box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.15);
+    .titlebar-right {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      min-width: 0;
+      -webkit-app-region: no-drag;
     }
 
-    .hero-tools .form-select option {
-      color: var(--ink);
+    @keyframes daemon-ping {
+      0%,
+      100% {
+        transform: scale(1);
+        opacity: 1;
+      }
+      50% {
+        transform: scale(1.9);
+        opacity: 0;
+      }
+    }
+
+    .daemon-status-pill.daemon-badge {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 4px 11px 4px 8px;
+      border-radius: 999px;
+      cursor: default;
+      border: 1px solid transparent;
+      transition: background 0.18s, border-color 0.18s;
+      user-select: none;
+      color: #e2e8f0;
+      font-size: 0.72rem;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .daemon-status-pill.daemon-badge:hover {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(255, 255, 255, 0.12);
+    }
+
+    .daemon-badge__dot-wrap {
+      position: relative;
+      width: 8px;
+      height: 8px;
+      flex-shrink: 0;
+    }
+
+    .daemon-badge__dot,
+    .daemon-badge__ring {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      position: absolute;
+      inset: 0;
+    }
+
+    .daemon-badge__label {
+      font-size: 0.72rem;
+      font-weight: 500;
+      letter-spacing: 0.01em;
+      color: #e2e8f0;
+    }
+
+    .daemon-badge__state {
+      font-size: 0.68rem;
+      opacity: 0.75;
+      color: #e2e8f0;
+    }
+
+    .daemon-badge__caret {
+      opacity: 0.5;
+      margin-left: 2px;
+      flex-shrink: 0;
+    }
+
+    .daemon-status-pill.running .daemon-badge__dot {
+      background: #22c55e;
+    }
+
+    .daemon-status-pill.running .daemon-badge__ring {
+      background: #4ade80;
+      opacity: 0.45;
+      animation: daemon-ping 1.8s ease-in-out infinite;
+    }
+
+    .daemon-status-pill.running .daemon-badge__state {
+      color: #22c55e;
+      opacity: 1;
+    }
+
+    .daemon-status-pill.stopped .daemon-badge__dot {
+      background: #ef4444;
+    }
+
+    .daemon-status-pill.stopped .daemon-badge__ring {
+      background: #f87171;
+      opacity: 0.42;
+      animation: none;
+    }
+
+    .daemon-status-pill.stopped .daemon-badge__state {
+      color: #fca5a5;
+      opacity: 1;
+    }
+
+    .daemon-dropdown {
+      position: absolute;
+      top: calc(100% + 10px);
+      right: 0;
+      width: 230px;
+      background: #1e2530;
+      border: 1px solid #2e3845;
+      border-radius: 10px;
+      padding: 12px;
+      z-index: 40;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+      color: #cbd5e1;
+      display: none;
+    }
+
+    .daemon-dropdown.open {
+      display: block;
+      animation: daemon-dropdown-in 0.18s ease forwards;
+    }
+
+    @keyframes daemon-dropdown-in {
+      from {
+        opacity: 0;
+        transform: translateY(-6px) scale(0.97);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+
+    .daemon-dropdown__list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .daemon-dropdown__item {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 0.68rem;
+      line-height: 1.3;
+      color: #94a3b8;
+    }
+
+    .daemon-dropdown__item b {
+      color: #e2e8f0;
+      font-weight: 600;
+    }
+
+    .daemon-dropdown__item-value {
+      color: #cbd5e1;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+      max-width: 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .daemon-dropdown__item-value.path {
+      max-width: 140px;
     }
 
     .titlebar .hero-tools label,
@@ -1499,6 +1653,40 @@
       border-bottom: 1px solid #383838;
     }
 
+    .log-header-main {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .log-level-select {
+      min-width: 84px;
+      height: 22px;
+      border-radius: 6px;
+      border: 1px solid #4c5563;
+      background: #242a32;
+      color: #dbe4ef;
+      font-size: 0.66rem;
+      font-weight: 600;
+      line-height: 1;
+      padding: 0 20px 0 8px;
+      letter-spacing: 0;
+      text-transform: none;
+      box-shadow: none;
+    }
+
+    .log-level-select:focus {
+      outline: none;
+      border-color: #687486;
+      box-shadow: 0 0 0 1px rgba(143, 182, 255, 0.25);
+    }
+
+    .log-level-select option {
+      color: #1f2937;
+      background: #ffffff;
+    }
+
     .log-dock-controls {
       position: absolute;
       top: 6px;
@@ -1789,6 +1977,10 @@
         flex-direction: column;
         align-items: stretch;
       }
+      .daemon-status-pill {
+        transform: scale(0.95);
+        transform-origin: right center;
+      }
       .actions-row { flex-wrap: wrap; }
       .worker-line { grid-template-columns: 38px minmax(0, 1fr) 120px; }
       .worker-bytes { grid-column: 3; }
@@ -1814,18 +2006,37 @@
       <div class="titlebar-left">
         <div class="hero-brand">
           <h1 class="hero-title">MyBackup</h1>
-          <span class="hero-version">v1.0.0</span>
+          <span class="hero-version" id="heroVersionLabel">v0.0.0</span>
         </div>
       </div>
-      <div class="hero-tools">
-        <label for="logLevelSelect">Logs</label>
-        <select class="form-select form-select-sm" id="logLevelSelect">
-          <option value="debug">debug</option>
-          <option value="info">info</option>
-          <option value="warn">warn</option>
-          <option value="error">error</option>
-          <option value="off">off</option>
-        </select>
+      <div class="titlebar-right">
+        <div class="daemon-status-pill daemon-badge stopped" id="daemonStatusPill" role="button" aria-live="polite" aria-expanded="false" tabindex="0">
+          <span class="daemon-badge__dot-wrap" aria-hidden="true">
+            <span class="daemon-badge__ring"></span>
+            <span class="daemon-badge__dot"></span>
+          </span>
+          <span class="daemon-badge__label">Daemon</span>
+          <span class="daemon-badge__state" id="daemonStatusValue">Stopped</span>
+          <svg class="daemon-badge__caret" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+            <polyline points="2,3.5 5,6.5 8,3.5" stroke="#e2e8f0" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></polyline>
+          </svg>
+        </div>
+        <div class="daemon-dropdown" id="daemonStatusPanel" aria-hidden="true">
+          <ul class="daemon-dropdown__list">
+            <li class="daemon-dropdown__item">
+              <b>Watching</b>
+              <span class="daemon-dropdown__item-value" id="daemonPanelWatchingCount">0 paths</span>
+            </li>
+            <li class="daemon-dropdown__item">
+              <b>Path</b>
+              <span class="daemon-dropdown__item-value path" id="daemonPanelWatchedPath">n/a</span>
+            </li>
+            <li class="daemon-dropdown__item">
+              <b>Event</b>
+              <span class="daemon-dropdown__item-value" id="daemonPanelEventCount">0</span>
+            </li>
+          </ul>
+        </div>
       </div>
     </div>
   </header>
@@ -1843,7 +2054,16 @@
   <section class="log-dock" aria-label="Activity log">
     <div class="log-dock-inner">
       <div class="log-dock-header">
-        <span>Activity</span>
+        <div class="log-header-main">
+          <span>Activity</span>
+          <select class="log-level-select" id="logLevelSelect" aria-label="Log level">
+            <option value="debug">debug</option>
+            <option value="info">info</option>
+            <option value="warn">warn</option>
+            <option value="error">error</option>
+            <option value="off">off</option>
+          </select>
+        </div>
       </div>
       <div class="log-dock-controls">
         <span class="log-copy-status" id="logCopyStatus" aria-live="polite"></span>

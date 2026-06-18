@@ -26,6 +26,13 @@ let progressForwardTraceCount = 0;
 const PROGRESS_FORWARD_TRACE_LIMIT = 160;
 const appPlatform = normalizePlatform(process.platform);
 let watchService = null;
+let daemonStatus = {
+  running: false,
+  watchedSources: 0,
+  watchedPaths: [],
+  eventCount: 0,
+  updatedAt: new Date().toISOString()
+};
 let runtimeFlags = {
   traceProgressUi: String(process.env.MYBACKUP_TRACE_PROGRESS_UI || '1').trim() !== '0',
   showProgressQueueDetails: false
@@ -61,6 +68,26 @@ function sendProgressToRenderer(payload) {
   }
 
   mainWindow.webContents.send('app:backup-progress', payload);
+}
+
+function sendDaemonStatusToRenderer() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.webContents.send('app:daemon-status', daemonStatus);
+}
+
+function setDaemonStatus(nextStatus) {
+  daemonStatus = {
+    running: Boolean(nextStatus?.running),
+    watchedSources: Number(nextStatus?.watchedSources || 0),
+    watchedPaths: Array.isArray(nextStatus?.watchedPaths)
+      ? nextStatus.watchedPaths.filter((value) => typeof value === 'string' && value.trim() !== '')
+      : [],
+    eventCount: Number(nextStatus?.eventCount || 0),
+    updatedAt: new Date().toISOString()
+  };
+  sendDaemonStatusToRenderer();
 }
 
 function getRuntimeFlags() {
@@ -184,6 +211,13 @@ async function requireTargetRoot(input) {
 
 function registerIpcHandlers() {
   ipcMain.handle('app:get-dashboard', async () => refreshDashboardState(false));
+  ipcMain.handle('app:get-daemon-status', async () => {
+    if (watchService) {
+      setDaemonStatus(await watchService.getStatus());
+    }
+    return daemonStatus;
+  });
+  ipcMain.handle('app:get-app-version', async () => app.getVersion());
   ipcMain.handle('app:get-runtime-flags', async () => getRuntimeFlags());
   ipcMain.handle('change-tracking:get-change-list', async (_event, input) => {
     if (!input || !input.targetId || !input.sourceId) {
@@ -287,6 +321,7 @@ function registerIpcHandlers() {
     });
     if (watchService) {
       await watchService.refresh();
+      setDaemonStatus(await watchService.getStatus());
     }
     return {
       conflict: false,
@@ -318,6 +353,7 @@ function registerIpcHandlers() {
     });
     if (watchService) {
       await watchService.refresh();
+      setDaemonStatus(await watchService.getStatus());
     }
     return buildDashboardState();
   });
@@ -700,7 +736,9 @@ app.whenReady().then(async () => {
     appDataRoot: getAppDataRoot()
   });
   await watchService.bootstrap();
+  setDaemonStatus(await watchService.getStatus());
   await watchService.start();
+  setDaemonStatus(await watchService.getStatus());
   logger.info('Source watch service bootstrapped.', {
     platform: appPlatform
   });
@@ -728,5 +766,6 @@ app.on('window-all-closed', () => {
 app.on('before-quit', async () => {
   if (watchService) {
     await watchService.stop();
+    setDaemonStatus(await watchService.getStatus());
   }
 });

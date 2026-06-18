@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('myBackup', {
     return () => ipcRenderer.removeListener('window:maximized-changed', handler);
   },
   getRuntimeFlags: () => ipcRenderer.invoke('app:get-runtime-flags'),
+  getAppVersion: () => ipcRenderer.invoke('app:get-app-version'),
+  getDaemonStatus: () => ipcRenderer.invoke('app:get-daemon-status'),
   getChangeList: (input) => ipcRenderer.invoke('change-tracking:get-change-list', input),
   copyText: (text) => clipboard.writeText(String(text || '')),
   getDashboard: () => ipcRenderer.invoke('app:get-dashboard'),
@@ -41,5 +43,10 @@ contextBridge.exposeInMainWorld('myBackup', {
     const handler = (_event, payload) => listener(payload);
     ipcRenderer.on('app:dashboard-updated', handler);
     return () => ipcRenderer.removeListener('app:dashboard-updated', handler);
+  },
+  onDaemonStatus: (listener) => {
+    const handler = (_event, payload) => listener(payload);
+    ipcRenderer.on('app:daemon-status', handler);
+    return () => ipcRenderer.removeListener('app:daemon-status', handler);
   }
 });

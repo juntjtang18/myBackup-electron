@@ -524,6 +524,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           chunkSize: options.stageChunkSize,
           shouldAbort: shouldStopForPause,
           mtimeToleranceMs: options.mtimeToleranceMs,
+          compareBySourceNewerOnly: mode === 'full',
           onProgress: (stageProgress) => {
             const workerKey = `file:${worker.id}`;
             progress.workers[workerKey] = {

@@ -2037,11 +2037,14 @@ describe('metadata foundation', () => {
       forceNewScan: true
     });
 
+    const copiedPath = targetFilePath(tempRootPath, source, 'docs', 'b.txt');
+    const targetStatBefore = await fs.stat(copiedPath);
     writeFixture(path.join(sourceRoot, 'docs', 'b.txt'), 'beta-v2');
+    const newerDate = new Date(targetStatBefore.mtimeMs + 60_000);
     fs.utimesSync(
       path.join(sourceRoot, 'docs', 'b.txt'),
-      new Date('2026-06-07T09:20:00Z'),
-      new Date('2026-06-07T09:20:00Z')
+      newerDate,
+      newerDate
     );
 
     const summary = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
@@ -2051,7 +2054,7 @@ describe('metadata foundation', () => {
 
     expect(summary.filesCopied).toBe(1);
     expect(summary.filesIndexed).toBe(0);
-    expect(await fs.readFile(targetFilePath(tempRootPath, source, 'docs', 'b.txt'), 'utf8')).toBe('beta-v2');
+    expect(await fs.readFile(copiedPath, 'utf8')).toBe('beta-v2');
   });
 
   test('legacy source without total size forces a full backup even when baseline exists', async () => {
@@ -2159,6 +2162,43 @@ dist/**
     expect(summary.filesProcessed).toBe(2);
     expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'a.txt'))).toBe(true);
     expect(await fs.pathExists(path.join(tempRootPath, getSourceTargetRoot(source.machineId, source), 'node_modules'))).toBe(true);
+  });
+
+  test('full scan copy skips files when target file is newer than source', async () => {
+    const sourceRoot = path.join(tempRootPath, 'full-scan-newer-target-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'source-original');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'full-scan-newer-target-host',
+      seed: 'full-scan-newer-target-seed',
+      now: new Date('2026-06-09T10:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-09T10:05:00Z'));
+
+    await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-09T10:10:00Z'),
+      forceNewScan: true
+    });
+
+    const copiedPath = targetFilePath(tempRootPath, source, 'docs', 'a.txt');
+    await fs.writeFile(copiedPath, 'target-newer-content');
+    const sourceStat = await fs.stat(path.join(sourceRoot, 'docs', 'a.txt'));
+    const newerTargetDate = new Date(sourceStat.mtimeMs + 60_000);
+    await fs.utimes(copiedPath, newerTargetDate, newerTargetDate);
+
+    const summary = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-09T10:20:00Z'),
+      forceNewScan: true
+    });
+
+    expect(summary.filesProcessed).toBe(1);
+    expect(summary.filesCopied).toBe(0);
+    expect(await fs.readFile(copiedPath, 'utf8')).toBe('target-newer-content');
   });
 
   test('backupSource skips files and folders matched by .mbignore', async () => {

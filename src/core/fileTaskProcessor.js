@@ -14,6 +14,16 @@ function isMtimeWithinTolerance(sourceMtimeMs, targetMtimeMs, toleranceMs) {
   return Math.abs(Number(sourceMtimeMs || 0) - Number(targetMtimeMs || 0)) <= toleranceMs;
 }
 
+function shouldCopyWhenSourceNewer(stats, targetStat, toleranceMs) {
+  if (!targetStat) {
+    return true;
+  }
+
+  const sourceMtimeMs = Number(stats?.mtimeMs || 0);
+  const targetMtimeMs = Number(targetStat?.mtimeMs || 0);
+  return sourceMtimeMs > (targetMtimeMs + Number(toleranceMs || 0));
+}
+
 async function processFileTask(input) {
   const {
     targetRoot,
@@ -26,7 +36,8 @@ async function processFileTask(input) {
     shouldAbort,
     onProgress,
     chunkSize,
-    mtimeToleranceMs = 2000
+    mtimeToleranceMs = 2000,
+    compareBySourceNewerOnly = false
   } = input;
 
   const mapping = resolveTargetMapping({
@@ -36,24 +47,42 @@ async function processFileTask(input) {
     filePath: sourceFilePath
   });
   const targetStat = await statStoredPlainFile(targetRoot, mapping.logicalPath);
-  if (targetStat
-    && targetStat.size === stats.size
-    && isMtimeWithinTolerance(stats.mtimeMs, targetStat.mtimeMs, mtimeToleranceMs)) {
-    logger.debug('Skipped unchanged file from mapped target stat.', {
-      sourceRelativePath,
-      logicalPath: mapping.logicalPath,
-      targetSize: targetStat.size,
-      targetMtimeMs: targetStat.mtimeMs,
-      sourceMtimeMs: stats.mtimeMs,
-      mtimeToleranceMs
-    });
-    return {
-      action: 'skipped-target-stat',
-      fileHash: null,
-      logicalPath: mapping.logicalPath,
-      sourceRelativePath,
-      bytesProcessed: 0
-    };
+  if (compareBySourceNewerOnly) {
+    if (!shouldCopyWhenSourceNewer(stats, targetStat, mtimeToleranceMs)) {
+      logger.debug('Skipped full-scan file because target is present and not older.', {
+        sourceRelativePath,
+        logicalPath: mapping.logicalPath,
+        targetSize: targetStat?.size || 0,
+        targetMtimeMs: targetStat?.mtimeMs || 0,
+        sourceMtimeMs: stats.mtimeMs,
+        mtimeToleranceMs
+      });
+      return {
+        action: 'skipped-target-stat',
+        fileHash: null,
+        logicalPath: mapping.logicalPath,
+        sourceRelativePath,
+        bytesProcessed: 0
+      };
+    }
+  } else if (targetStat
+      && targetStat.size === stats.size
+      && isMtimeWithinTolerance(stats.mtimeMs, targetStat.mtimeMs, mtimeToleranceMs)) {
+      logger.debug('Skipped unchanged file from mapped target stat.', {
+        sourceRelativePath,
+        logicalPath: mapping.logicalPath,
+        targetSize: targetStat.size,
+        targetMtimeMs: targetStat.mtimeMs,
+        sourceMtimeMs: stats.mtimeMs,
+        mtimeToleranceMs
+      });
+      return {
+        action: 'skipped-target-stat',
+        fileHash: null,
+        logicalPath: mapping.logicalPath,
+        sourceRelativePath,
+        bytesProcessed: 0
+      };
   }
 
   const stageJobId = `${shortHash(`${machineId}:${source.sourceId}:${sourceRelativePath}:${now.toISOString()}`, 12)}-stage`;

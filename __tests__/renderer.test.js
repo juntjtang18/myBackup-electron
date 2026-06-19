@@ -200,6 +200,20 @@ describe('renderer target offline behavior', () => {
     expect(global.window.myBackup.getChangeList).not.toHaveBeenCalled();
   });
 
+  test('full scan action forces a new full scan backup run', async () => {
+    const testApi = loadRendererTestApi();
+    testApi.state.dashboard.targets = [createTarget()];
+
+    await testApi.runBackup('/Volumes/ST/Backup', 'machine-a', 'source-a', null, true);
+
+    expect(global.window.myBackup.runBackup).toHaveBeenCalledWith({
+      targetRoot: '/Volumes/ST/Backup',
+      machineId: 'machine-a',
+      sourceId: 'source-a',
+      forceNewScan: true
+    });
+  });
+
   test('active backup renders the source card arrow in copying state', () => {
     const testApi = loadRendererTestApi();
     testApi.state.dashboard.targets = [createTarget()];

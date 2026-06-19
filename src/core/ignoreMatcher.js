@@ -1,28 +1,36 @@
 const path = require('path');
 const fs = require('fs-extra');
 const { toPosixPath } = require('./layout');
+const { sanitizeSegment } = require('./ids');
 
 const DEFAULT_IGNORE_PATTERNS = [
-  'node_modules/',
-  'bower_components/',
-  'jspm_packages/',
-  'vendor/',
+  '.DS_Store',
+  '._*',
+  'Thumbs.db',
+  'Desktop.ini'
+];
+
+const SOURCE_IGNORE_TEMPLATE = [
+  '# Temporary files',
+  '*.tmp',
+  '*.temp',
+  '~$*',
+  '',
+  '# System files',
   '.DS_Store',
   '._*',
   'Thumbs.db',
   'Desktop.ini',
-  '*.lrdata/',
-  '__pycache__/',
-  '.pytest_cache/',
-  '.mypy_cache/',
-  '.tox/',
-  '.venv/',
-  'venv/',
-  'Pods/',
+  '',
+  '# OS metadata',
+  '.Spotlight-V100/',
+  '.Trashes/',
+  '.fseventsd/',
+  '',
+  '# VCS metadata',
   '.git/',
-  '.svn/',
-  '.hg/'
-];
+  ''
+].join('\n');
 
 function escapeRegex(value) {
   return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
@@ -137,21 +145,92 @@ function createIgnoreMatcher(rules) {
   };
 }
 
-async function loadIgnoreMatcher(sourceRoot) {
-  const ignorePath = path.join(sourceRoot, '.mbignore');
-  let userContent = '';
-  if (await fs.pathExists(ignorePath)) {
-    userContent = await fs.readFile(ignorePath, 'utf8');
+function getSourceIgnoreDirectory(appDataRoot) {
+  if (!appDataRoot) {
+    return null;
+  }
+  return path.join(path.resolve(appDataRoot), 'ignore-rules');
+}
+
+function resolveSourceIgnorePath(appDataRoot, source) {
+  const directory = getSourceIgnoreDirectory(appDataRoot);
+  if (!directory || !source?.sourceId) {
+    return null;
+  }
+  const machinePart = sanitizeSegment(source.machineId || 'machine');
+  const sourcePart = sanitizeSegment(source.sourceId);
+  return path.join(directory, `${machinePart}--${sourcePart}.mbignore`);
+}
+
+async function ensureSourceIgnoreFile(appDataRoot, source, template = SOURCE_IGNORE_TEMPLATE) {
+  const ignorePath = resolveSourceIgnorePath(appDataRoot, source);
+  if (!ignorePath) {
+    return null;
+  }
+  await fs.ensureDir(path.dirname(ignorePath));
+  if (!(await fs.pathExists(ignorePath))) {
+    await fs.writeFile(ignorePath, template, 'utf8');
+  }
+  return ignorePath;
+}
+
+async function readSourceIgnoreFile(appDataRoot, source) {
+  const ignorePath = await ensureSourceIgnoreFile(appDataRoot, source);
+  if (!ignorePath) {
+    return {
+      ignorePath: null,
+      rulesText: SOURCE_IGNORE_TEMPLATE,
+      defaultTemplate: SOURCE_IGNORE_TEMPLATE
+    };
   }
 
-  return createIgnoreMatcher(buildIgnoreRules(userContent));
+  return {
+    ignorePath,
+    rulesText: await fs.readFile(ignorePath, 'utf8'),
+    defaultTemplate: SOURCE_IGNORE_TEMPLATE
+  };
+}
+
+async function writeSourceIgnoreFile(appDataRoot, source, rulesText) {
+  const ignorePath = await ensureSourceIgnoreFile(appDataRoot, source);
+  if (!ignorePath) {
+    throw new Error('Source ignore file path is unavailable.');
+  }
+  const normalized = String(rulesText || '').replace(/\r\n/g, '\n');
+  await fs.writeFile(ignorePath, normalized, 'utf8');
+  return {
+    ignorePath,
+    rulesText: normalized,
+    defaultTemplate: SOURCE_IGNORE_TEMPLATE
+  };
+}
+
+async function loadIgnoreMatcher(sourceRoot, options = {}) {
+  const parts = [];
+  const sourceSpecificIgnorePath = resolveSourceIgnorePath(options.appDataRoot, options.source);
+
+  if (sourceSpecificIgnorePath && await fs.pathExists(sourceSpecificIgnorePath)) {
+    parts.push(await fs.readFile(sourceSpecificIgnorePath, 'utf8'));
+  } else {
+    const legacyIgnorePath = path.join(sourceRoot, '.mbignore');
+    if (await fs.pathExists(legacyIgnorePath)) {
+      parts.push(await fs.readFile(legacyIgnorePath, 'utf8'));
+    }
+  }
+
+  return createIgnoreMatcher(buildIgnoreRules(parts.join('\n')));
 }
 
 module.exports = {
   DEFAULT_IGNORE_PATTERNS,
+  SOURCE_IGNORE_TEMPLATE,
   buildIgnoreRules,
   createIgnoreMatcher,
+  ensureSourceIgnoreFile,
   loadIgnoreMatcher,
   parseIgnoreFile,
-  shouldIgnorePath
+  readSourceIgnoreFile,
+  resolveSourceIgnorePath,
+  shouldIgnorePath,
+  writeSourceIgnoreFile
 };

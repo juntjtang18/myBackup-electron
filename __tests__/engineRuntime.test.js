@@ -18,12 +18,14 @@ describe('engine runtime modules', () => {
     fs.removeSync(tempRootPath);
   });
 
-  test('full scanner traverses the whole source tree and skips ignored paths', async () => {
+  test('full scanner traverses the whole source tree and skips default OS junk paths', async () => {
     const sourcePath = path.join(tempRootPath, 'source');
     await fs.ensureDir(path.join(sourcePath, 'docs', 'nested'));
     await fs.ensureDir(path.join(sourcePath, 'node_modules', 'pkg'));
     await fs.writeFile(path.join(sourcePath, 'root.txt'), 'root');
+    await fs.writeFile(path.join(sourcePath, '.DS_Store'), 'ignored');
     await fs.writeFile(path.join(sourcePath, 'docs', 'a.txt'), 'a');
+    await fs.writeFile(path.join(sourcePath, 'docs', '.DS_Store'), 'ignored');
     await fs.writeFile(path.join(sourcePath, 'docs', 'nested', 'b.txt'), 'b');
     await fs.writeFile(path.join(sourcePath, 'node_modules', 'pkg', 'skip.js'), 'skip');
 
@@ -40,13 +42,13 @@ describe('engine runtime modules', () => {
 
     expect(summary).toMatchObject({
       mode: 'full',
-      foldersScanned: 3,
-      filesEnqueued: 3,
+      foldersScanned: 5,
+      filesEnqueued: 4,
       skippedFolders: 0,
       skippedFiles: 0
     });
-    expect(folders).toEqual(['.', 'docs', 'docs/nested']);
-    expect(enqueued).toEqual(['root.txt', 'docs/a.txt', 'docs/nested/b.txt']);
+    expect(folders).toEqual(['.', 'docs', 'docs/nested', 'node_modules', 'node_modules/pkg']);
+    expect(enqueued).toEqual(['root.txt', 'docs/a.txt', 'docs/nested/b.txt', 'node_modules/pkg/skip.js']);
   });
 
   test('dirty-folder scanner enqueues only direct child files of selected dirty folders', async () => {

@@ -2116,25 +2116,25 @@ dist/**
     expect(shouldIgnorePath(rules, 'keep.log', false)).toBe(false);
   });
 
-  test('applies default library ignore patterns without a .mbignore file', () => {
+  test('applies default OS junk ignore patterns without a .mbignore file', () => {
     const rules = buildIgnoreRules('');
 
-    expect(shouldIgnorePath(rules, 'node_modules', true)).toBe(true);
-    expect(shouldIgnorePath(rules, 'packages/app/node_modules', true)).toBe(true);
-    expect(shouldIgnorePath(rules, 'packages/app/node_modules/pkg/index.js', false)).toBe(true);
-    expect(shouldIgnorePath(rules, 'vendor', true)).toBe(true);
-    expect(shouldIgnorePath(rules, 'project/.git', true)).toBe(true);
+    expect(shouldIgnorePath(rules, 'node_modules', true)).toBe(false);
+    expect(shouldIgnorePath(rules, 'packages/app/node_modules', true)).toBe(false);
+    expect(shouldIgnorePath(rules, 'packages/app/node_modules/pkg/index.js', false)).toBe(false);
+    expect(shouldIgnorePath(rules, 'vendor', true)).toBe(false);
+    expect(shouldIgnorePath(rules, 'project/.git', true)).toBe(false);
     expect(shouldIgnorePath(rules, '.DS_Store', false)).toBe(true);
     expect(shouldIgnorePath(rules, 'folder/.DS_Store', false)).toBe(true);
     expect(shouldIgnorePath(rules, '._metadata', false)).toBe(true);
     expect(shouldIgnorePath(rules, 'Thumbs.db', false)).toBe(true);
     expect(shouldIgnorePath(rules, 'Desktop.ini', false)).toBe(true);
-    expect(shouldIgnorePath(rules, 'Lightroom Catalog.lrdata', true)).toBe(true);
-    expect(shouldIgnorePath(rules, 'Caches/Lightroom Catalog.lrdata/previews.db', false)).toBe(true);
+    expect(shouldIgnorePath(rules, 'Lightroom Catalog.lrdata', true)).toBe(false);
+    expect(shouldIgnorePath(rules, 'Caches/Lightroom Catalog.lrdata/previews.db', false)).toBe(false);
     expect(shouldIgnorePath(rules, 'docs/readme.txt', false)).toBe(false);
   });
 
-  test('backupSource skips node_modules by default even without .mbignore', async () => {
+  test('backupSource includes node_modules by default without .mbignore', async () => {
     const sourceRoot = path.join(tempRootPath, 'default-ignore-source');
     writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha');
     writeFixture(path.join(sourceRoot, 'node_modules', 'pkg', 'index.js'), 'ignored');
@@ -2156,9 +2156,9 @@ dist/**
       forceNewScan: true
     });
 
-    expect(summary.filesProcessed).toBe(1);
+    expect(summary.filesProcessed).toBe(2);
     expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'a.txt'))).toBe(true);
-    expect(await fs.pathExists(path.join(tempRootPath, getSourceTargetRoot(source.machineId, source), 'node_modules'))).toBe(false);
+    expect(await fs.pathExists(path.join(tempRootPath, getSourceTargetRoot(source.machineId, source), 'node_modules'))).toBe(true);
   });
 
   test('backupSource skips files and folders matched by .mbignore', async () => {

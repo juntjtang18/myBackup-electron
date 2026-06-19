@@ -16,6 +16,11 @@ const { ChangeTracker } = require('./core/changeTracking/ChangeTracker');
 const { configureLogger, createLogger, getLogLevel } = require('./core/logger');
 const { getSourceFolderName, normalizeTargetFolder } = require('./core/pathPlanner');
 const { loadRuntimeFlags } = require('./core/runtimeFlags');
+const {
+  ensureSourceIgnoreFile,
+  readSourceIgnoreFile,
+  writeSourceIgnoreFile
+} = require('./core/ignoreMatcher');
 
 let mainWindow = null;
 const logger = createLogger('MainProcess', 'index.js');
@@ -209,6 +214,28 @@ async function requireTargetRoot(input) {
   return requireRegisteredTarget(getAppDataRoot(), input && input.targetRoot);
 }
 
+async function requireSourceById(input) {
+  if (!input || !input.targetId || !input.sourceId) {
+    throw new Error('Target id and source id are required.');
+  }
+
+  const schema = await loadBackupSchema(getAppDataRoot());
+  const target = (schema?.targets || []).find((entry) => entry.id === input.targetId);
+  if (!target) {
+    throw new Error(`Unknown backup target id: ${input.targetId}`);
+  }
+
+  const source = (target.sources || []).find((entry) => (
+    entry.sourceId === input.sourceId
+    && (!input.machineId || entry.machineId === input.machineId)
+  ));
+  if (!source) {
+    throw new Error(`Unknown source id: ${input.sourceId}`);
+  }
+
+  return { target, source };
+}
+
 function registerIpcHandlers() {
   ipcMain.handle('app:get-dashboard', async () => refreshDashboardState(false));
   ipcMain.handle('app:get-daemon-status', async () => {
@@ -310,6 +337,7 @@ function registerIpcHandlers() {
       sourcePath,
       targetFolder
     });
+    await ensureSourceIgnoreFile(getAppDataRoot(), source);
     logger.info('Source registered.', {
       sourceId: source.sourceId,
       sourcePath: source.sourcePath,
@@ -326,6 +354,32 @@ function registerIpcHandlers() {
     return {
       conflict: false,
       dashboard: await buildDashboardState()
+    };
+  });
+
+  ipcMain.handle('app:get-source-ignore-rules', async (_event, input) => {
+    const { source } = await requireSourceById(input);
+    const rulesDocument = await readSourceIgnoreFile(getAppDataRoot(), source);
+    return {
+      ...rulesDocument,
+      sourcePath: source.sourcePath
+    };
+  });
+
+  ipcMain.handle('app:save-source-ignore-rules', async (_event, input) => {
+    const { source } = await requireSourceById(input);
+    if (!input || typeof input.rulesText !== 'string') {
+      throw new Error('rulesText must be a string.');
+    }
+    const rulesDocument = await writeSourceIgnoreFile(getAppDataRoot(), source, input.rulesText);
+    logger.info('Source ignore rules updated.', {
+      sourceId: source.sourceId,
+      machineId: source.machineId,
+      ignorePath: rulesDocument.ignorePath
+    });
+    return {
+      ...rulesDocument,
+      updatedAt: new Date().toISOString()
     };
   });
 

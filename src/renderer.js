@@ -9,8 +9,11 @@ const state = {
   pauseRequests: {},
   progressPanelExpanded: {},
   sourceDeleteExpanded: {},
+  sourceActionTransition: {},
+  sourceActionTransitionTimers: {},
   sourceChangeExpanded: {},
   sourceChanges: {},
+  sourceExcludeEditors: {},
   runtimeFlags: {
     traceProgressUi: true,
     showProgressQueueDetails: false
@@ -356,6 +359,27 @@ const BUTTON_ICON_RESTORE = `
   </span>
 `;
 
+const BUTTON_ICON_FULL_SCAN = `
+  <span class="btn-icon" aria-hidden="true">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2.75" y="2.75" width="10.5" height="10.5" rx="2"></rect>
+      <path d="M5.25 8h5.5"></path>
+      <path d="M8 5.25v5.5"></path>
+    </svg>
+  </span>
+`;
+
+const BUTTON_ICON_EXCLUDE = `
+  <span class="btn-icon" aria-hidden="true">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3.5 4.5h9"></path>
+      <path d="M3.5 8h9"></path>
+      <path d="M3.5 11.5h6"></path>
+      <circle cx="12.25" cy="11.5" r="1.25"></circle>
+    </svg>
+  </span>
+`;
+
 function withButtonIcon(icon, text) {
   return `${icon}<span class="btn-label">${escapeHtml(text)}</span>`;
 }
@@ -572,6 +596,31 @@ function renderSourceChangePanel(target, source) {
       ${body}
     </section>
   `;
+}
+
+function renderSourceExcludePanel(target, source) {
+  const key = sourceChangeKey(target.id, source.sourceId);
+  const editorState = state.sourceExcludeEditors[key];
+  if (!editorState?.open) {
+    return '';
+  }
+
+  if (!window.myBackupExcludeEditor?.renderExcludePanel) {
+    return '<section class="exclude-editor-panel"><div class="exclude-editor-error">Exclude editor component is unavailable.</div></section>';
+  }
+
+  const sourceLabel = source.sourcePath.split(/[/\\]/).filter(Boolean).pop() || source.sourcePath;
+  return window.myBackupExcludeEditor.renderExcludePanel({
+    targetId: target.id,
+    sourceId: source.sourceId,
+    sourceLabel,
+    draftText: editorState.draftText || '',
+    originalText: editorState.originalText || '',
+    defaultTemplate: editorState.defaultTemplate || '',
+    isLoading: Boolean(editorState.loading),
+    isSaving: Boolean(editorState.saving),
+    errorMessage: editorState.error || ''
+  });
 }
 
 function formatLogEntryPlain(entry) {
@@ -888,6 +937,10 @@ function renderTargetSourcesTable(target) {
   const targetRoot = target.path;
   const sources = target.sources || [];
   const showDeleteButtons = Boolean(state.sourceDeleteExpanded[target.id]);
+  const transitionState = state.sourceActionTransition[target.id] || '';
+  const actionRowClass = showDeleteButtons
+    ? `actions-row is-settings-mode${transitionState ? ` ${transitionState}` : ''}`
+    : `actions-row is-normal-mode${transitionState ? ` ${transitionState}` : ''}`;
   const targetUnavailable = target.available === false;
 
   if (!sources || sources.length === 0) {
@@ -908,7 +961,10 @@ function renderTargetSourcesTable(target) {
       || missingSourceSize
       || Boolean(source.watchState?.needsRescan);
     const restoreDisabled = targetUnavailable || Boolean(activeProgress);
+    const fullScanDisabled = targetUnavailable || Boolean(activeProgress) || restoreInProgress;
     const deleteDisabled = Boolean(activeProgress);
+    const normalModeDisabled = showDeleteButtons;
+    const settingsModeDisabled = !showDeleteButtons;
     const idleBackupLabel = pausedCursor ? 'Resume' : (requiresFullBackup ? 'Full Backup' : 'Backup Changes');
     const backupLabel = activeProgress && !restoreInProgress
       ? (pauseRequested || isPausing ? 'Pausing...' : 'Pause')
@@ -974,14 +1030,21 @@ function renderTargetSourcesTable(target) {
                 <span class="source-card-backup-text">Last backup ${escapeHtml(formatTimestamp(source.lastCompletedAt))}</span>
               </div>
             </div>
-            <div class="actions-row">
-              <button class="btn btn-sm btn-outline-secondary btn-action btn-action-changes toggle-changes-button${state.sourceChangeExpanded[changeKey] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(sourceChangeLabel)}">${withButtonIcon(BUTTON_ICON_CHANGES, sourceChangeLabel)}</button>
-              <button class="btn btn-sm ${backupClass} btn-action btn-action-backup run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(backupLabel)}"${backupDisabled ? ' disabled' : ''}>${withButtonIcon(activeProgress && !restoreInProgress ? BUTTON_ICON_PAUSE : pausedCursor ? BUTTON_ICON_PLAY : BUTTON_ICON_BACKUP, backupLabel)}</button>
-              <button class="btn btn-sm btn-outline-secondary btn-action btn-action-restore restore-source-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${restoreDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_RESTORE, restoreLabel)}</button>
-              ${showDeleteButtons ? `<button class="btn btn-sm btn-outline-danger btn-action btn-action-delete delete-source-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}"${deleteDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_TRASH, 'Delete')}</button>` : ''}
+            <div class="${actionRowClass}">
+              <div class="actions-group actions-group--normal">
+                <button class="btn btn-sm btn-outline-secondary btn-action btn-action-changes toggle-changes-button${state.sourceChangeExpanded[changeKey] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(sourceChangeLabel)}"${normalModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_CHANGES, sourceChangeLabel)}</button>
+                <button class="btn btn-sm ${backupClass} btn-action btn-action-backup run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(backupLabel)}"${backupDisabled || normalModeDisabled ? ' disabled' : ''}>${withButtonIcon(activeProgress && !restoreInProgress ? BUTTON_ICON_PAUSE : pausedCursor ? BUTTON_ICON_PLAY : BUTTON_ICON_BACKUP, backupLabel)}</button>
+                <button class="btn btn-sm btn-outline-secondary btn-action btn-action-full-scan run-full-scan-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="Full Scan Copy"${fullScanDisabled || normalModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_FULL_SCAN, 'Full Scan')}</button>
+                <button class="btn btn-sm btn-outline-secondary btn-action btn-action-restore restore-source-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${restoreDisabled || normalModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_RESTORE, restoreLabel)}</button>
+              </div>
+              <div class="actions-group actions-group--settings">
+                <button class="btn btn-sm btn-outline-secondary btn-action btn-action-exclude exclude-settings-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}" title="Exclude Setting"${settingsModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_EXCLUDE, 'Exclude Setting')}</button>
+                <button class="btn btn-sm btn-outline-danger btn-action btn-action-delete delete-source-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}"${deleteDisabled || settingsModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_TRASH, 'Delete')}</button>
+              </div>
             </div>
-          </div>
+      </div>
         </article>
+        ${renderSourceExcludePanel(target, source)}
         ${renderSourceChangePanel(target, source)}
         ${renderProgressPanel(targetRoot, source)}
       </div>
@@ -1038,6 +1101,16 @@ function bindTargetPanelActions(container) {
     ));
   });
 
+  container.querySelectorAll('.run-full-scan-button').forEach((button) => {
+    button.addEventListener('click', () => runBackup(
+      button.dataset.targetRoot,
+      button.dataset.machineId,
+      button.dataset.sourceId,
+      button,
+      true
+    ));
+  });
+
   container.querySelectorAll('.source-progress-node').forEach((button) => {
     button.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -1054,6 +1127,87 @@ function bindTargetPanelActions(container) {
       button.dataset.targetId,
       button.dataset.sourceId
     ));
+  });
+
+  container.querySelectorAll('.exclude-settings-button').forEach((button) => {
+    button.addEventListener('click', () => {
+      void toggleExcludeEditorPanel({
+        targetRoot: button.dataset.targetRoot,
+        targetId: button.dataset.targetId,
+        machineId: button.dataset.machineId,
+        sourceId: button.dataset.sourceId,
+        sourcePath: button.dataset.sourcePath
+      });
+    });
+  });
+
+  container.querySelectorAll('.exclude-editor-textarea').forEach((textarea) => {
+    textarea.addEventListener('input', () => {
+      const panel = textarea.closest('.exclude-editor-panel');
+      if (!panel) {
+        return;
+      }
+      const targetId = panel.dataset.targetId;
+      const sourceId = panel.dataset.sourceId;
+      const key = sourceChangeKey(targetId, sourceId);
+      const editorState = state.sourceExcludeEditors[key];
+      if (!editorState) {
+        return;
+      }
+      editorState.draftText = textarea.value;
+      refreshExcludeEditorPanelUi(panel, editorState);
+    });
+
+    textarea.addEventListener('scroll', () => {
+      const panel = textarea.closest('.exclude-editor-panel');
+      if (!panel) {
+        return;
+      }
+      const linesElement = panel.querySelector('.exclude-editor-lines');
+      if (linesElement) {
+        linesElement.scrollTop = textarea.scrollTop;
+      }
+    });
+  });
+
+  container.querySelectorAll('.exclude-editor-cancel').forEach((button) => {
+    button.addEventListener('click', () => {
+      const panel = button.closest('.exclude-editor-panel');
+      if (!panel) {
+        return;
+      }
+      closeExcludeEditorPanel(panel.dataset.targetId, panel.dataset.sourceId);
+    });
+  });
+
+  container.querySelectorAll('.exclude-editor-reset').forEach((button) => {
+    button.addEventListener('click', () => {
+      const panel = button.closest('.exclude-editor-panel');
+      if (!panel) {
+        return;
+      }
+      const key = sourceChangeKey(panel.dataset.targetId, panel.dataset.sourceId);
+      const editorState = state.sourceExcludeEditors[key];
+      if (!editorState || editorState.loading || editorState.saving) {
+        return;
+      }
+      editorState.draftText = editorState.defaultTemplate || '';
+      const textarea = panel.querySelector('.exclude-editor-textarea');
+      if (textarea) {
+        textarea.value = editorState.draftText;
+      }
+      refreshExcludeEditorPanelUi(panel, editorState);
+    });
+  });
+
+  container.querySelectorAll('.exclude-editor-save').forEach((button) => {
+    button.addEventListener('click', () => {
+      const panel = button.closest('.exclude-editor-panel');
+      if (!panel) {
+        return;
+      }
+      void saveExcludeEditorPanel(panel.dataset.targetId, panel.dataset.sourceId);
+    });
   });
 
   container.querySelectorAll('.restore-source-button').forEach((button) => {
@@ -1095,6 +1249,11 @@ function renderTargets() {
     const collapsedClass = target.collapsed ? 'collapsed' : '';
     const activeClass = isRunning ? 'is-active' : '';
     const unavailableClass = target.available === false ? 'unavailable' : '';
+    const showDeleteButtons = Boolean(state.sourceDeleteExpanded[target.id]);
+    const transitionState = state.sourceActionTransition[target.id] || '';
+    const targetActionClass = showDeleteButtons
+      ? `target-actions-row is-settings-mode${transitionState ? ` ${transitionState}` : ''}`
+      : `target-actions-row is-normal-mode${transitionState ? ` ${transitionState}` : ''}`;
 
     return `
       <article class="target-panel ${collapsedClass} ${activeClass} ${unavailableClass}" data-target-id="${escapeHtml(target.id)}">
@@ -1109,9 +1268,13 @@ function renderTargets() {
             ${target.available === false ? '<span class="target-status-badge target-status-unavailable">Unavailable</span>' : ''}
             <span class="target-count-badge">${sourceCount} source${sourceCount === 1 ? '' : 's'}</span>
           </div>
-          <div class="target-panel-actions">
-            <button type="button" class="btn-target-action add-source-button" data-target-root="${escapeHtml(target.path)}">${withButtonIcon(BUTTON_ICON_PLUS, 'Source')}</button>
-            <button type="button" class="btn-target-action danger remove-target-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(target.path)}" title="Remove from list">${withButtonIcon(BUTTON_ICON_TRASH, 'Remove')}</button>
+          <div class="target-panel-actions ${targetActionClass}">
+            <div class="target-actions-group target-actions-group--normal">
+              <button type="button" class="btn-target-action add-source-button" data-target-root="${escapeHtml(target.path)}">${withButtonIcon(BUTTON_ICON_PLUS, 'Source')}</button>
+            </div>
+            <div class="target-actions-group target-actions-group--settings">
+              <button type="button" class="btn-target-action danger remove-target-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(target.path)}" title="Remove from list">${withButtonIcon(BUTTON_ICON_TRASH, 'Delete')}</button>
+            </div>
             <button type="button" class="btn-target-action settings toggle-source-delete-button${state.sourceDeleteExpanded[target.id] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" title="Toggle source delete mode" aria-label="Toggle source delete mode">${withButtonIcon(BUTTON_ICON_GEAR, 'Settings')}</button>
           </div>
         </div>
@@ -1261,6 +1424,7 @@ async function removeTarget(targetId, targetRoot) {
       if (key.startsWith(`${targetId}::`)) {
         delete state.sourceChangeExpanded[key];
         delete state.sourceChanges[key];
+        delete state.sourceExcludeEditors[key];
       }
     });
     renderDashboard();
@@ -1270,7 +1434,18 @@ async function removeTarget(targetId, targetRoot) {
 }
 
 function toggleSourceDeleteMode(targetId) {
-  state.sourceDeleteExpanded[targetId] = !state.sourceDeleteExpanded[targetId];
+  const nextState = !state.sourceDeleteExpanded[targetId];
+  state.sourceDeleteExpanded[targetId] = nextState;
+  const transitionClass = nextState ? 'is-to-settings' : 'is-to-normal';
+  state.sourceActionTransition[targetId] = transitionClass;
+  if (state.sourceActionTransitionTimers[targetId]) {
+    clearTimeout(state.sourceActionTransitionTimers[targetId]);
+  }
+  state.sourceActionTransitionTimers[targetId] = setTimeout(() => {
+    delete state.sourceActionTransition[targetId];
+    delete state.sourceActionTransitionTimers[targetId];
+    renderSources();
+  }, 240);
   renderSources();
 }
 
@@ -1308,8 +1483,14 @@ async function removeSourceFromTarget(targetId, targetRoot, machineId, sourceId,
     });
     delete state.sourceChangeExpanded[changeKey];
     delete state.sourceChanges[changeKey];
+    delete state.sourceExcludeEditors[changeKey];
     if ((state.dashboard.targets || []).every((target) => target.id !== targetId || (target.sources || []).length === 0)) {
       delete state.sourceDeleteExpanded[targetId];
+      delete state.sourceActionTransition[targetId];
+      if (state.sourceActionTransitionTimers[targetId]) {
+        clearTimeout(state.sourceActionTransitionTimers[targetId]);
+        delete state.sourceActionTransitionTimers[targetId];
+      }
     }
     renderDashboard();
   } catch (error) {
@@ -1385,6 +1566,154 @@ function toggleSourceChanges(targetId, sourceId) {
   if (nextExpanded) {
     void loadSourceChanges(targetId, sourceId);
   }
+}
+
+function findDashboardSourceByIds(targetId, sourceId) {
+  const target = (state.dashboard.targets || []).find((entry) => entry.id === targetId);
+  const source = (target?.sources || []).find((entry) => entry.sourceId === sourceId);
+  return { target, source };
+}
+
+function refreshExcludeEditorPanelUi(panelElement, editorState) {
+  if (!panelElement || !editorState) {
+    return;
+  }
+
+  const textarea = panelElement.querySelector('.exclude-editor-textarea');
+  const saveButton = panelElement.querySelector('.exclude-editor-save');
+  const cancelButton = panelElement.querySelector('.exclude-editor-cancel');
+  const resetButton = panelElement.querySelector('.exclude-editor-reset');
+  const currentText = textarea ? textarea.value : (editorState.draftText || '');
+  const isDirty = currentText !== (editorState.originalText || '');
+  const isBusy = Boolean(editorState.loading || editorState.saving);
+
+  if (window.myBackupExcludeEditor?.refreshPanelMetrics) {
+    window.myBackupExcludeEditor.refreshPanelMetrics(panelElement, currentText);
+  }
+
+  if (textarea) {
+    textarea.disabled = isBusy;
+  }
+  if (saveButton) {
+    saveButton.disabled = isBusy || !isDirty;
+    saveButton.textContent = editorState.saving ? 'Saving...' : 'Save';
+  }
+  if (cancelButton) {
+    cancelButton.disabled = isBusy;
+  }
+  if (resetButton) {
+    resetButton.disabled = isBusy;
+  }
+}
+
+function closeExcludeEditorPanel(targetId, sourceId) {
+  const key = sourceChangeKey(targetId, sourceId);
+  const editorState = state.sourceExcludeEditors[key];
+  if (!editorState) {
+    return;
+  }
+  editorState.open = false;
+  editorState.error = null;
+  renderSources();
+}
+
+async function toggleExcludeEditorPanel(input) {
+  const key = sourceChangeKey(input.targetId, input.sourceId);
+  const existing = state.sourceExcludeEditors[key];
+  if (existing?.open) {
+    closeExcludeEditorPanel(input.targetId, input.sourceId);
+    return;
+  }
+
+  state.sourceExcludeEditors[key] = {
+    open: true,
+    loading: true,
+    saving: false,
+    error: null,
+    draftText: existing?.draftText || '',
+    originalText: existing?.originalText || '',
+    defaultTemplate: existing?.defaultTemplate || ''
+  };
+  renderSources();
+
+  try {
+    const response = await window.myBackup.getSourceIgnoreRules({
+      targetId: input.targetId,
+      machineId: input.machineId,
+      sourceId: input.sourceId
+    });
+    const normalized = window.myBackupExcludeEditor?.normalizeText
+      ? window.myBackupExcludeEditor.normalizeText(response?.rulesText || '')
+      : String(response?.rulesText || '');
+    const defaultTemplate = window.myBackupExcludeEditor?.normalizeText
+      ? window.myBackupExcludeEditor.normalizeText(response?.defaultTemplate || '')
+      : String(response?.defaultTemplate || '');
+    state.sourceExcludeEditors[key] = {
+      ...state.sourceExcludeEditors[key],
+      open: true,
+      loading: false,
+      saving: false,
+      error: null,
+      draftText: normalized,
+      originalText: normalized,
+      defaultTemplate
+    };
+  } catch (error) {
+    state.sourceExcludeEditors[key] = {
+      ...state.sourceExcludeEditors[key],
+      open: true,
+      loading: false,
+      saving: false,
+      error: error.message || 'Failed to load exclude rules.'
+    };
+  }
+  renderSources();
+}
+
+async function saveExcludeEditorPanel(targetId, sourceId) {
+  const key = sourceChangeKey(targetId, sourceId);
+  const editorState = state.sourceExcludeEditors[key];
+  if (!editorState || editorState.loading || editorState.saving) {
+    return;
+  }
+  const { source } = findDashboardSourceByIds(targetId, sourceId);
+  if (!source) {
+    return;
+  }
+
+  editorState.saving = true;
+  editorState.error = null;
+  renderSources();
+
+  try {
+    const response = await window.myBackup.saveSourceIgnoreRules({
+      targetId,
+      machineId: source.machineId,
+      sourceId,
+      rulesText: editorState.draftText || ''
+    });
+    const normalized = window.myBackupExcludeEditor?.normalizeText
+      ? window.myBackupExcludeEditor.normalizeText(response?.rulesText || '')
+      : String(response?.rulesText || '');
+    editorState.originalText = normalized;
+    editorState.draftText = normalized;
+    editorState.defaultTemplate = response?.defaultTemplate || editorState.defaultTemplate || '';
+    editorState.saving = false;
+    editorState.error = null;
+    appendLog('info', 'Exclude rules saved.', {
+      targetId,
+      sourceId
+    });
+  } catch (error) {
+    editorState.saving = false;
+    editorState.error = error.message || 'Failed to save exclude rules.';
+    appendLog('error', editorState.error, {
+      targetId,
+      sourceId
+    });
+  }
+
+  renderSources();
 }
 
 async function openAddSourceFlow(targetRoot) {
@@ -1537,7 +1866,7 @@ function handleBackupProgressPayload(payload) {
   }
 }
 
-async function runBackup(targetRoot, machineId, sourceId, button) {
+async function runBackup(targetRoot, machineId, sourceId, button, forceNewScan = false) {
   const key = progressKey(targetRoot, machineId, sourceId);
   const activeMode = state.backupProgress[key]?.progress?.mode || null;
   if (activeMode === 'restore') {
@@ -1549,6 +1878,7 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
     targetRoot,
     machineId,
     sourceId,
+    forceNewScan,
     hasExistingProgress: Boolean(state.backupProgress[key])
   });
 
@@ -1608,7 +1938,7 @@ async function runBackup(targetRoot, machineId, sourceId, button) {
       targetRoot,
       machineId,
       sourceId,
-      forceNewScan: false
+      forceNewScan: Boolean(forceNewScan)
     });
     clearBackupUiState(key);
     state.dashboard = result.dashboard;

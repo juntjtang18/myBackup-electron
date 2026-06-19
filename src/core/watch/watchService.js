@@ -90,7 +90,10 @@ function createWatchService(platformInput, options = {}) {
     const sources = flattenWatchedSources(schema || { targets: [] });
     return Promise.all(sources.map(async (source) => ({
       ...source,
-      ignoreMatcher: await loadIgnoreMatcher(source.sourcePath)
+      ignoreMatcher: await loadIgnoreMatcher(source.sourcePath, {
+        appDataRoot,
+        source
+      })
     })));
   }
 

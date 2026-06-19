@@ -143,7 +143,10 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     });
   }
 
-  const ignoreMatcher = await loadIgnoreMatcher(source.sourcePath);
+  const ignoreMatcher = await loadIgnoreMatcher(source.sourcePath, {
+    appDataRoot,
+    source
+  });
   let errorReport = null;
   const fileQueue = createFileQueue({ capacity: queueCapacity });
   const pendingFilePromises = new Set();

@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('myBackup', {
   pickTargetFolder: (input) => ipcRenderer.invoke('app:pick-target-folder', input),
   addSource: (input) => ipcRenderer.invoke('app:add-source', input),
   removeSource: (input) => ipcRenderer.invoke('app:remove-source', input),
+  getSourceIgnoreRules: (input) => ipcRenderer.invoke('app:get-source-ignore-rules', input),
+  saveSourceIgnoreRules: (input) => ipcRenderer.invoke('app:save-source-ignore-rules', input),
   runBackup: (input) => ipcRenderer.invoke('app:run-backup', input),
   pauseBackup: (input) => ipcRenderer.invoke('app:pause-backup', input),
   setLogLevel: (input) => ipcRenderer.invoke('app:set-log-level', input),

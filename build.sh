@@ -6,17 +6,17 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 
 SKIP_TESTS=0
-BUILD_TARGET="mac"
+BUILD_TARGET="win nsis"
 VERSION_BUMP="patch"
 
 usage() {
   cat <<'EOF'
-Usage: ./build.sh [options]
+Usage: build.sh [options]
 
 Options:
   --skip-tests   Skip the Jest test run before packaging.
-  --target <t>   electron-builder target selector. Default: mac
-                 Examples: mac, "mac dmg", "mac zip"
+  --target <t>   electron-builder target selector. Default: win nsis
+                 Examples: win nsis, win portable, mac, mac dmg, mac zip
   --version-bump <level>
                  Semver bump level before packaging.
                  Values: patch (default), minor, major, none
@@ -37,6 +37,10 @@ while [[ $# -gt 0 ]]; do
       fi
       BUILD_TARGET="$2"
       shift 2
+      while [[ $# -gt 0 && "$1" != --* ]]; do
+        BUILD_TARGET+=" $1"
+        shift
+      done
       ;;
     --version-bump)
       if [[ $# -lt 2 ]]; then
@@ -100,6 +104,9 @@ case "${TARGET_PARTS[0]:-}" in
     ;;
   win|windows)
     TARGET_ARGS=(--win)
+    if [[ ${#TARGET_PARTS[@]} -eq 1 ]]; then
+      TARGET_ARGS+=(nsis)
+    fi
     ;;
   linux)
     TARGET_ARGS=(--linux)
@@ -110,7 +117,7 @@ case "${TARGET_PARTS[0]:-}" in
     ;;
   *)
     echo "Unsupported target prefix: ${TARGET_PARTS[0]}" >&2
-    echo "Use one of: mac, win, linux" >&2
+    echo "Use one of: mac, win, windows, linux" >&2
     exit 1
     ;;
 esac

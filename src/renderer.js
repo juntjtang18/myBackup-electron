@@ -955,16 +955,16 @@ function renderTargetSourcesTable(target) {
     const restoreInProgress = activeMode === 'restore';
     const pauseRequested = state.pauseRequests[key];
     const isPausing = activeProgress?.progress?.status === 'pausing';
-    const pausedCursor = source.backupStatus?.status === 'paused';
+    const pausedCursor = source.backupJob?.status === 'paused' || source.backupStatus?.status === 'paused';
     const missingSourceSize = source.sourceSizeBytes === null || source.sourceSizeBytes === undefined;
     const requiresFullBackup = !source.baselineAt
       || missingSourceSize
       || Boolean(source.watchState?.needsRescan);
     const restoreDisabled = targetUnavailable || Boolean(activeProgress);
-    const fullScanDisabled = targetUnavailable || Boolean(activeProgress) || restoreInProgress;
     const deleteDisabled = Boolean(activeProgress);
     const normalModeDisabled = showDeleteButtons;
     const settingsModeDisabled = !showDeleteButtons;
+    const showFullBackupDropdown = !pausedCursor && !activeProgress && !requiresFullBackup && !restoreInProgress;
     const idleBackupLabel = pausedCursor ? 'Resume' : (requiresFullBackup ? 'Full Backup' : 'Backup Changes');
     const backupLabel = activeProgress && !restoreInProgress
       ? (pauseRequested || isPausing ? 'Pausing...' : 'Pause')
@@ -990,10 +990,10 @@ function renderTargetSourcesTable(target) {
       <div class="source-card-stack">
         <article class="source-card${isCopying ? ' is-copying' : ''}" data-source-id="${escapeHtml(source.sourceId)}">
           <div class="source-card-top">
-            <section class="source-card-side source-card-target">
+            <section class="source-card-side source-card-source">
               <div class="source-card-path-row">
-                ${SOURCE_CARD_TARGET_ICON}
-                <div class="source-card-path" title="${escapeHtml(targetRootLabel)}">${escapeHtml(targetRootLabel)}</div>
+                ${sourceCardSideIcon(sourceSideLabel)}
+                <div class="source-card-path" title="${escapeHtml(sourceSidePath)}">${escapeHtml(sourceSidePath)}</div>
               </div>
             </section>
             <section class="source-card-center">
@@ -1010,10 +1010,10 @@ function renderTargetSourcesTable(target) {
                 </button>
               </div>
             </section>
-            <section class="source-card-side source-card-source">
+            <section class="source-card-side source-card-target">
               <div class="source-card-path-row">
-                <div class="source-card-path" title="${escapeHtml(sourceSidePath)}">${escapeHtml(sourceSidePath)}</div>
-                ${sourceCardSideIcon(sourceSideLabel)}
+                <div class="source-card-path" title="${escapeHtml(targetRootLabel)}">${escapeHtml(targetRootLabel)}</div>
+                ${SOURCE_CARD_TARGET_ICON}
               </div>
             </section>
           </div>
@@ -1033,8 +1033,14 @@ function renderTargetSourcesTable(target) {
             <div class="${actionRowClass}">
               <div class="actions-group actions-group--normal">
                 <button class="btn btn-sm btn-outline-secondary btn-action btn-action-changes toggle-changes-button${state.sourceChangeExpanded[changeKey] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(sourceChangeLabel)}"${normalModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_CHANGES, sourceChangeLabel)}</button>
-                <button class="btn btn-sm ${backupClass} btn-action btn-action-backup run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(backupLabel)}"${backupDisabled || normalModeDisabled ? ' disabled' : ''}>${withButtonIcon(activeProgress && !restoreInProgress ? BUTTON_ICON_PAUSE : pausedCursor ? BUTTON_ICON_PLAY : BUTTON_ICON_BACKUP, backupLabel)}</button>
-                <button class="btn btn-sm btn-outline-secondary btn-action btn-action-full-scan run-full-scan-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="Full Scan Copy"${fullScanDisabled || normalModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_FULL_SCAN, 'Full Scan')}</button>
+                <div class="backup-action-menu${showFullBackupDropdown ? ' has-menu' : ''}">
+                  <button class="btn btn-sm ${backupClass} btn-action btn-action-backup run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(backupLabel)}"${backupDisabled || normalModeDisabled ? ' disabled' : ''}>${withButtonIcon(activeProgress && !restoreInProgress ? BUTTON_ICON_PAUSE : pausedCursor ? BUTTON_ICON_PLAY : BUTTON_ICON_BACKUP, backupLabel)}</button>
+                  ${showFullBackupDropdown ? `
+                    <div class="backup-action-dropdown" role="menu">
+                      <button class="btn btn-sm btn-outline-secondary btn-action btn-action-full-backup-menu run-full-scan-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="Run Full Backup" role="menuitem">${withButtonIcon(BUTTON_ICON_FULL_SCAN, 'Full Backup')}</button>
+                    </div>
+                  ` : ''}
+                </div>
                 <button class="btn btn-sm btn-outline-secondary btn-action btn-action-restore restore-source-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${restoreDisabled || normalModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_RESTORE, restoreLabel)}</button>
               </div>
               <div class="actions-group actions-group--settings">

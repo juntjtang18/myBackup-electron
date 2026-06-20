@@ -116,6 +116,38 @@ describe('renderer target offline behavior', () => {
     expect(targetsContainer.innerHTML).not.toMatch(/run-backup-button"[^>]*data-target-root="\/Volumes\/ST\/Backup"[^>]*data-machine-id="machine-a"[^>]*data-source-id="source-a"[^>]*disabled/);
   });
 
+  test('backup action exposes full backup dropdown only after baseline and not while paused', () => {
+    const testApi = loadRendererTestApi();
+
+    testApi.state.dashboard.targets = [createTarget({
+      sources: [createSource({ baselineAt: null })]
+    })];
+    testApi.renderTargets();
+    expect(targetsContainer.innerHTML).toContain('Full Backup');
+    expect(targetsContainer.innerHTML).not.toContain('backup-action-dropdown');
+
+    testApi.state.dashboard.targets = [createTarget()];
+    testApi.renderTargets();
+    expect(targetsContainer.innerHTML).toContain('Backup Changes');
+    expect(targetsContainer.innerHTML).toContain('backup-action-dropdown');
+    expect(targetsContainer.innerHTML).toContain('Full Backup');
+
+    testApi.state.dashboard.targets = [createTarget({
+      sources: [createSource({
+        backupJob: {
+          id: 'job-paused',
+          type: 'changes',
+          status: 'paused',
+          progress: { completedBytes: 128 }
+        },
+        backupStatus: { status: 'paused', copiedBytes: 128 }
+      })]
+    })];
+    testApi.renderTargets();
+    expect(targetsContainer.innerHTML).toContain('Resume');
+    expect(targetsContainer.innerHTML).not.toContain('backup-action-dropdown');
+  });
+
   test('starting backup collapses the open source changes panel first', async () => {
     const testApi = loadRendererTestApi();
     const target = createTarget();

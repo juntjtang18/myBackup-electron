@@ -1695,6 +1695,18 @@ describe('metadata foundation', () => {
         relativePath: '.'
       }
     });
+    expect(pausedSource.backupJob).toMatchObject({
+      id: summary.scanId,
+      type: 'full',
+      status: 'paused',
+      cursor: {
+        currentPath: '.',
+        processedBytes: 0
+      },
+      progress: {
+        completedBytes: 0
+      }
+    });
   });
 
   test('pauses an in-flight copy as soon as possible and cleans up temp files', async () => {
@@ -1791,6 +1803,14 @@ describe('metadata foundation', () => {
       status: 'paused',
       copiedBytes: firstContent.length
     });
+    expect(pausedSource.backupJob).toMatchObject({
+      id: summary.scanId,
+      type: 'full',
+      status: 'paused',
+      progress: {
+        completedBytes: firstContent.length
+      }
+    });
     expect(await cleanupTempFiles(tempRootPath)).toBe(0);
     expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'a-first.bin'))).toBe(true);
     expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'z-second.bin'))).toBe(false);
@@ -1870,6 +1890,14 @@ describe('metadata foundation', () => {
       status: 'paused',
       copiedBytes: 0
     });
+    expect(pausedSource.backupJob).toMatchObject({
+      id: paused.scanId,
+      type: 'full',
+      status: 'paused',
+      progress: {
+        completedBytes: 0
+      }
+    });
 
     events.length = 0;
 
@@ -1880,6 +1908,15 @@ describe('metadata foundation', () => {
     expect(resumed.status).toBe('completed');
     expect(resumed.filesCopied).toBe(2);
     expect(resumed.filesProcessed).toBeGreaterThanOrEqual(2);
+    const completedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(completedSource.backupJob).toMatchObject({
+      id: paused.scanId,
+      type: 'full',
+      status: 'completed',
+      progress: {
+        completedBytes: 9
+      }
+    });
     expect(events.some((entry) => entry.module === 'FolderWalker' && entry.message === 'Built resume traversal stack from cursor.')).toBe(true);
     expect(events.some((entry) => entry.module === 'BackupCoordinator' && entry.message === 'Processing folder from traversal stack.')).toBe(true);
     expect(events.some((entry) => entry.module === 'BackupCoordinator' && entry.message === 'First file task started.')).toBe(true);

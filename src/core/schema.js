@@ -63,6 +63,38 @@ function createBackupStatus(input = {}, now = new Date()) {
   };
 }
 
+function createBackupJob(input = {}, now = new Date()) {
+  if (!input || typeof input !== 'object') {
+    return null;
+  }
+  const status = input.status || null;
+  if (!status && !input.id) {
+    return null;
+  }
+  return {
+    id: input.id || input.runId || createScanId(now),
+    sourcePath: input.sourcePath || null,
+    destinationPath: input.destinationPath || null,
+    type: input.type || (input.mode === 'full' ? 'full' : input.mode === 'incremental' ? 'changes' : null),
+    status,
+    cursor: input.cursor || null,
+    progress: {
+      totalFiles: input.progress?.totalFiles === undefined || input.progress?.totalFiles === null ? null : Number(input.progress.totalFiles),
+      completedFiles: input.progress?.completedFiles === undefined || input.progress?.completedFiles === null ? 0 : Number(input.progress.completedFiles),
+      totalBytes: input.progress?.totalBytes === undefined || input.progress?.totalBytes === null ? null : Number(input.progress.totalBytes),
+      completedBytes: input.progress?.completedBytes === undefined || input.progress?.completedBytes === null
+        ? Number(input.copiedBytes || 0)
+        : Number(input.progress.completedBytes)
+    },
+    createdAt: input.createdAt || input.startedAt || nowIso(now),
+    startedAt: input.startedAt || null,
+    pausedAt: input.pausedAt || null,
+    resumedAt: input.resumedAt || null,
+    completedAt: input.completedAt || null,
+    error: input.error || null
+  };
+}
+
 function createSourceStatusRecord(input = {}, now = new Date()) {
   assertNonEmptyString(input.sourceId, 'sourceId');
   const statusInput = input.status && typeof input.status === 'object' && !Array.isArray(input.status)
@@ -72,6 +104,7 @@ function createSourceStatusRecord(input = {}, now = new Date()) {
     schemaVersion: SCHEMA_VERSION,
     sourceId: input.sourceId,
     status: createBackupStatus(statusInput, now),
+    backupJob: createBackupJob(input.backupJob || input.job || null, now),
     needsRescan: Boolean(input.needsRescan),
     lastEventAt: input.lastEventAt || null,
     updatedAt: input.updatedAt || nowIso(now)
@@ -140,6 +173,7 @@ function createSourceRecord(input, now = new Date()) {
       lastEventAt: input.watchState?.lastEventAt || null
     },
     backupStatus: createBackupStatus(backupStatusInput, now),
+    backupJob: createBackupJob(input.backupJob || null, now),
     sourceSizeBytes: input.sourceSizeBytes === undefined || input.sourceSizeBytes === null
       ? null
       : Number(input.sourceSizeBytes),
@@ -330,6 +364,7 @@ function validateSourceRecord(record) {
   }
   assertNullableNonNegativeInteger(record.backupStatus.scanSeq, 'backupStatus.scanSeq');
   assertNullableString(record.backupStatus.error, 'backupStatus.error');
+  validateBackupJob(record.backupJob, 'backupJob');
   assertNullableNonNegativeInteger(record.sourceSizeBytes, 'sourceSizeBytes');
   assertNullableNonNegativeInteger(record.backupSizeBytes, 'backupSizeBytes');
   return record;
@@ -389,10 +424,41 @@ function validateSourceStatusRecord(record) {
   }
   assertNullableNonNegativeInteger(record.status.scanSeq, 'status.scanSeq');
   assertNullableString(record.status.error, 'status.error');
+  validateBackupJob(record.backupJob, 'backupJob');
   assertBoolean(record.needsRescan, 'needsRescan');
   assertNullableString(record.lastEventAt, 'lastEventAt');
   assertNullableString(record.updatedAt, 'updatedAt');
   return record;
+}
+
+function validateBackupJob(job, fieldName = 'backupJob') {
+  if (job === null || job === undefined) {
+    return;
+  }
+  if (typeof job !== 'object' || Array.isArray(job)) {
+    throw new Error(`${fieldName} must be an object or null.`);
+  }
+  assertNonEmptyString(job.id, `${fieldName}.id`);
+  assertNullableString(job.sourcePath, `${fieldName}.sourcePath`);
+  assertNullableString(job.destinationPath, `${fieldName}.destinationPath`);
+  assertNullableString(job.type, `${fieldName}.type`);
+  assertNullableString(job.status, `${fieldName}.status`);
+  if (job.cursor !== null && job.cursor !== undefined && typeof job.cursor !== 'object') {
+    throw new Error(`${fieldName}.cursor must be an object or null.`);
+  }
+  if (!job.progress || typeof job.progress !== 'object') {
+    throw new Error(`${fieldName}.progress must be an object.`);
+  }
+  assertNullableNonNegativeInteger(job.progress.totalFiles, `${fieldName}.progress.totalFiles`);
+  assertNullableNonNegativeInteger(job.progress.completedFiles, `${fieldName}.progress.completedFiles`);
+  assertNullableNonNegativeInteger(job.progress.totalBytes, `${fieldName}.progress.totalBytes`);
+  assertNullableNonNegativeInteger(job.progress.completedBytes, `${fieldName}.progress.completedBytes`);
+  assertNullableString(job.createdAt, `${fieldName}.createdAt`);
+  assertNullableString(job.startedAt, `${fieldName}.startedAt`);
+  assertNullableString(job.pausedAt, `${fieldName}.pausedAt`);
+  assertNullableString(job.resumedAt, `${fieldName}.resumedAt`);
+  assertNullableString(job.completedAt, `${fieldName}.completedAt`);
+  assertNullableString(job.error, `${fieldName}.error`);
 }
 
 function validateHashRecord(record) {
@@ -437,6 +503,7 @@ module.exports = {
   CONTENT_TYPES,
   SCHEMA_VERSION,
   createAppConfig,
+  createBackupJob,
   createBackupStatus,
   createFileContentRef,
   createHashRecord,

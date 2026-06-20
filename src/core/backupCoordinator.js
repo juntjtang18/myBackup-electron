@@ -3,6 +3,7 @@ const path = require('path');
 const { cleanupTempFiles } = require('./plainFileStorage');
 const { loadBackupSchema, loadBackupSource, updateBackupSource } = require('./backupSchema');
 const { loadIgnoreMatcher } = require('./ignoreMatcher');
+const { createBackupJob } = require('./schema');
 const { createErrorReportWriter } = require('./errorReportStore');
 const { toPosixPath } = require('./layout');
 const { createFolderHash } = require('./cursor');
@@ -27,6 +28,9 @@ function isMissingPathError(error) {
 }
 
 function determineBackupMode(source, options) {
+  if (!options.forceNewScan && source.backupJob?.status === 'paused') {
+    return source.backupJob.type === 'full' ? 'full' : 'incremental';
+  }
   if (options.forceNewScan) {
     return 'full';
   }
@@ -86,6 +90,85 @@ function cloneBackupCursor(cursor, now = new Date()) {
     relativePath: cursor.relativePath,
     updatedAt: cursor.updatedAt || nowIso(now)
   };
+}
+
+function backupModeToJobType(mode) {
+  return mode === 'full' ? 'full' : 'changes';
+}
+
+function jobTypeToBackupMode(type) {
+  return type === 'full' ? 'full' : 'incremental';
+}
+
+function createJobCursor(cursor, summary = {}, dirtyScanSeq = null) {
+  if (!cursor) {
+    return null;
+  }
+  return {
+    phase: cursor.status || 'scanning',
+    currentPath: cursor.relativePath || null,
+    relativePath: cursor.relativePath || null,
+    folderHash: cursor.folderHash || null,
+    processedFiles: Number(summary.filesProcessed || 0),
+    processedBytes: Number(summary.copiedBytes || 0),
+    lastSnapshotId: dirtyScanSeq === null || dirtyScanSeq === undefined ? null : String(dirtyScanSeq),
+    pendingItems: []
+  };
+}
+
+function legacyCursorFromJob(job) {
+  const cursor = job?.cursor || null;
+  const relativePath = cursor?.relativePath || cursor?.currentPath || null;
+  if (!relativePath) {
+    return null;
+  }
+  return {
+    backupId: job.id,
+    relativePath,
+    folderHash: cursor.folderHash || createFolderHash(relativePath),
+    status: job.status === 'paused' ? 'paused' : 'running',
+    updatedAt: cursor.updatedAt || null
+  };
+}
+
+function buildBackupJob({
+  existingJob,
+  id,
+  source,
+  target,
+  mode,
+  status,
+  cursor,
+  summary,
+  dirtyScanSeq,
+  now,
+  startedAt,
+  completedAt,
+  error
+}) {
+  const completedBytes = Number(summary?.copiedBytes ?? existingJob?.progress?.completedBytes ?? 0);
+  const completedFiles = Number(summary?.filesProcessed ?? existingJob?.progress?.completedFiles ?? 0);
+  return createBackupJob({
+    ...(existingJob || {}),
+    id,
+    sourcePath: source.sourcePath,
+    destinationPath: path.join(target.path, source.targetFolder || '', path.basename(path.resolve(source.sourcePath || ''))),
+    type: backupModeToJobType(mode),
+    status,
+    cursor: createJobCursor(cursor, summary, dirtyScanSeq),
+    progress: {
+      totalFiles: existingJob?.progress?.totalFiles ?? null,
+      completedFiles,
+      totalBytes: mode === 'full' ? null : (source.backupSizeBytes ?? source.sourceSizeBytes ?? null),
+      completedBytes
+    },
+    createdAt: existingJob?.createdAt || startedAt || nowIso(now),
+    startedAt: startedAt || existingJob?.startedAt || nowIso(now),
+    pausedAt: status === 'paused' ? nowIso(now) : existingJob?.pausedAt || null,
+    resumedAt: existingJob?.status === 'paused' && status === 'running' ? nowIso(now) : existingJob?.resumedAt || null,
+    completedAt: status === 'completed' ? completedAt || nowIso(now) : null,
+    error: error || null
+  }, now);
 }
 
 function cloneProgress(summary, progress) {
@@ -214,7 +297,13 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
 
   if (mode === 'full') {
     const existingBackupStatus = !options.forceNewScan ? (source.backupStatus || {}) : null;
-    const resumeFrom = (!options.forceNewScan
+    const existingJob = !options.forceNewScan
+      && source.backupJob?.status === 'paused'
+      && jobTypeToBackupMode(source.backupJob.type) === 'full'
+      ? source.backupJob
+      : null;
+    const jobCursor = legacyCursorFromJob(existingJob);
+    const statusCursor = (!options.forceNewScan
       && existingBackupStatus
       && existingBackupStatus.mode === 'full'
       && existingBackupStatus.status === 'paused'
@@ -226,8 +315,14 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           folderHash: existingBackupStatus.cursor.folderHash || createFolderHash(existingBackupStatus.cursor.relativePath)
         }
       : null;
+    const resumeFrom = statusCursor || (jobCursor ? {
+      backupId: jobCursor.backupId,
+      relativePath: jobCursor.relativePath,
+      folderHash: jobCursor.folderHash || createFolderHash(jobCursor.relativePath)
+    } : null);
     resumed = Boolean(resumeFrom);
-    scanId = resumed ? existingBackupStatus.runId : createScanId(now);
+    const resumedCopiedBytes = Number(existingJob?.progress?.completedBytes ?? existingBackupStatus?.copiedBytes ?? 0);
+    scanId = resumed ? (existingJob?.id || existingBackupStatus?.runId) : createScanId(now);
     dirtyStateSnapshot = await changeTracker.getChangeList(source, now);
     dirtyScanSeq = dirtyStateSnapshot.scanSeq;
     backupStatus = (await updateSourceRuntimeState(appDataRoot, targetRoot, machineId, sourceId, (current) => ({
@@ -236,8 +331,8 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         status: 'running',
         mode: 'full',
         runId: scanId,
-        copiedBytes: resumed && existingBackupStatus ? Number(existingBackupStatus.copiedBytes || 0) : 0,
-        startedAt: resumed ? (existingBackupStatus.startedAt || nowIso(now)) : nowIso(now),
+        copiedBytes: resumed ? resumedCopiedBytes : 0,
+        startedAt: resumed ? (existingJob?.startedAt || existingBackupStatus?.startedAt || nowIso(now)) : nowIso(now),
         updatedAt: nowIso(now),
         completedAt: null,
         cursor: resumeFrom ? {
@@ -249,7 +344,24 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         } : null,
         scanSeq: dirtyScanSeq,
         error: null
-      }
+      },
+      backupJob: buildBackupJob({
+        existingJob,
+        id: scanId,
+        source: current,
+        target,
+        mode,
+        status: 'running',
+        cursor: resumeFrom ? {
+          relativePath: resumeFrom.relativePath,
+          folderHash: resumeFrom.folderHash,
+          status: 'running'
+        } : null,
+        summary: { copiedBytes: resumed ? resumedCopiedBytes : 0, filesProcessed: 0 },
+        dirtyScanSeq,
+        now,
+        startedAt: resumed ? (existingJob?.startedAt || existingBackupStatus.startedAt || nowIso(now)) : nowIso(now)
+      })
     }), now)).backupStatus;
 
     logger.info('Resume run initialized.', {
@@ -271,6 +383,12 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     dirtyStateSnapshot = await changeTracker.getChangeList(source, now);
     dirtyScanSeq = dirtyStateSnapshot.scanSeq;
     const existingBackupStatus = !options.forceNewScan ? (source.backupStatus || {}) : null;
+    const existingJob = !options.forceNewScan
+      && source.backupJob?.status === 'paused'
+      && jobTypeToBackupMode(source.backupJob.type) === 'incremental'
+      ? source.backupJob
+      : null;
+    const jobCursor = legacyCursorFromJob(existingJob);
     const resumeFrom = (!options.forceNewScan
       && existingBackupStatus
       && existingBackupStatus.mode === 'incremental'
@@ -278,20 +396,22 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       && existingBackupStatus.cursor
       && existingBackupStatus.cursor.relativePath)
       ? existingBackupStatus.cursor.relativePath
-      : null;
+      : jobCursor?.relativePath || null;
     resumed = Boolean(resumeFrom);
+    const resumedCopiedBytes = Number(existingJob?.progress?.completedBytes ?? existingBackupStatus?.copiedBytes ?? 0);
     selectedDirtyFolders = selectDirtyFolders(dirtyStateSnapshot.legacyDirtyState, dirtyScanSeq, resumeFrom)
       .map((entry) => entry.relativePath);
-    scanId = existingBackupStatus && existingBackupStatus.mode === 'incremental' && existingBackupStatus.status === 'paused'
+    scanId = existingJob?.id || (existingBackupStatus && existingBackupStatus.mode === 'incremental' && existingBackupStatus.status === 'paused'
       ? existingBackupStatus.runId
-      : createScanId(now);
+      : null)
+      || createScanId(now);
     backupStatus = (await updateSourceRuntimeState(appDataRoot, targetRoot, machineId, sourceId, (current) => ({
       backupStatus: {
         ...(current.backupStatus || {}),
         status: 'running',
         mode: 'incremental',
         runId: scanId,
-        copiedBytes: existingBackupStatus ? Number(existingBackupStatus.copiedBytes || 0) : 0,
+        copiedBytes: resumed ? resumedCopiedBytes : 0,
         startedAt: existingBackupStatus && existingBackupStatus.status === 'paused'
           ? (existingBackupStatus.startedAt || nowIso(now))
           : nowIso(now),
@@ -305,7 +425,26 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         } : null,
         scanSeq: dirtyScanSeq,
         error: null
-      }
+      },
+      backupJob: buildBackupJob({
+        existingJob,
+        id: scanId,
+        source: current,
+        target,
+        mode,
+        status: 'running',
+        cursor: resumeFrom ? {
+          relativePath: resumeFrom,
+          folderHash: createFolderHash(resumeFrom),
+          status: 'running'
+        } : null,
+        summary: { copiedBytes: resumed ? resumedCopiedBytes : 0, filesProcessed: 0 },
+        dirtyScanSeq,
+        now,
+        startedAt: existingBackupStatus && existingBackupStatus.status === 'paused'
+          ? (existingJob?.startedAt || existingBackupStatus.startedAt || nowIso(now))
+          : nowIso(now)
+      })
     }), now)).backupStatus;
     logger.info('Resume run initialized.', {
       machineId,
@@ -399,8 +538,27 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         nextBackupStatus.cursor = patch.cursor ? cloneBackupCursor(patch.cursor, nowValue) : null;
       }
       nextBackupStatus.updatedAt = patch.updatedAt || nowIso(nowValue);
+      const nextBackupJob = buildBackupJob({
+        existingJob: current.backupJob || null,
+        id: scanId,
+        source: current,
+        target,
+        mode,
+        status: patch.status || current.backupJob?.status || nextBackupStatus.status || 'running',
+        cursor: nextBackupStatus.cursor,
+        summary: {
+          copiedBytes: patch.copiedBytes ?? summary.copiedBytes,
+          filesProcessed: summary.filesProcessed
+        },
+        dirtyScanSeq: patch.scanSeq ?? dirtyScanSeq,
+        now: nowValue,
+        startedAt: nextBackupStatus.startedAt || current.backupJob?.startedAt || nowIso(nowValue),
+        completedAt: patch.completedAt || null,
+        error: patch.error || null
+      });
       return {
-        backupStatus: nextBackupStatus
+        backupStatus: nextBackupStatus,
+        backupJob: nextBackupJob
       };
     }, nowValue);
     backupStatus = updated.backupStatus;
@@ -731,6 +889,7 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   filePool.start();
   emitProgress({ type: 'backup-started' }, true);
 
+  let fatalError = null;
   try {
     if (mode === 'full') {
       await scanFullSource({
@@ -773,6 +932,8 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         paused = true;
       }
     }
+  } catch (error) {
+    fatalError = error;
   } finally {
     if (!paused && shouldStopForPause()) {
       paused = true;
@@ -790,6 +951,22 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       await Promise.allSettled(Array.from(pendingFilePromises));
     }
     await filePool.wait();
+  }
+
+  if (fatalError && !paused) {
+    await statusCheckpointWriter.flushPending();
+    await persistBackupStatusState({
+      status: 'failed',
+      copiedBytes: summary.copiedBytes,
+      cursor: checkpointCursor,
+      scanSeq: dirtyScanSeq,
+      error: fatalError.message
+    }, new Date());
+    await statusCheckpointWriter.close();
+    progress.status = 'failed';
+    progress.error = fatalError.message;
+    emitProgress({ type: 'backup-failed', error: fatalError.message }, true);
+    throw fatalError;
   }
 
   if (paused) {
@@ -876,6 +1053,20 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       scanSeq: dirtyScanSeq,
       error: null
     },
+    backupJob: buildBackupJob({
+      existingJob: current.backupJob || null,
+      id: scanId,
+      source: current,
+      target,
+      mode,
+      status: 'completed',
+      cursor: null,
+      summary,
+      dirtyScanSeq,
+      now,
+      startedAt: current.backupJob?.startedAt || backupStatus.startedAt || nowIso(now),
+      completedAt: nowIso(now)
+    }),
     watchState: {
       ...(current.watchState || buildDefaultWatchState(sourceId)),
       needsRescan: mode === 'full' ? false : Boolean((current.watchState || {}).needsRescan),

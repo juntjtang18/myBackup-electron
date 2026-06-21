@@ -1382,9 +1382,9 @@
     }
 
     .btn-action-backup {
-      width: 104px;
-      min-width: 104px;
-      max-width: 104px;
+      width: 128px;
+      min-width: 128px;
+      max-width: 128px;
     }
 
     .btn-action-restore {
@@ -1471,15 +1471,30 @@
       position: relative;
       display: inline-flex;
       flex: 0 0 auto;
+      --backup-action-toggle-width: 23px;
+      width: 128px;
+      min-width: 128px;
+      max-width: 128px;
+    }
+
+    .backup-action-menu .btn-action-backup {
+      width: 100%;
+      min-width: 100%;
+      max-width: 100%;
+    }
+
+    .backup-action-menu.has-menu > .btn-action-backup {
+      padding-right: var(--backup-action-toggle-width);
     }
 
     .backup-action-dropdown {
       position: absolute;
-      right: 0;
+      left: 0;
       top: calc(100% + 6px);
       z-index: 20;
       display: none;
-      min-width: 116px;
+      width: 100%;
+      min-width: 100%;
       padding: 6px;
       border: 1px solid #d6dee9;
       border-radius: 8px;
@@ -1487,17 +1502,58 @@
       box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
     }
 
-    .backup-action-menu.has-menu:hover .backup-action-dropdown,
-    .backup-action-menu.has-menu:focus-within .backup-action-dropdown {
+    .backup-action-menu.open .backup-action-dropdown {
       display: block;
     }
 
-    .btn-action-full-backup-menu {
-      width: 104px;
-      min-width: 104px;
-      max-width: 104px;
-      height: 42px;
-      min-height: 42px;
+    .backup-action-toggle {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: var(--backup-action-toggle-width);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 0;
+      border-left: 1px solid transparent;
+      border-radius: 0 8px 8px 0;
+      background: transparent;
+      color: inherit;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.14s ease, border-color 0.14s ease, background 0.14s ease;
+      cursor: pointer;
+    }
+
+    .backup-action-toggle svg {
+      width: 11px;
+      height: 11px;
+    }
+
+    .backup-action-menu.has-menu:hover .backup-action-toggle,
+    .backup-action-menu.has-menu:focus-within .backup-action-toggle,
+    .backup-action-menu.has-menu.open .backup-action-toggle {
+      opacity: 1;
+      pointer-events: auto;
+      border-left-color: rgba(40, 52, 70, 0.18);
+    }
+
+    .backup-action-menu.has-menu.open .backup-action-toggle,
+    .backup-action-menu.has-menu .backup-action-toggle:hover {
+      background: rgba(30, 41, 59, 0.06);
+    }
+
+    .btn-action-full-backup-menu.btn-action-backup {
+      width: 100%;
+      min-width: 100%;
+      max-width: 100%;
+      height: 48px;
+      min-height: 48px;
+      padding-right: 8px;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
     }
 
     .toggle-changes-button.active {

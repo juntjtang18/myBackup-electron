@@ -14,6 +14,7 @@ const state = {
   sourceChangeExpanded: {},
   sourceChanges: {},
   sourceExcludeEditors: {},
+  backupActionMenuOpenKey: null,
   runtimeFlags: {
     traceProgressUi: true,
     showProgressQueueDetails: false
@@ -367,6 +368,12 @@ const BUTTON_ICON_FULL_SCAN = `
       <path d="M8 5.25v5.5"></path>
     </svg>
   </span>
+`;
+
+const BUTTON_ICON_CHEVRON_DOWN = `
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M4.25 6.25 8 10l3.75-3.75"></path>
+  </svg>
 `;
 
 const BUTTON_ICON_EXCLUDE = `
@@ -965,6 +972,8 @@ function renderTargetSourcesTable(target) {
     const normalModeDisabled = showDeleteButtons;
     const settingsModeDisabled = !showDeleteButtons;
     const showFullBackupDropdown = !pausedCursor && !activeProgress && !requiresFullBackup && !restoreInProgress;
+    const backupActionKey = progressKey(targetRoot, source.machineId, source.sourceId);
+    const isBackupActionOpen = showFullBackupDropdown && state.backupActionMenuOpenKey === backupActionKey;
     const idleBackupLabel = pausedCursor ? 'Resume' : (requiresFullBackup ? 'Full Backup' : 'Backup Changes');
     const backupLabel = activeProgress && !restoreInProgress
       ? (pauseRequested || isPausing ? 'Pausing...' : 'Pause')
@@ -1033,11 +1042,14 @@ function renderTargetSourcesTable(target) {
             <div class="${actionRowClass}">
               <div class="actions-group actions-group--normal">
                 <button class="btn btn-sm btn-outline-secondary btn-action btn-action-changes toggle-changes-button${state.sourceChangeExpanded[changeKey] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(sourceChangeLabel)}"${normalModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_CHANGES, sourceChangeLabel)}</button>
-                <div class="backup-action-menu${showFullBackupDropdown ? ' has-menu' : ''}">
+                <div class="backup-action-menu${showFullBackupDropdown ? ' has-menu' : ''}${isBackupActionOpen ? ' open' : ''}">
                   <button class="btn btn-sm ${backupClass} btn-action btn-action-backup run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(backupLabel)}"${backupDisabled || normalModeDisabled ? ' disabled' : ''}>${withButtonIcon(activeProgress && !restoreInProgress ? BUTTON_ICON_PAUSE : pausedCursor ? BUTTON_ICON_PLAY : BUTTON_ICON_BACKUP, backupLabel)}</button>
                   ${showFullBackupDropdown ? `
+                    <button type="button" class="backup-action-toggle" data-backup-action-key="${escapeHtml(backupActionKey)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" aria-label="Open backup action menu" aria-haspopup="menu" aria-expanded="${isBackupActionOpen ? 'true' : 'false'}">${BUTTON_ICON_CHEVRON_DOWN}</button>
+                  ` : ''}
+                  ${showFullBackupDropdown ? `
                     <div class="backup-action-dropdown" role="menu">
-                      <button class="btn btn-sm btn-outline-secondary btn-action btn-action-full-backup-menu run-full-scan-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="Run Full Backup" role="menuitem">${withButtonIcon(BUTTON_ICON_FULL_SCAN, 'Full Backup')}</button>
+                      <button class="btn btn-sm btn-outline-primary btn-action btn-action-backup btn-action-full-backup-menu run-full-scan-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="Run Full Backup" role="menuitem">${withButtonIcon(BUTTON_ICON_FULL_SCAN, 'Full Backup')}</button>
                     </div>
                   ` : ''}
                 </div>
@@ -1099,22 +1111,38 @@ function bindTargetPanelActions(container) {
   });
 
   container.querySelectorAll('.run-backup-button').forEach((button) => {
-    button.addEventListener('click', () => runBackup(
+    button.addEventListener('click', () => {
+      state.backupActionMenuOpenKey = null;
+      runBackup(
       button.dataset.targetRoot,
       button.dataset.machineId,
       button.dataset.sourceId,
       button
-    ));
+      );
+    });
   });
 
   container.querySelectorAll('.run-full-scan-button').forEach((button) => {
-    button.addEventListener('click', () => runBackup(
+    button.addEventListener('click', () => {
+      state.backupActionMenuOpenKey = null;
+      runBackup(
       button.dataset.targetRoot,
       button.dataset.machineId,
       button.dataset.sourceId,
       button,
       true
-    ));
+      );
+    });
+  });
+
+  container.querySelectorAll('.backup-action-toggle').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const key = button.dataset.backupActionKey;
+      state.backupActionMenuOpenKey = state.backupActionMenuOpenKey === key ? null : key;
+      renderSources();
+    });
   });
 
   container.querySelectorAll('.source-progress-node').forEach((button) => {
@@ -2145,6 +2173,23 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('sourceForm').addEventListener('submit', registerSource);
   document.getElementById('logLevelSelect').addEventListener('change', updateLogLevel);
   document.getElementById('copyLogsButton')?.addEventListener('click', copyLogsToClipboard);
+  document.addEventListener('click', (event) => {
+    if (!state.backupActionMenuOpenKey) {
+      return;
+    }
+    if (event.target?.closest?.('.backup-action-menu')) {
+      return;
+    }
+    state.backupActionMenuOpenKey = null;
+    renderSources();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !state.backupActionMenuOpenKey) {
+      return;
+    }
+    state.backupActionMenuOpenKey = null;
+    renderSources();
+  });
   window.myBackup.onBackupProgress(handleBackupProgressPayload);
   window.myBackup.onDashboardUpdated((dashboard) => {
     lastDashboardPushAt = Date.now();

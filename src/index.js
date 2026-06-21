@@ -14,7 +14,7 @@ const { createTargetAvailabilityMonitor, normalizePlatform } = require('./core/t
 const { createWatchService } = require('./core/watch/watchService');
 const { ChangeTracker } = require('./core/changeTracking/ChangeTracker');
 const { configureLogger, createLogger, getLogLevel } = require('./core/logger');
-const { getSourceFolderName, normalizeTargetFolder } = require('./core/pathPlanner');
+const { getSourceTargetRoot, normalizeTargetFolder } = require('./core/pathPlanner');
 const { loadRuntimeFlags } = require('./core/runtimeFlags');
 const {
   ensureSourceIgnoreFile,
@@ -225,10 +225,22 @@ async function requireSourceById(input) {
     throw new Error(`Unknown backup target id: ${input.targetId}`);
   }
 
-  const source = (target.sources || []).find((entry) => (
+  const sourceByExactIdentity = (target.sources || []).find((entry) => (
     entry.sourceId === input.sourceId
     && (!input.machineId || entry.machineId === input.machineId)
   ));
+  const sourceByTargetAndId = sourceByExactIdentity || (target.sources || []).find((entry) => (
+    entry.sourceId === input.sourceId
+  ));
+  const sourceByIdInAnyTarget = sourceByTargetAndId || (() => {
+    const candidates = (schema?.targets || []).flatMap((entry) => (
+      (entry.sources || [])
+        .filter((sourceEntry) => sourceEntry.sourceId === input.sourceId)
+        .map((sourceEntry) => ({ target: entry, source: sourceEntry }))
+    ));
+    return candidates.length === 1 ? candidates[0].source : null;
+  })();
+  const source = sourceByIdInAnyTarget;
   if (!source) {
     throw new Error(`Unknown source id: ${input.sourceId}`);
   }
@@ -247,20 +259,7 @@ function registerIpcHandlers() {
   ipcMain.handle('app:get-app-version', async () => app.getVersion());
   ipcMain.handle('app:get-runtime-flags', async () => getRuntimeFlags());
   ipcMain.handle('change-tracking:get-change-list', async (_event, input) => {
-    if (!input || !input.targetId || !input.sourceId) {
-      throw new Error('Target id and source id are required.');
-    }
-
-    const schema = await loadBackupSchema(getAppDataRoot());
-    const target = (schema?.targets || []).find((entry) => entry.id === input.targetId);
-    if (!target) {
-      throw new Error(`Unknown backup target id: ${input.targetId}`);
-    }
-
-    const source = (target.sources || []).find((entry) => entry.sourceId === input.sourceId);
-    if (!source) {
-      throw new Error(`Unknown source id: ${input.sourceId}`);
-    }
+    const { source } = await requireSourceById(input);
 
     const tracker = new ChangeTracker(getAppDataRoot());
     return tracker.getChangeList(source);
@@ -321,8 +320,16 @@ function registerIpcHandlers() {
     const schema = await ensureAppSchema();
     const sourcePath = path.resolve(input.sourcePath || '');
     const targetFolder = normalizeTargetFolder(input.targetFolder || '');
-    const targetSourceRoot = path.join(targetRoot, targetFolder, getSourceFolderName({ sourcePath }));
-    const targetSourceRootExists = await fs.pathExists(targetSourceRoot);
+    const includeSourceRoot = Boolean(input?.includeSourceRoot);
+    const sourceTargetRoot = getSourceTargetRoot(schema.machine.machineId, {
+      sourcePath,
+      sourceId: '',
+      targetFolder,
+      includeSourceRoot
+    });
+    const targetSourceRoot = path.join(targetRoot, sourceTargetRoot);
+    const requiresMergeConfirmation = includeSourceRoot;
+    const targetSourceRootExists = requiresMergeConfirmation && await fs.pathExists(targetSourceRoot);
     if (targetSourceRootExists && !input.confirmMerge) {
       return {
         conflict: true,
@@ -335,7 +342,8 @@ function registerIpcHandlers() {
       targetRoot,
       machineId: schema.machine.machineId,
       sourcePath,
-      targetFolder
+      targetFolder,
+      includeSourceRoot
     });
     await ensureSourceIgnoreFile(getAppDataRoot(), source);
     logger.info('Source registered.', {
@@ -444,6 +452,13 @@ function registerIpcHandlers() {
 
   ipcMain.handle('app:run-backup', async (_event, input) => {
     const targetRoot = await requireTargetRoot(input);
+    const schema = await loadBackupSchema(getAppDataRoot());
+    const targetEntry = (schema?.targets || []).find((entry) => entry.path === targetRoot);
+    const requestedSource = (targetEntry?.sources || []).find((entry) => (
+      entry.sourceId === input.sourceId
+      && (!input.machineId || entry.machineId === input.machineId)
+    )) || (targetEntry?.sources || []).find((entry) => entry.sourceId === input.sourceId);
+    const resolvedMachineId = requestedSource?.machineId || input.machineId;
     const key = backupKey(targetRoot, input.machineId, input.sourceId);
     if (activeBackups.has(key)) {
       throw new Error('Backup already running for this source.');
@@ -453,7 +468,7 @@ function registerIpcHandlers() {
 
     logger.info('Backup requested.', {
       targetRoot,
-      machineId: input.machineId,
+      machineId: resolvedMachineId,
       sourceId: input.sourceId,
       forceNewScan: Boolean(input.forceNewScan),
       workerPools
@@ -474,7 +489,7 @@ function registerIpcHandlers() {
     activeBackups.set(key, control);
 
     try {
-      const summary = await backupSource(targetRoot, input.machineId, input.sourceId, {
+      const summary = await backupSource(targetRoot, resolvedMachineId, input.sourceId, {
         appDataRoot: getAppDataRoot(),
         forceNewScan: Boolean(input.forceNewScan),
         initialHashWorkers: workerPools.hash,

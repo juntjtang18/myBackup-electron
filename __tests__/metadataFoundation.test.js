@@ -1215,6 +1215,22 @@ describe('metadata foundation', () => {
     });
   });
 
+  test('supports mapping directly into target folder without appending source root', async () => {
+    const source = createSourceRecord({
+      machineId: 'machine-a',
+      sourcePath: '/Users/James/Documents',
+      targetFolder: 'work',
+      includeSourceRoot: false
+    });
+
+    expect(getSourceTargetRoot('machine-a', source)).toBe('work');
+    expect(planLogicalTarget({
+      machineId: 'machine-a',
+      source,
+      sourceRelativePath: 'taxes/2024.pdf'
+    })).toBe('work/taxes/2024.pdf');
+  });
+
   test('hashes a file and creates the first hash index record', async () => {
     const sourceFile = path.join(tempRootPath, 'fixtures', 'note.txt');
     writeFixture(sourceFile, 'personal backup note');

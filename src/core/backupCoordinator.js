@@ -3,6 +3,7 @@ const path = require('path');
 const { cleanupTempFiles } = require('./plainFileStorage');
 const { loadBackupSchema, loadBackupSource, updateBackupSource } = require('./backupSchema');
 const { loadIgnoreMatcher } = require('./ignoreMatcher');
+const { getSourceTargetRoot } = require('./pathPlanner');
 const { createBackupJob } = require('./schema');
 const { createErrorReportWriter } = require('./errorReportStore');
 const { toPosixPath } = require('./layout');
@@ -152,7 +153,7 @@ function buildBackupJob({
     ...(existingJob || {}),
     id,
     sourcePath: source.sourcePath,
-    destinationPath: path.join(target.path, source.targetFolder || '', path.basename(path.resolve(source.sourcePath || ''))),
+    destinationPath: path.join(target.path, getSourceTargetRoot(source.machineId, source)),
     type: backupModeToJobType(mode),
     status,
     cursor: createJobCursor(cursor, summary, dirtyScanSeq),

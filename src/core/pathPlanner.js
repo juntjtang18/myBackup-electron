@@ -33,8 +33,21 @@ function getSourceFolderName(source) {
   return path.basename(path.resolve(source.sourcePath || '')) || source.sourceId;
 }
 
+function shouldIncludeSourceRoot(source) {
+  if (!source || typeof source !== 'object') {
+    return true;
+  }
+  if (Object.prototype.hasOwnProperty.call(source, 'includeSourceRoot')) {
+    return Boolean(source.includeSourceRoot);
+  }
+  return true;
+}
+
 function getSourceTargetRoot(_machineId, source) {
   const targetFolder = normalizeTargetFolder(source.targetFolder);
+  if (!shouldIncludeSourceRoot(source)) {
+    return targetFolder;
+  }
   const sourceFolderName = getSourceFolderName(source);
   return targetFolder
     ? path.posix.join(targetFolder, sourceFolderName)
@@ -51,5 +64,6 @@ module.exports = {
   getSourceFolderName,
   getSourceTargetRoot,
   normalizeTargetFolder,
-  planLogicalTarget
+  planLogicalTarget,
+  shouldIncludeSourceRoot
 };

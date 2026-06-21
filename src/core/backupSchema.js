@@ -101,6 +101,7 @@ function splitMergedSource(source, targetId, now = new Date()) {
     targetId,
     sourcePath: source.sourcePath,
     targetFolder: source.targetFolder,
+    includeSourceRoot: source.includeSourceRoot,
     watchEnabled: source.watchEnabled,
     backupIntervalMinutes: source.backupIntervalMinutes,
     baselineAt: source.baselineAt,
@@ -408,8 +409,16 @@ async function loadBackupSource(appDataRoot, targetRoot, machineId, sourceId, no
     return null;
   }
   const definition = await sourceStore.load(sourceId, now);
-  if (!definition || definition.targetId !== target.id || definition.machineId !== machineId) {
+  if (!definition || definition.targetId !== target.id) {
     return null;
+  }
+  if (machineId) {
+    const exactMachineMatch = definition.machineId === machineId;
+    const windowsMachineMatch = process.platform === 'win32'
+      && String(definition.machineId).toLowerCase() === String(machineId).toLowerCase();
+    if (!exactMachineMatch && !windowsMachineMatch) {
+      return null;
+    }
   }
   const status = await statusStore.ensure(sourceId, now);
   return mergeSource(definition, status, now);

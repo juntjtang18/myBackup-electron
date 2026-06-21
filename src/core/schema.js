@@ -146,6 +146,9 @@ function createSourceRecord(input, now = new Date()) {
     ? null
     : Number(input.backupIntervalMinutes);
   const targetFolder = normalizeTargetFolder(input.targetFolder);
+  const includeSourceRoot = input.includeSourceRoot === undefined
+    ? true
+    : Boolean(input.includeSourceRoot);
 
   const backupStatusInput = {
     ...(input.backupStatus || {})
@@ -164,6 +167,7 @@ function createSourceRecord(input, now = new Date()) {
     sourceId,
     sourcePath: resolvedSourcePath,
     targetFolder,
+    includeSourceRoot,
     watchEnabled,
     backupIntervalMinutes,
     baselineAt: input.baselineAt || null,
@@ -197,6 +201,9 @@ function createSourceDefinitionRecord(input, now = new Date()) {
     ? null
     : Number(input.backupIntervalMinutes);
   const targetFolder = normalizeTargetFolder(input.targetFolder);
+  const includeSourceRoot = input.includeSourceRoot === undefined
+    ? true
+    : Boolean(input.includeSourceRoot);
 
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -205,6 +212,7 @@ function createSourceDefinitionRecord(input, now = new Date()) {
     targetId: input.targetId || null,
     sourcePath: resolvedSourcePath,
     targetFolder,
+    includeSourceRoot,
     watchEnabled,
     backupIntervalMinutes,
     baselineAt: input.baselineAt || null,
@@ -335,6 +343,9 @@ function validateSourceRecord(record) {
   if (record.targetFolder !== '') {
     assertNonEmptyString(record.targetFolder, 'targetFolder');
   }
+  if (record.includeSourceRoot !== undefined) {
+    assertBoolean(record.includeSourceRoot, 'includeSourceRoot');
+  }
   assertBoolean(record.watchEnabled, 'watchEnabled');
   assertNullableNonNegativeInteger(record.backupIntervalMinutes, 'backupIntervalMinutes');
   assertNullableString(record.baselineAt, 'baselineAt');
@@ -385,6 +396,9 @@ function validateSourceDefinitionRecord(record) {
   }
   if (record.targetFolder !== '') {
     assertNonEmptyString(record.targetFolder, 'targetFolder');
+  }
+  if (record.includeSourceRoot !== undefined) {
+    assertBoolean(record.includeSourceRoot, 'includeSourceRoot');
   }
   assertBoolean(record.watchEnabled, 'watchEnabled');
   assertNullableNonNegativeInteger(record.backupIntervalMinutes, 'backupIntervalMinutes');

@@ -5,6 +5,19 @@ const {
   updateBackupSource
 } = require('./backupSchema');
 const { createSourceRecord, validateSourceRecord } = require('./schema');
+const path = require('path');
+
+function sourcePathsEqual(leftPath, rightPath) {
+  if (!leftPath || !rightPath) {
+    return false;
+  }
+  const left = path.resolve(leftPath);
+  const right = path.resolve(rightPath);
+  if (process.platform === 'win32') {
+    return left.toLowerCase() === right.toLowerCase();
+  }
+  return left === right;
+}
 
 async function registerSource(appDataRoot, input, now = new Date()) {
   const targetRoot = input.targetRoot || appDataRoot;
@@ -28,7 +41,7 @@ async function updateSourceWatchState(appDataRoot, machineId, sourceId, updater,
     const matchesSource = (target.sources || []).some((source) => (
       source.machineId === machineId
       && source.sourceId === sourceId
-      && (!options.sourcePath || source.sourcePath === options.sourcePath)
+      && (!options.sourcePath || sourcePathsEqual(source.sourcePath, options.sourcePath))
     ));
     if (!matchesSource) {
       continue;

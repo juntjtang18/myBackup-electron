@@ -111,6 +111,7 @@ async function mapSourceDashboardEntry(source) {
     sourceId: source.sourceId,
     sourcePath: source.sourcePath,
     targetFolder: source.targetFolder || '',
+    includeSourceRoot: source.includeSourceRoot !== undefined ? Boolean(source.includeSourceRoot) : true,
     targetSubdir: targetRoot,
     watchEnabled: source.watchEnabled,
     backupIntervalMinutes: source.backupIntervalMinutes,

@@ -1382,16 +1382,17 @@ function updateTargetFolderPlaceholder() {
   if (!input) {
     return;
   }
+  const includeSourceRoot = Boolean(document.getElementById('includeSourceRootCheckbox')?.checked);
 
   const sourcePath = document.getElementById('sourcePathInput')?.value.trim() || '';
   const targetRoot = String(state.addSourceTargetRoot || '').trim();
   const sourceFolderName = sourcePath ? pathBasename(sourcePath) : 'source folder';
-  const defaultTargetPath = [targetRoot, sourceFolderName]
+  const defaultTargetPath = [targetRoot, includeSourceRoot ? sourceFolderName : '']
     .filter(Boolean)
     .join('/')
     .replace(/\/+/g, '/');
 
-  input.placeholder = defaultTargetPath || '<backup target>/source folder';
+  input.placeholder = defaultTargetPath || (includeSourceRoot ? '<backup target>/source folder' : '<backup target>');
 }
 
 async function refreshDashboard() {
@@ -1757,6 +1758,10 @@ async function openAddSourceFlow(targetRoot) {
   }
 
   state.addSourceTargetRoot = targetRoot;
+  const includeSourceRootCheckbox = document.getElementById('includeSourceRootCheckbox');
+  if (includeSourceRootCheckbox) {
+    includeSourceRootCheckbox.checked = false;
+  }
   showAddSourceModal();
 }
 
@@ -1790,6 +1795,7 @@ async function registerSource(event) {
   const button = document.getElementById('addSourceButton');
   const sourcePath = document.getElementById('sourcePathInput').value.trim();
   const targetFolder = document.getElementById('targetFolderInput').value.trim();
+  const includeSourceRoot = Boolean(document.getElementById('includeSourceRootCheckbox')?.checked);
 
   if (!sourcePath) {
     appendLog('error', 'Source folder is required.');
@@ -1802,6 +1808,7 @@ async function registerSource(event) {
       targetRoot: state.addSourceTargetRoot,
       sourcePath,
       targetFolder,
+      includeSourceRoot,
       confirmMerge: false
     });
     if (response && response.conflict) {
@@ -1813,6 +1820,7 @@ async function registerSource(event) {
         targetRoot: state.addSourceTargetRoot,
         sourcePath,
         targetFolder,
+        includeSourceRoot,
         confirmMerge: true
       });
     }
@@ -2170,6 +2178,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('browseSourceButton').addEventListener('click', browseSource);
   document.getElementById('browseTargetFolderButton').addEventListener('click', browseTargetFolder);
   document.getElementById('sourcePathInput').addEventListener('input', updateTargetFolderPlaceholder);
+  document.getElementById('includeSourceRootCheckbox')?.addEventListener('change', updateTargetFolderPlaceholder);
   document.getElementById('sourceForm').addEventListener('submit', registerSource);
   document.getElementById('logLevelSelect').addEventListener('change', updateLogLevel);
   document.getElementById('copyLogsButton')?.addEventListener('click', copyLogsToClipboard);

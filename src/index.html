@@ -973,6 +973,7 @@
     .source-card-arrow {
       position: relative;
       --arrow-phase: 0s;
+      --arrow-flow-duration: 3.48s;
       width: 208px;
       height: 24px;
       display: block;
@@ -1084,12 +1085,12 @@
     }
 
     .source-card-arrow.is-copying .source-card-arrow-head {
-      animation: source-card-arrow-head-pulse 1.75s ease-out infinite;
+      animation: source-card-arrow-head-pulse var(--arrow-flow-duration) ease-out infinite;
       animation-delay: var(--arrow-phase);
     }
 
     .source-card-arrow.is-copying .source-card-arrow-dot {
-      animation: source-card-arrow-flow 1.75s linear infinite;
+      animation: source-card-arrow-flow var(--arrow-flow-duration) linear infinite;
       animation-delay: calc(var(--arrow-phase) + var(--arrow-dot-delay, 0s));
     }
 
@@ -1106,14 +1107,16 @@
         opacity: 0;
         transform: translateX(0);
       }
-      10% {
+      8% {
         opacity: 1;
       }
-      92% {
+      54% {
         opacity: 1;
+        transform: translateX(172px);
       }
-      98% {
-        opacity: 1;
+      57.5% {
+        opacity: 0;
+        transform: translateX(172px);
       }
       100% {
         opacity: 0;

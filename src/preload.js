@@ -1,4 +1,4 @@
-const { clipboard, contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('myBackup', {
   getPlatform: () => process.platform,
@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld('myBackup', {
   getAppVersion: () => ipcRenderer.invoke('app:get-app-version'),
   getDaemonStatus: () => ipcRenderer.invoke('app:get-daemon-status'),
   getChangeList: (input) => ipcRenderer.invoke('change-tracking:get-change-list', input),
-  copyText: (text) => clipboard.writeText(String(text || '')),
+  copyText: (text) => ipcRenderer.invoke('app:copy-text', { text: String(text || '') }),
   getDashboard: () => ipcRenderer.invoke('app:get-dashboard'),
   addTarget: () => ipcRenderer.invoke('app:add-target'),
   removeTarget: (input) => ipcRenderer.invoke('app:remove-target', input),

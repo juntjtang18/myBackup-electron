@@ -1,6 +1,6 @@
 process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || '16';
 
-const { app, BrowserWindow, dialog, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, screen } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs-extra');
@@ -53,6 +53,38 @@ const targetAvailability = createTargetAvailabilityMonitor(appPlatform, {
 app.commandLine.appendSwitch('disable-gpu');
 app.commandLine.appendSwitch('disable-gpu-compositing');
 app.disableHardwareAcceleration();
+
+function toErrorObject(error) {
+  if (error instanceof Error) {
+    return error;
+  }
+  return new Error(String(error));
+}
+
+function reportProcessError(kind, error) {
+  const normalized = toErrorObject(error);
+  logger.error(`Unhandled process error (${kind}).`, {
+    message: normalized.message,
+    stack: normalized.stack
+  });
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    logToRenderer('error', `Unhandled process error (${kind}).`, {
+      message: normalized.message
+    });
+  }
+}
+
+function installProcessErrorGuards() {
+  process.on('unhandledRejection', (reason) => {
+    reportProcessError('unhandledRejection', reason);
+  });
+
+  process.on('uncaughtException', (error) => {
+    reportProcessError('uncaughtException', error);
+  });
+}
+
+installProcessErrorGuards();
 
 function logToRenderer(level, message, details = null) {
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -248,23 +280,115 @@ async function requireSourceById(input) {
   return { target, source };
 }
 
+function pathsEqualWithPlatform(leftPath, rightPath) {
+  if (!leftPath || !rightPath) {
+    return false;
+  }
+  const left = path.resolve(leftPath);
+  const right = path.resolve(rightPath);
+  if (process.platform === 'win32') {
+    return left.toLowerCase() === right.toLowerCase();
+  }
+  return left === right;
+}
+
+function resolveSourceForBackupRun(schema, input, targetRoot) {
+  const targets = schema?.targets || [];
+  const exactTarget = targets.find((entry) => pathsEqualWithPlatform(entry.path, targetRoot)) || null;
+  const findById = (target) => (target?.sources || []).filter((entry) => (
+    entry.sourceId === input.sourceId
+    && (!input.machineId || entry.machineId === input.machineId)
+  ));
+
+  const targetScopedCandidates = findById(exactTarget);
+  if (targetScopedCandidates.length > 0) {
+    return {
+      targetPath: exactTarget.path,
+      source: targetScopedCandidates[0],
+      fallback: false
+    };
+  }
+
+  const globalCandidates = targets.flatMap((entry) => (
+    findById(entry).map((source) => ({ targetPath: entry.path, source }))
+  ));
+  if (globalCandidates.length === 1) {
+    return {
+      targetPath: globalCandidates[0].targetPath,
+      source: globalCandidates[0].source,
+      fallback: true
+    };
+  }
+
+  if (exactTarget) {
+    const looseCandidates = (exactTarget.sources || []).filter((entry) => entry.sourceId === input.sourceId);
+    if (looseCandidates.length > 0) {
+      return {
+        targetPath: exactTarget.path,
+        source: looseCandidates[0],
+        fallback: false
+      };
+    }
+  }
+
+  return {
+    targetPath: targetRoot,
+    source: null,
+    fallback: false
+  };
+}
+
 function registerIpcHandlers() {
-  ipcMain.handle('app:get-dashboard', async () => refreshDashboardState(false));
-  ipcMain.handle('app:get-daemon-status', async () => {
+  const handle = (channel, handler) => {
+    ipcMain.handle(channel, async (...args) => {
+      try {
+        return await handler(...args);
+      } catch (error) {
+        const normalized = toErrorObject(error);
+        logger.error('IPC handler failed.', {
+          channel,
+          message: normalized.message,
+          stack: normalized.stack
+        });
+        throw normalized;
+      }
+    });
+  };
+
+  handle('app:get-dashboard', async () => refreshDashboardState(false));
+  handle('app:copy-text', async (_event, input) => {
+    const text = String(input?.text || '');
+    try {
+      clipboard.writeText(text);
+      const readBack = clipboard.readText();
+      const ok = text === '' ? true : readBack === text;
+      return {
+        ok,
+        error: ok ? null : 'Clipboard read-back mismatch.'
+      };
+    } catch (error) {
+      const normalized = toErrorObject(error);
+      return {
+        ok: false,
+        error: normalized.message
+      };
+    }
+  });
+  handle('app:get-daemon-status', async () => {
     if (watchService) {
       setDaemonStatus(await watchService.getStatus());
     }
     return daemonStatus;
   });
-  ipcMain.handle('app:get-app-version', async () => app.getVersion());
-  ipcMain.handle('app:get-runtime-flags', async () => getRuntimeFlags());
-  ipcMain.handle('change-tracking:get-change-list', async (_event, input) => {
+  handle('app:get-app-version', async () => app.getVersion());
+  handle('app:get-runtime-flags', async () => getRuntimeFlags());
+  handle('change-tracking:get-change-list', async (_event, input) => {
     const { source } = await requireSourceById(input);
 
     const tracker = new ChangeTracker(getAppDataRoot());
     return tracker.getChangeList(source);
   });
-  ipcMain.handle('app:set-log-level', async (_event, input) => {
+  handle('app:set-log-level', async (_event, input) => {
     const level = input && input.level ? input.level : 'info';
     configureLogger({ level });
     await saveLocalConfig(getAppDataRoot(), { logLevel: level });
@@ -289,10 +413,10 @@ function registerIpcHandlers() {
     return refreshDashboardState(false);
   }
 
-  ipcMain.handle('app:add-target', async () => pickAndAddTarget());
-  ipcMain.handle('app:select-target', async () => pickAndAddTarget());
+  handle('app:add-target', async () => pickAndAddTarget());
+  handle('app:select-target', async () => pickAndAddTarget());
 
-  ipcMain.handle('app:remove-target', async (_event, input) => {
+  handle('app:remove-target', async (_event, input) => {
     if (!input || !input.targetId) {
       throw new Error('Target id is required.');
     }
@@ -303,7 +427,7 @@ function registerIpcHandlers() {
     return refreshDashboardState(false);
   });
 
-  ipcMain.handle('app:set-target-collapsed', async (_event, input) => {
+  handle('app:set-target-collapsed', async (_event, input) => {
     if (!input || !input.targetId) {
       throw new Error('Target id is required.');
     }
@@ -315,7 +439,7 @@ function registerIpcHandlers() {
     };
   });
 
-  ipcMain.handle('app:add-source', async (_event, input) => {
+  handle('app:add-source', async (_event, input) => {
     const targetRoot = await requireTargetRoot(input);
     const schema = await ensureAppSchema();
     const sourcePath = path.resolve(input.sourcePath || '');
@@ -365,7 +489,7 @@ function registerIpcHandlers() {
     };
   });
 
-  ipcMain.handle('app:get-source-ignore-rules', async (_event, input) => {
+  handle('app:get-source-ignore-rules', async (_event, input) => {
     const { source } = await requireSourceById(input);
     const rulesDocument = await readSourceIgnoreFile(getAppDataRoot(), source);
     return {
@@ -374,7 +498,7 @@ function registerIpcHandlers() {
     };
   });
 
-  ipcMain.handle('app:save-source-ignore-rules', async (_event, input) => {
+  handle('app:save-source-ignore-rules', async (_event, input) => {
     const { source } = await requireSourceById(input);
     if (!input || typeof input.rulesText !== 'string') {
       throw new Error('rulesText must be a string.');
@@ -391,7 +515,7 @@ function registerIpcHandlers() {
     };
   });
 
-  ipcMain.handle('app:remove-source', async (_event, input) => {
+  handle('app:remove-source', async (_event, input) => {
     const targetRoot = await requireTargetRoot(input);
     if (!input || !input.machineId || !input.sourceId) {
       throw new Error('Source identity is required.');
@@ -420,7 +544,7 @@ function registerIpcHandlers() {
     return buildDashboardState();
   });
 
-  ipcMain.handle('app:pick-source-folder', async () => {
+  handle('app:pick-source-folder', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory'],
       title: 'Select Source Folder'
@@ -429,7 +553,7 @@ function registerIpcHandlers() {
     return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
   });
 
-  ipcMain.handle('app:pick-target-folder', async (_event, input) => {
+  handle('app:pick-target-folder', async (_event, input) => {
     const targetRoot = await requireTargetRoot(input);
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory', 'createDirectory'],
@@ -450,15 +574,21 @@ function registerIpcHandlers() {
     return normalizeTargetFolder(relativePath);
   });
 
-  ipcMain.handle('app:run-backup', async (_event, input) => {
+  handle('app:run-backup', async (_event, input) => {
     const targetRoot = await requireTargetRoot(input);
     const schema = await loadBackupSchema(getAppDataRoot());
-    const targetEntry = (schema?.targets || []).find((entry) => entry.path === targetRoot);
-    const requestedSource = (targetEntry?.sources || []).find((entry) => (
-      entry.sourceId === input.sourceId
-      && (!input.machineId || entry.machineId === input.machineId)
-    )) || (targetEntry?.sources || []).find((entry) => entry.sourceId === input.sourceId);
-    const resolvedMachineId = requestedSource?.machineId || input.machineId;
+    const resolved = resolveSourceForBackupRun(schema, input, targetRoot);
+    const resolvedMachineId = resolved.source?.machineId || input.machineId;
+    const resolvedTargetRoot = resolved.targetPath || targetRoot;
+    if (resolved.fallback) {
+      logger.warn('Backup source resolved via global source-id fallback.', {
+        requestedTargetRoot: targetRoot,
+        resolvedTargetRoot,
+        requestedMachineId: input.machineId,
+        resolvedMachineId,
+        sourceId: input.sourceId
+      });
+    }
     const key = backupKey(targetRoot, input.machineId, input.sourceId);
     if (activeBackups.has(key)) {
       throw new Error('Backup already running for this source.');
@@ -467,18 +597,18 @@ function registerIpcHandlers() {
     const workerPools = await loadWorkerPoolsForBackup();
 
     logger.info('Backup requested.', {
-      targetRoot,
+      targetRoot: resolvedTargetRoot,
       machineId: resolvedMachineId,
       sourceId: input.sourceId,
       forceNewScan: Boolean(input.forceNewScan),
       workerPools
     });
     logToRenderer('info', 'Backup started.', {
-      targetRoot,
+      targetRoot: resolvedTargetRoot,
       sourceId: input.sourceId
     });
     activeBackupProgress.set(key, {
-      targetRoot,
+      targetRoot: resolvedTargetRoot,
       machineId: input.machineId,
       sourceId: input.sourceId,
       status: 'running'
@@ -489,7 +619,7 @@ function registerIpcHandlers() {
     activeBackups.set(key, control);
 
     try {
-      const summary = await backupSource(targetRoot, resolvedMachineId, input.sourceId, {
+      const summary = await backupSource(resolvedTargetRoot, resolvedMachineId, input.sourceId, {
         appDataRoot: getAppDataRoot(),
         forceNewScan: Boolean(input.forceNewScan),
         initialHashWorkers: workerPools.hash,
@@ -499,7 +629,7 @@ function registerIpcHandlers() {
         shouldPause: () => control.pauseRequested,
         onProgress: ({ summary: progressSummary, progress, event, trace }) => {
           const payload = {
-            targetRoot,
+            targetRoot: resolvedTargetRoot,
             machineId: input.machineId,
             sourceId: input.sourceId,
             summary: progressSummary,
@@ -535,7 +665,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('app:pause-backup', async (_event, input) => {
+  handle('app:pause-backup', async (_event, input) => {
     const targetRoot = await requireTargetRoot(input);
     const key = backupKey(targetRoot, input.machineId, input.sourceId);
     const control = activeBackups.get(key);
@@ -562,7 +692,7 @@ function registerIpcHandlers() {
     return { accepted: true };
   });
 
-  ipcMain.handle('app:restore-source', async (_event, input) => {
+  handle('app:restore-source', async (_event, input) => {
     const targetRoot = await requireTargetRoot(input);
     const key = backupKey(targetRoot, input.machineId, input.sourceId);
     if (activeBackups.has(key)) {
@@ -680,7 +810,7 @@ function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle('app:restore-merged', async (_event, input) => {
+  handle('app:restore-merged', async (_event, input) => {
     const targetRoot = await requireTargetRoot(input);
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory', 'createDirectory'],
@@ -700,13 +830,13 @@ function registerIpcHandlers() {
     return summary;
   });
 
-  ipcMain.handle('window:minimize', () => {
+  handle('window:minimize', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.minimize();
     }
   });
 
-  ipcMain.handle('window:toggle-maximize', () => {
+  handle('window:toggle-maximize', () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       return false;
     }
@@ -718,13 +848,13 @@ function registerIpcHandlers() {
     return mainWindow.isMaximized();
   });
 
-  ipcMain.handle('window:close', () => {
+  handle('window:close', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.close();
     }
   });
 
-  ipcMain.handle('window:is-maximized', () => {
+  handle('window:is-maximized', () => {
     return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized());
   });
 }

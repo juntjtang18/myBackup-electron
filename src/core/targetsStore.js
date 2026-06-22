@@ -1,12 +1,15 @@
 const fs = require('fs-extra');
+const path = require('path');
 const {
   createMachineRecord,
   validateMachineRecord
 } = require('./schema');
 const { readJsonIfExists, writeJsonAtomic } = require('./jsonStore');
 const { targetsPath } = require('./paths');
+const { createLogger } = require('./logger');
 
 const TARGETS_LAYOUT_VERSION = 1;
+const logger = createLogger('TargetsStore', 'targetsStore.js');
 
 function nowIso(now = new Date()) {
   return now.toISOString();
@@ -64,24 +67,71 @@ class TargetsStore {
     this.appDataRoot = appDataRoot;
   }
 
+  targetsBackupPath() {
+    const primary = targetsPath(this.appDataRoot);
+    return path.join(path.dirname(primary), `${path.basename(primary)}.bak`);
+  }
+
   async exists() {
     return fs.pathExists(targetsPath(this.appDataRoot));
   }
 
-  async load(now = new Date()) {
-    const document = await readJsonIfExists(targetsPath(this.appDataRoot));
+  async loadFromPath(documentPath, now = new Date()) {
+    const document = await readJsonIfExists(documentPath);
     if (!document) {
       return null;
     }
     return createTargetsDocument(validateTargetsDocument(document), now);
   }
 
+  async load(now = new Date()) {
+    const primaryPath = targetsPath(this.appDataRoot);
+    const backupPath = this.targetsBackupPath();
+    try {
+      const primary = await this.loadFromPath(primaryPath, now);
+      if (primary) {
+        return primary;
+      }
+    } catch (error) {
+      logger.error('Failed to load primary targets document.', {
+        path: primaryPath,
+        message: error.message
+      });
+    }
+
+    try {
+      const backup = await this.loadFromPath(backupPath, now);
+      if (!backup) {
+        return null;
+      }
+      logger.warn('Recovered targets document from backup.', {
+        backupPath
+      });
+      await writeJsonAtomic(primaryPath, backup);
+      return backup;
+    } catch (error) {
+      logger.error('Failed to load targets backup document.', {
+        backupPath,
+        message: error.message
+      });
+      throw error;
+    }
+  }
+
   async save(document, now = new Date()) {
+    const primaryPath = targetsPath(this.appDataRoot);
+    const backupPath = this.targetsBackupPath();
     const normalized = createTargetsDocument({
       ...document,
       updatedAt: nowIso(now)
     }, now);
-    await writeJsonAtomic(targetsPath(this.appDataRoot), normalized);
+
+    if (await fs.pathExists(primaryPath)) {
+      await fs.ensureDir(path.dirname(backupPath));
+      await fs.copy(primaryPath, backupPath, { overwrite: true });
+    }
+    await writeJsonAtomic(primaryPath, normalized);
+    await writeJsonAtomic(backupPath, normalized);
     return normalized;
   }
 }

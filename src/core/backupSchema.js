@@ -20,9 +20,11 @@ const {
 } = require('./targetsStore');
 const { SourceStore } = require('./sourceStore');
 const { SourceStatusStore } = require('./sourceStatusStore');
+const { createLogger } = require('./logger');
 
 const BACKUP_SCHEMA_VERSION = 1;
 const SCHEMA_MIGRATION_VERSION = 1;
+const logger = createLogger('BackupSchema', 'backupSchema.js');
 
 function nowIso(now = new Date()) {
   return now.toISOString();
@@ -167,13 +169,29 @@ async function loadAssembledSchemaFromStores(appDataRoot, now = new Date()) {
 
   const definitions = await sourceStore.list(now);
   const grouped = new Map();
+  const knownTargetIds = new Set((targetsDocument.targets || []).map((target) => target.id));
+  let orphanSourceCount = 0;
   for (const definition of definitions) {
     const status = await statusStore.ensure(definition.sourceId, now);
     const source = mergeSource(definition, status, now);
     const targetId = definition.targetId || '';
+    if (targetId && !knownTargetIds.has(targetId)) {
+      orphanSourceCount += 1;
+      logger.warn('Source definition references missing target id.', {
+        sourceId: definition.sourceId,
+        machineId: definition.machineId,
+        targetId
+      });
+      continue;
+    }
     const list = grouped.get(targetId) || [];
     list.push(source);
     grouped.set(targetId, list);
+  }
+  if (orphanSourceCount > 0) {
+    logger.warn('Orphan source definitions were skipped while loading schema.', {
+      orphanSourceCount
+    });
   }
 
   return createBackupSchema({
@@ -199,6 +217,16 @@ async function saveSplitLayoutFromSchema(appDataRoot, schema, now = new Date()) 
     updatedAt: nowIso(now)
   }, now);
 
+  for (const target of normalized.targets) {
+    for (const source of target.sources || []) {
+      const { definition, status } = splitMergedSource(source, target.id, now);
+      await sourceStore.save(definition, now);
+      await statusStore.save(status, now);
+    }
+  }
+
+  // Commit targets metadata last so any mid-write failure cannot make existing
+  // source definitions disappear from assembled state unexpectedly.
   await targetsStore.save(createTargetsDocument({
     machine: normalized.machine,
     targets: normalized.targets.map((target) => ({
@@ -210,23 +238,10 @@ async function saveSplitLayoutFromSchema(appDataRoot, schema, now = new Date()) 
     updatedAt: nowIso(now)
   }, now), now);
 
-  const expectedSourceIds = new Set();
-  for (const target of normalized.targets) {
-    for (const source of target.sources || []) {
-      const { definition, status } = splitMergedSource(source, target.id, now);
-      expectedSourceIds.add(definition.sourceId);
-      await sourceStore.save(definition, now);
-      await statusStore.save(status, now);
-    }
-  }
-
-  const existingDefinitions = await sourceStore.list(now);
-  for (const definition of existingDefinitions) {
-    if (!expectedSourceIds.has(definition.sourceId)) {
-      await sourceStore.remove(definition.sourceId);
-      await statusStore.remove(definition.sourceId);
-    }
-  }
+  // Do not delete unmatched source/status files during schema saves.
+  // Deletion is handled only by explicit remove-target/remove-source flows.
+  // This prevents accidental source-definition loss during migrations or
+  // partial schema writes.
 
   return normalized;
 }

@@ -130,3 +130,10 @@ npx electron-builder "${TARGET_ARGS[@]}"
 
 echo "Build complete. Artifacts:"
 find "$DIST_DIR" -maxdepth 1 -type f | sort
+
+CHECKSUM_FILE="$DIST_DIR/SHA256SUMS.txt"
+echo "Generating SHA-256 checksums: $CHECKSUM_FILE"
+find "$DIST_DIR" -maxdepth 1 -type f -print0 \
+  | sort -z \
+  | xargs -0 shasum -a 256 > "$CHECKSUM_FILE"
+cat "$CHECKSUM_FILE"

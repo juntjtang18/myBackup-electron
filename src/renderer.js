@@ -630,10 +630,43 @@ function renderSourceExcludePanel(target, source) {
   });
 }
 
+function stringifyLogDetails(details) {
+  if (details === undefined || details === null) {
+    return '';
+  }
+  const seen = new WeakSet();
+  try {
+    return JSON.stringify(details, (key, value) => {
+      if (typeof value === 'bigint') {
+        return value.toString();
+      }
+      if (typeof value === 'object' && value !== null) {
+        if (seen.has(value)) {
+          return '[Circular]';
+        }
+        seen.add(value);
+      }
+      if (value instanceof Error) {
+        return {
+          name: value.name,
+          message: value.message,
+          stack: value.stack
+        };
+      }
+      return value;
+    });
+  } catch (_error) {
+    try {
+      return String(details);
+    } catch (__error) {
+      return '[Unserializable]';
+    }
+  }
+}
+
 function formatLogEntryPlain(entry) {
-  const details = entry.details === undefined || entry.details === null
-    ? ''
-    : ` ${JSON.stringify(entry.details)}`;
+  const serializedDetails = stringifyLogDetails(entry.details);
+  const details = serializedDetails ? ` ${serializedDetails}` : '';
   return `[${entry.timestamp}][${String(entry.level || 'info').toUpperCase()}] ${entry.message}${details}`;
 }
 
@@ -688,7 +721,14 @@ async function copyLogsToClipboard() {
   }
 
   try {
-    await window.myBackup.copyText(text);
+    const result = await window.myBackup.copyText(text);
+    const copied = typeof result === 'boolean' ? result : Boolean(result?.ok);
+    if (!copied) {
+      const reason = typeof result === 'object' && result?.error
+        ? result.error
+        : 'Clipboard write was rejected.';
+      throw new Error(reason);
+    }
     if (status) {
       status.textContent = 'Copied';
       window.setTimeout(() => {
@@ -752,12 +792,13 @@ function renderLogs() {
       ? '--:--:--'
       : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const level = entry.level.toUpperCase();
-    const detailSuffix = entry.details ? ` ${JSON.stringify(entry.details)}` : '';
+    const serializedDetails = stringifyLogDetails(entry.details);
+    const detailSuffix = serializedDetails ? ` ${serializedDetails}` : '';
     return `
       <li class="log-line" title="${escapeHtml(entry.message + detailSuffix)}">
         <span class="log-time">${escapeHtml(time)}</span>
         <span class="log-level log-level-${escapeHtml(entry.level)}">${escapeHtml(level)}</span>
-        <span class="log-msg">${escapeHtml(entry.message)}${entry.details ? `<span class="muted"> ${escapeHtml(JSON.stringify(entry.details))}</span>` : ''}</span>
+        <span class="log-msg">${escapeHtml(entry.message)}${serializedDetails ? `<span class="muted"> ${escapeHtml(serializedDetails)}</span>` : ''}</span>
       </li>
     `;
   }).join('');
@@ -835,7 +876,7 @@ function formatAnimationSeconds(value) {
 function buildSourceArrowPhaseStyle() {
   // Keep arrow animation on a global time clock so motion is independent
   // from backup payload cadence and copied-byte updates.
-  const cycleMs = 1750;
+  const cycleMs = 3480;
   const nowMs = Date.now();
   const phaseSeconds = -((nowMs % cycleMs) / 1000);
   return ` style="--arrow-phase:${formatAnimationSeconds(phaseSeconds)}"`;

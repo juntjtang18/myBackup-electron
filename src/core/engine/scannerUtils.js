@@ -1,5 +1,6 @@
 const fs = require('fs-extra');
 const path = require('path');
+const { isBackupCardRelativePath } = require('../backupCard');
 
 function isMissingPathError(error) {
   return Boolean(error && error.code === 'ENOENT');
@@ -21,7 +22,7 @@ async function readFolderEntries(folderPath, relativeRoot = '.', ignoreMatcher =
       }
       directories.push({ name: entry.name, path: fullPath, relativePath });
     } else if (entry.isSymbolicLink() || entry.isFile()) {
-      if (relativePath === '.mbignore') {
+      if (relativePath === '.mbignore' || isBackupCardRelativePath(relativePath)) {
         continue;
       }
       if (ignoreMatcher && ignoreMatcher.shouldIgnore(relativePath, false)) {
@@ -46,7 +47,7 @@ async function statFile(filePath) {
 }
 
 function isIgnoredInventoryPath(relativePath, ignoreMatcher) {
-  if (relativePath === '.mbignore') {
+  if (relativePath === '.mbignore' || isBackupCardRelativePath(relativePath)) {
     return true;
   }
   if (!ignoreMatcher) {

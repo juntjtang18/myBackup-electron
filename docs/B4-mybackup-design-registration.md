@@ -208,6 +208,88 @@ Way 1 still needs a **source** row. Restore is source-row–centric ([B1](./B1-m
 
 ---
 
+## Backup card on the target
+
+The last-run report already exists in **this Mac’s app data** (`scanResult`: files, size, ignored, failed). It does not travel with the disk. On a portable drive you only see folder names (`gpa/`, `photos/`), so you cannot tell from where or when.
+
+That is worth fixing. It is **not** the rejected volume catalog. Do not scan the disk. Do not copy `targets.json`. Write a card **inside the backup set folder the app already knows**, at the end of a successful Full Backup or Backup Changes run.
+
+```text
+/Volumes/Backup/                 ← target you already chose
+  gpa/                           ← append-on copy of /Users/ziyu/gpa
+    BACKUP.md                    ← readable in Finder / any editor
+    .mybackup-info.json          ← same facts, for the app
+    file.doc
+```
+
+```mermaid
+flowchart LR
+  run["Backup completes"] --> append["Append one history row"]
+  append --> md["Rewrite BACKUP.md"]
+  append --> json["Rewrite .mybackup-info.json"]
+```
+
+### Format: Markdown, not HTML
+
+| | Markdown | HTML |
+|---|---|---|
+| Open on the disk | Any editor, Quick Look, Notepad | Browser |
+| Readable if nothing else is installed | Yes — it is still text | Ugly as raw tags |
+| Append a history table | Easy | Need a template / CSS |
+| Restore / copy risk | One small file | Same, plus looks like a page |
+
+Use **`BACKUP.md`**. Keep `.mybackup-info.json` for the app. Do not generate HTML.
+
+### Last run vs full history
+
+Keep **identity + full run history**. Not file versioning (that is block storage later). One row per completed backup.
+
+```markdown
+# Backup: gpa
+
+- From: `/Users/ziyu/gpa`
+- Machine: Juns-Mac-mini (`machineId`)
+- Layout: append on → this folder is `gpa/`
+
+## Last run
+
+2026-08-16 13:54 · Full Backup · 344 files backed up · 43 ignored · 0 failed
+
+## History
+
+| When | Kind | Backed up | Size | Ignored | Failed |
+|---|---|---:|---:|---:|---:|
+| 2026-08-16 13:54 | Full | 344 | 1.2 GB | 43 | 0 |
+| 2026-08-10 09:12 | Changes | 12 copied | 8 MB | — | 0 |
+| 2026-08-01 18:03 | Full | 330 | 1.1 GB | 40 | 1 |
+
+## Last failures
+
+- `docs/bad.txt` — EIO
+```
+
+| Keep | Do not keep |
+|---|---|
+| One history row per completed run (time, kind, counts, size) | Every ignored path |
+| Failed **paths** for the **last** run only | Failed paths for every old run |
+| Cap history at **200** rows (drop oldest) | Unbounded Backup Changes log |
+
+Rewrite both files from the json on each complete (json is source of truth; md is rendered). Identity at the top stays stable (from / machine). History is append, then cap.
+
+### Why this is not a disk scan
+
+The card lives **in `gpa/`**, next to the files. You find it by opening that folder. The app writes it because it already has `getSourceTargetRoot`. No walk of `a/`, `b/f`, `b/c/d/`.
+
+If append is off, files land in the target root. Write the card in that same root (the folder the user picked as target).
+
+### What not to do
+
+- Do not put the card only in hidden `.mybackup/` at the volume root — Finder still looks empty of meaning.
+- Do not list every ignored path (can be huge). Counts are enough.
+- Restore must skip `BACKUP.md` and `.mybackup-info.json` so they are not copied into the user’s destination.
+
+---
+
 ## Code
 
 - `src/core/paths.js` — app-data vs `target/.mybackup` path helpers
@@ -215,4 +297,7 @@ Way 1 still needs a **source** row. Restore is source-row–centric ([B1](./B1-m
 - `src/core/sourceStore.js` — `data/sources/*.json`
 - `src/core/targetsStore.js` — `data/targets.json`
 - `src/core/ignoreMatcher.js` — app-data ignore + source `.mbignore` fallback
+- `src/core/backupCard.js` — `BACKUP.md` + `.mybackup-info.json` in the backup set folder
+- `src/core/backupCoordinator.js` — write the card on completed backup
+- `src/core/restoreService.js` — skip the card files
 - `src/index.js` — `getAppDataRoot()`, add target/source, `app:restore-source` lookup

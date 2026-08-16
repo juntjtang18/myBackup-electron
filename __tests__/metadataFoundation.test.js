@@ -2931,6 +2931,65 @@ dist/**
     expect(summary.destinationRoot).toBe(restoreRoot);
     expect(await fs.readFile(path.join(restoreRoot, 'docs', 'a.txt'), 'utf8')).toBe('alpha');
     expect(await fs.readFile(path.join(restoreRoot, 'docs', 'nested', 'b.txt'), 'utf8')).toBe('beta');
+    expect(await fs.pathExists(path.join(restoreRoot, 'BACKUP.md'))).toBe(false);
+    expect(await fs.pathExists(path.join(restoreRoot, '.mybackup-info.json'))).toBe(false);
+  });
+
+  test('writes a backup card on the target and restore skips it', async () => {
+    const sourceRoot = path.join(tempRootPath, 'card-source', 'gpa');
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'card-host',
+      seed: 'card-seed',
+      now: new Date('2026-08-16T14:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-08-16T14:05:00Z'));
+
+    await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-16T14:10:00Z'),
+      forceNewScan: true
+    });
+
+    const backupSetRoot = path.join(tempRootPath, getSourceTargetRoot(machine.machineId, source));
+    const markdown = await fs.readFile(path.join(backupSetRoot, 'BACKUP.md'), 'utf8');
+    const card = await fs.readJson(path.join(backupSetRoot, '.mybackup-info.json'));
+    expect(markdown).toContain('# Backup: gpa');
+    expect(markdown).toContain(`From: \`${sourceRoot}\``);
+    expect(card.history).toHaveLength(1);
+    expect(card.lastRun).toMatchObject({
+      kind: 'full',
+      backedUpFileCount: 1
+    });
+
+    writeFixture(path.join(sourceRoot, 'docs', 'b.txt'), 'beta');
+    const newerDate = new Date('2026-08-16T14:14:00Z');
+    fs.utimesSync(path.join(sourceRoot, 'docs', 'b.txt'), newerDate, newerDate);
+    await markDirtyFolder(tempRootPath, source, 'docs', newerDate);
+    await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-16T14:15:00Z'),
+      forceNewScan: false
+    });
+
+    const afterChanges = await fs.readJson(path.join(backupSetRoot, '.mybackup-info.json'));
+    expect(afterChanges.history).toHaveLength(2);
+    expect(afterChanges.history[0].kind).toBe('changes');
+
+    const restoreRoot = path.join(tempRootPath, 'card-restored');
+    const summary = await restoreSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourceId: source.sourceId,
+      destinationRoot: restoreRoot
+    });
+    expect(summary.restoredFiles).toBe(2);
+    expect(await fs.pathExists(path.join(restoreRoot, 'BACKUP.md'))).toBe(false);
+    expect(await fs.pathExists(path.join(restoreRoot, '.mybackup-info.json'))).toBe(false);
+    expect(await fs.readFile(path.join(restoreRoot, 'docs', 'a.txt'), 'utf8')).toBe('alpha');
   });
 
   test('AT-RST01-1 restore default writes into source/a not source/a/a', async () => {
@@ -2967,10 +3026,65 @@ dist/**
       appendFolder: false
     });
 
-    expect(summary.restoredFiles).toBe(1);
+    expect(summary.restoredFiles).toBe(0);
+    expect(summary.skippedRecords).toBe(1);
     expect(summary.destinationRoot).toBe(sourceRoot);
     expect(await fs.readFile(path.join(sourceRoot, 'docs', 'photo.txt'), 'utf8')).toBe('photo');
     expect(await fs.pathExists(path.join(sourceRoot, 'pictures-a', 'docs', 'photo.txt'))).toBe(false);
+  });
+
+  test('restore overwrites only when the backup file is newer', async () => {
+    const sourceRoot = path.join(tempRootPath, 'restore-keep-newer-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'from-source');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'restore-keep-newer-host',
+      seed: 'restore-keep-newer-seed',
+      now: new Date('2026-08-16T15:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-08-16T15:05:00Z'));
+
+    await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-16T15:10:00Z'),
+      forceNewScan: true
+    });
+
+    const restoreRoot = path.join(tempRootPath, 'restore-keep-newer-dest');
+    const destFile = path.join(restoreRoot, 'docs', 'a.txt');
+    writeFixture(destFile, 'dest-newer');
+    const backupFile = path.join(tempRootPath, getSourceTargetRoot(machine.machineId, source), 'docs', 'a.txt');
+    const backupStat = await fs.stat(backupFile);
+    const newerDest = new Date(backupStat.mtimeMs + 60_000);
+    await fs.utimes(destFile, newerDest, newerDest);
+
+    const skipped = await restoreSource(tempRootPath, {
+      appDataRoot: tempRootPath,
+      machineId: machine.machineId,
+      sourceId: source.sourceId,
+      destinationRoot: restoreRoot
+    });
+    expect(skipped.restoredFiles).toBe(0);
+    expect(skipped.skippedRecords).toBe(1);
+    expect(await fs.readFile(destFile, 'utf8')).toBe('dest-newer');
+
+    const olderDest = new Date(backupStat.mtimeMs - 60_000);
+    await fs.writeFile(destFile, 'dest-older');
+    await fs.utimes(destFile, olderDest, olderDest);
+
+    const copied = await restoreSource(tempRootPath, {
+      appDataRoot: tempRootPath,
+      machineId: machine.machineId,
+      sourceId: source.sourceId,
+      destinationRoot: restoreRoot
+    });
+    expect(copied.restoredFiles).toBe(1);
+    expect(copied.skippedRecords).toBe(0);
+    expect(await fs.readFile(destFile, 'utf8')).toBe('from-source');
   });
 
   test('AT-RST01-2 empty or missing target/a copies nothing with clear message', async () => {

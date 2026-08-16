@@ -373,6 +373,34 @@
     return `<ul class="progress-last-run-list">${items}</ul>`;
   }
 
+  function renderLastRunRestore(entry) {
+    const summary = entry?.summary || {};
+    const progress = entry?.progress || {};
+    const restoredFiles = Number(summary.restoredFiles ?? progress.filesCopied ?? 0);
+    const copiedBytes = Number(summary.copiedBytes ?? progress.copiedBytes ?? 0);
+    const destination = summary.destinationRoot || progress.destinationRoot || '';
+    const skipped = Number(summary.skippedRecords || 0);
+    const message = summary.message || '';
+    return `
+      <div class="progress-last-run" data-scan-kind="restore">
+        <div class="progress-last-run-heading">Restore</div>
+        <div class="progress-last-run-sides">
+          <section class="progress-last-run-side" data-scan-side="restored">
+            <div class="progress-last-run-label">Restored</div>
+            <div class="progress-last-run-count">${restoredFiles} files</div>
+            <div class="progress-last-run-size">${formatBytes(copiedBytes)}</div>
+          </section>
+          <section class="progress-last-run-side" data-scan-side="destination">
+            <div class="progress-last-run-label">Destination</div>
+            <div class="progress-last-run-count" title="${escapeHtml(destination)}">${escapeHtml(destination || '—')}</div>
+          </section>
+        </div>
+        ${skipped > 0 ? renderLastRunSection('Skipped', skipped, 0) : ''}
+        ${message ? `<div class="progress-last-run-message">${escapeHtml(message)}</div>` : ''}
+      </div>
+    `;
+  }
+
   function renderLastRunInventory(scanResult) {
     if (!scanResult) {
       return '';
@@ -425,13 +453,18 @@
     const view = createProgressViewModel(entry);
     const showQueueDetails = Boolean(input.showProgressQueueDetails);
     const scanResult = entry.summary?.scanResult || input.source?.scanResult || null;
+    const isRestore = entry.progress?.mode === 'restore'
+      || String(entry.event?.type || '').startsWith('restore-');
     const isFinished = view.summary.status === 'completed'
       || view.summary.status === 'stopped'
       || view.summary.status === 'failed';
+    const lastRunHtml = isFinished && isRestore
+      ? renderLastRunRestore(entry)
+      : (isFinished && scanResult ? renderLastRunInventory(scanResult) : '');
     return `
       <div class="source-progress-panel" id="progress-panel-${safeKey}">
-        ${isFinished && scanResult ? renderLastRunInventory(scanResult) : renderSummary(view.summary)}
-        ${isFinished && scanResult ? '' : `
+        ${lastRunHtml || renderSummary(view.summary)}
+        ${lastRunHtml ? '' : `
         <div class="progress-pools">
           ${renderPoolPanel(view.pools.file || view.pools.hash, safeKey, showQueueDetails)}
         </div>

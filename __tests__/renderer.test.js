@@ -423,6 +423,62 @@ describe('renderer target offline behavior', () => {
     ))).toBe(true);
   });
 
+  test('Restore opens the progress panel while running and keeps the report after complete', async () => {
+    const testApi = loadRendererTestApi();
+    global.window.myBackupProgressPanel = {
+      renderBackupProgressPanel: jest.fn(() => '<div class="source-progress-panel">restore report</div>'),
+      normalizeProgress: jest.fn(() => ({ summary: { status: 'running' } })),
+      shouldRenderImmediatelyForProgress: jest.fn(() => true)
+    };
+    const target = createTarget();
+    testApi.state.dashboard.targets = [target];
+    let resolveRestore;
+    global.window.myBackup.restoreSource = jest.fn(() => new Promise((resolve) => {
+      resolveRestore = resolve;
+    }));
+
+    const runPromise = testApi.runRestoreSource('/Volumes/ST/Backup', 'machine-a', 'source-a');
+    testApi.handleBackupProgressPayload({
+      targetRoot: '/Volumes/ST/Backup',
+      machineId: 'machine-a',
+      sourceId: 'source-a',
+      summary: { status: 'running' },
+      progress: {
+        mode: 'restore',
+        status: 'running',
+        destinationRoot: '/tmp/newsource',
+        filesProcessed: 1,
+        filesCopied: 1,
+        copiedBytes: 10,
+        totalBytes: 20,
+        workers: {}
+      },
+      event: { type: 'restore-started', pool: 'file' }
+    });
+
+    const key = '/Volumes/ST/Backup::machine-a::source-a';
+    expect(testApi.state.progressPanelExpanded[key]).toBe(true);
+    expect(targetsContainer.innerHTML).toContain('source-progress-panel');
+
+    resolveRestore({
+      dashboard: { targets: [target] },
+      summary: {
+        status: 'completed',
+        restoredFiles: 2,
+        copiedBytes: 20,
+        destinationRoot: '/tmp/newsource'
+      }
+    });
+    await runPromise;
+
+    expect(testApi.state.progressPanelExpanded[key]).toBe(true);
+    expect(testApi.state.backupProgress[key].progress.status).toBe('completed');
+    expect(targetsContainer.innerHTML).toContain('source-progress-panel');
+    expect(testApi.state.logs.some((entry) => (
+      entry.message === 'Restore complete. 2 files · /tmp/newsource.'
+    ))).toBe(true);
+  });
+
   test('active backup renders the source card arrow in copying state', () => {
     const testApi = loadRendererTestApi();
     testApi.state.dashboard.targets = [createTarget()];
@@ -593,6 +649,8 @@ describe('renderer target offline behavior', () => {
     expect(targetsContainer.innerHTML).toContain('toggle-changes-button');
     expect(targetsContainer.innerHTML).not.toContain('pause-restore-button');
     expect(targetsContainer.innerHTML).not.toContain('stop-restore-button');
+    expect(testApi.state.progressPanelExpanded[key]).toBe(true);
+    expect(testApi.state.backupProgress[key].progress.status).toBe('completed');
   });
 
   test('restore completion switches right side back to configured source path', () => {

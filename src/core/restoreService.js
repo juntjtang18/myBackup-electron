@@ -2,6 +2,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const { restorePlainFile } = require('./plainFileStorage');
 const { loadBackupSchema, updateBackupSource } = require('./backupSchema');
+const { isBackupCardRelativePath } = require('./backupCard');
 const { getSourceFolderName, getSourceTargetRoot } = require('./pathPlanner');
 const { toPosixPath } = require('./layout');
 const { ChangeTracker } = require('./changeTracking/ChangeTracker');
@@ -120,6 +121,9 @@ async function collectRestoreTasks(targetRoot, source) {
   const tasks = [];
 
   await walkFiles(sourceTargetRoot, async ({ absolutePath, relativePath }) => {
+    if (isBackupCardRelativePath(relativePath)) {
+      return;
+    }
     const stat = await fs.stat(absolutePath);
     tasks.push({
       relativePath,
@@ -383,7 +387,11 @@ async function restoreSource(targetRoot, input) {
       });
 
       const restorePath = path.join(destinationRoot, ...task.relativePath.split('/'));
-      await restorePlainFile(targetRoot, { type: 'plain', path: task.logicalPath }, restorePath);
+      const restoreResult = await restorePlainFile(
+        targetRoot,
+        { type: 'plain', path: task.logicalPath },
+        restorePath
+      );
 
       if (shouldStop()) {
         terminalStatus = 'stopped';
@@ -391,9 +399,13 @@ async function restoreSource(targetRoot, input) {
         return;
       }
 
-      summary.restoredFiles += 1;
-      copiedBytes += task.totalBytes;
-      summary.copiedBytes = copiedBytes;
+      if (restoreResult && restoreResult.restored === false) {
+        summary.skippedRecords += 1;
+      } else {
+        summary.restoredFiles += 1;
+        copiedBytes += task.totalBytes;
+        summary.copiedBytes = copiedBytes;
+      }
       workers[workerId] = {
         ...workers[workerId],
         state: 'idle',
@@ -477,15 +489,22 @@ async function restoreLogicalTree(targetRoot, input) {
   };
 
   await walkFiles(sourceRoot, async ({ relativePath }) => {
+    if (isBackupCardRelativePath(relativePath)) {
+      return;
+    }
     const logicalPath = logicalRoot ? path.posix.join(logicalRoot, relativePath) : relativePath;
     if (restoredPaths.has(logicalPath)) {
       return;
     }
 
     const restorePath = path.join(destinationRoot, ...relativePath.split('/'));
-    await restorePlainFile(targetRoot, { type: 'plain', path: logicalPath }, restorePath);
+    const restoreResult = await restorePlainFile(targetRoot, { type: 'plain', path: logicalPath }, restorePath);
     restoredPaths.add(logicalPath);
-    summary.restoredFiles += 1;
+    if (restoreResult && restoreResult.restored === false) {
+      summary.skippedRecords = Number(summary.skippedRecords || 0) + 1;
+    } else {
+      summary.restoredFiles += 1;
+    }
   });
 
   return summary;

@@ -8,23 +8,10 @@ const {
   stageFileForCopy,
   statStoredPlainFile,
 } = require('./plainFileStorage');
+const { isMtimeWithinTolerance, shouldCopyWhenSourceNewer } = require('./keepNewer');
 const { createLogger } = require('./logger');
 
 const logger = createLogger('FileTaskProcessor', 'fileTaskProcessor.js');
-
-function isMtimeWithinTolerance(sourceMtimeMs, targetMtimeMs, toleranceMs) {
-  return Math.abs(Number(sourceMtimeMs || 0) - Number(targetMtimeMs || 0)) <= toleranceMs;
-}
-
-function shouldCopyWhenSourceNewer(stats, targetStat, toleranceMs) {
-  if (!targetStat) {
-    return true;
-  }
-
-  const sourceMtimeMs = Number(stats?.mtimeMs || 0);
-  const targetMtimeMs = Number(targetStat?.mtimeMs || 0);
-  return sourceMtimeMs > (targetMtimeMs + Number(toleranceMs || 0));
-}
 
 async function processFileTask(input) {
   const {

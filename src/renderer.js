@@ -2068,10 +2068,12 @@ function handleBackupProgressPayload(payload) {
     });
   }
   if (isTerminal) {
-    if (mode === 'restore' && status === 'paused') {
-      // Keep paused progress so Pause/Stop chrome stays until dashboard restoreJob arrives.
-      state.backupProgress[key] = payload;
-    } else if (mode !== 'restore') {
+    if (mode === 'restore') {
+      rememberBackupProgress(key, payload);
+      if (status === 'completed' || status === 'paused') {
+        state.progressPanelExpanded[key] = true;
+      }
+    } else {
       applyTerminalProgressToDashboardSource(payload);
       const { source } = findDashboardSource(payload.targetRoot, payload.machineId, payload.sourceId);
       traceCopiedBytes(key, 'Resume copied bytes trace: terminal status applied to dashboard.', {
@@ -2080,8 +2082,6 @@ function handleBackupProgressPayload(payload) {
         copiedBytes: Number(source?.backupStatus?.copiedBytes || 0)
       }, { force: true });
       rememberBackupProgress(key, payload);
-    } else {
-      clearBackupUiState(key);
     }
   } else {
     const existingStatus = state.backupProgress[key]?.progress?.status;
@@ -2089,6 +2089,9 @@ function handleBackupProgressPayload(payload) {
       // Late live events must not reopen run chrome after a terminal status.
     } else {
       state.backupProgress[key] = payload;
+      if (mode === 'restore') {
+        state.progressPanelExpanded[key] = true;
+      }
     }
   }
   traceProgressRender(key, payload);
@@ -2354,7 +2357,18 @@ async function stopRestoreSource(targetRoot, machineId, sourceId) {
     if (response?.dashboard) {
       state.dashboard = response.dashboard;
     }
-    clearBackupUiState(key);
+    if (state.backupProgress[key]) {
+      rememberBackupProgress(key, {
+        ...state.backupProgress[key],
+        progress: {
+          ...(state.backupProgress[key].progress || {}),
+          mode: 'restore',
+          status: 'stopped'
+        },
+        event: { type: 'restore-stopped' }
+      });
+      state.progressPanelExpanded[key] = true;
+    }
     renderSources();
     appendLog('info', 'Restore stop requested.');
   } catch (error) {
@@ -2389,11 +2403,42 @@ async function runRestoreSource(targetRoot, machineId, sourceId, button) {
       machineId,
       sourceId
     });
-    if (result?.dashboard) {
-      state.dashboard = result.dashboard;
-      renderDashboard();
+    if (!result) {
+      renderSources();
+      return;
     }
-    if (result?.summary) {
+    if (result.dashboard) {
+      state.dashboard = result.dashboard;
+    }
+    const settledStatus = result?.summary?.status;
+    const terminalStatus = settledStatus === 'paused' || settledStatus === 'stopped' || settledStatus === 'failed'
+      ? settledStatus
+      : 'completed';
+    rememberBackupProgress(key, {
+      targetRoot,
+      machineId,
+      sourceId,
+      summary: {
+        ...(result.summary || {}),
+        status: terminalStatus
+      },
+      progress: {
+        mode: 'restore',
+        status: terminalStatus,
+        destinationRoot: result.summary?.destinationRoot || null,
+        filesProcessed: Number(result.summary?.restoredFiles || 0),
+        filesCopied: Number(result.summary?.restoredFiles || 0),
+        copiedBytes: Number(result.summary?.copiedBytes || 0),
+        totalBytes: Number(result.summary?.totalBytes || 0),
+        workers: {}
+      },
+      event: { type: `restore-${terminalStatus}` }
+    });
+    if (terminalStatus === 'completed' || terminalStatus === 'paused') {
+      state.progressPanelExpanded[key] = true;
+    }
+    renderDashboard();
+    if (result.summary) {
       if (result.summary.status === 'paused') {
         appendLog('info', 'Source restore paused.', result.summary);
       } else if (result.summary.status === 'stopped') {
@@ -2401,16 +2446,18 @@ async function runRestoreSource(targetRoot, machineId, sourceId, button) {
       } else if (result.summary.message) {
         appendLog('warn', result.summary.message, result.summary);
       } else {
-        appendLog('info', 'Source restore summary.', result.summary);
+        appendLog(
+          'info',
+          `Restore complete. ${Number(result.summary.restoredFiles || 0)} files · ${result.summary.destinationRoot || 'chosen folder'}.`
+        );
       }
-    } else if (result) {
+    } else {
       appendLog('info', 'Source restore summary.', result);
     }
   } catch (error) {
     appendLog('error', error.message || 'Source restore failed.');
-  } finally {
-    clearBackupUiState(key);
     renderSources();
+  } finally {
     if (button) {
       setBusy(button, false);
     }
@@ -2588,6 +2635,7 @@ if (typeof module !== 'undefined') {
       renderTargets,
       toggleSourceProgressPanel,
       runBackup,
+      runRestoreSource,
       pauseBackupSource,
       stopBackupSource,
       lastProgressFromSource,

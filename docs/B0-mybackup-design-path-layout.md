@@ -13,7 +13,11 @@ flowchart LR
 
 ```text
 source/a  -->  target  ==>  target/a
+                             BACKUP.md
+                             .mybackup-info.json
 ```
+
+The backup set folder also gets a readable card (`BACKUP.md`) plus `.mybackup-info.json`. See [B4](./B4-mybackup-design-registration.md).
 
 Implemented via `includeSourceRoot` / “Append source root folder name” in `src/core/pathPlanner.js`.
 

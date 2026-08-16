@@ -3,7 +3,8 @@ const path = require('path');
 const { cleanupTempFiles } = require('./plainFileStorage');
 const { loadBackupSchema, loadBackupSource, updateBackupSource } = require('./backupSchema');
 const { loadIgnoreMatcher } = require('./ignoreMatcher');
-const { getSourceTargetRoot } = require('./pathPlanner');
+const { writeBackupCard } = require('./backupCard');
+const { getSourceFolderName, getSourceTargetRoot, shouldIncludeSourceRoot } = require('./pathPlanner');
 const { createBackupJob, createScanResult } = require('./schema');
 const { createErrorReportWriter } = require('./errorReportStore');
 const { toPosixPath } = require('./layout');
@@ -1215,6 +1216,28 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   await updateSourceRuntimeState(appDataRoot, targetRoot, machineId, sourceId, (current) => ({
     scanResult
   }), now);
+
+  try {
+    const schema = await loadBackupSchema(appDataRoot);
+    await writeBackupCard({
+      backupSetRoot: path.join(target.path, getSourceTargetRoot(source.machineId, source)),
+      identity: {
+        from: source.sourcePath,
+        hostname: schema?.machine?.hostname || schema?.machine?.displayName || '',
+        machineId,
+        folderName: getSourceFolderName(source),
+        includeSourceRoot: shouldIncludeSourceRoot(source)
+      },
+      scanResult,
+      now
+    });
+  } catch (error) {
+    logger.warn('Failed to write backup card on the target.', {
+      machineId,
+      sourceId,
+      error: error && error.message ? error.message : String(error)
+    });
+  }
 
   summary.scanResult = scanResult;
   summary.mode = mode;

@@ -259,6 +259,39 @@ describe('progress panel renderer', () => {
     expect(html).toContain('4 files · 21 B');
   });
 
+  test('completed restore shows last-run report instead of workers', () => {
+    const html = renderBackupProgressPanel({
+      targetRoot: '/backup-target',
+      source: { machineId: 'machine-a', sourceId: 'source-a' },
+      entry: {
+        progress: {
+          mode: 'restore',
+          status: 'completed',
+          destinationRoot: '/tmp/newsource',
+          filesProcessed: 4,
+          filesCopied: 4,
+          copiedBytes: 20,
+          workers: {}
+        },
+        summary: {
+          status: 'completed',
+          restoredFiles: 4,
+          copiedBytes: 20,
+          destinationRoot: '/tmp/newsource'
+        },
+        event: { type: 'restore-completed' }
+      },
+      progressKey: '/backup-target::machine-a::source-a'
+    });
+
+    expect(html).toContain('progress-last-run');
+    expect(html).toContain('data-scan-kind="restore"');
+    expect(html).toContain('Restored');
+    expect(html).toContain('4 files');
+    expect(html).toContain('/tmp/newsource');
+    expect(html).not.toContain('data-progress-pool="file"');
+  });
+
   test('forces immediate rendering for short-lived copy events', () => {
     expect(shouldRenderImmediatelyForProgress({ event: { type: 'copy-progress' } })).toBe(true);
     expect(shouldRenderImmediatelyForProgress({ event: { type: 'task-started', pool: 'copy' } })).toBe(true);

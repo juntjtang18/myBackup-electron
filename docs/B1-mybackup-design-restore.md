@@ -57,7 +57,17 @@ Restore (append on):  target/a --> newsource/a
 Missing/empty target/a --> copy nothing
 ```
 
-The engine walks `getSourceTargetRoot` on the target and writes into `destinationRoot`. It does not read a catalog or hash index from the volume.
+The engine walks `getSourceTargetRoot` on the target and writes into `destinationRoot`. It does not read a catalog or hash index from the volume. It skips `BACKUP.md` and `.mybackup-info.json` so the backup card is not copied into the destination.
+
+### Copy (keep newer)
+
+Same rule as Full Backup (`keepNewer.js`): only write or overwrite when the backup file is **newer** than the file already in `newsource` (2s mtime tolerance). Missing dest → copy. Dest newer or same age → skip, leave it.
+
+```text
+backup file newer   → write / overwrite
+dest missing        → write
+dest newer or same  → skip
+```
 
 ### Consequence
 

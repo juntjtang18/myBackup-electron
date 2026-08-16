@@ -5,6 +5,7 @@ const { once } = require('events');
 const { getTempRoot } = require('./metadataStore');
 const { resolveTargetRoot, toPosixPath } = require('./layout');
 const { createPauseCancelledResult, hashFile, isPauseCancelledResult } = require('./hashService');
+const { DEFAULT_MTIME_TOLERANCE_MS, shouldCopyWhenSourceNewer } = require('./keepNewer');
 
 function resolveLogicalPath(targetRoot, logicalPath) {
   return path.join(resolveTargetRoot(targetRoot), ...toPosixPath(logicalPath).split('/'));
@@ -424,10 +425,27 @@ async function finalizePlainFileCopy(targetRoot, pendingWrite) {
   };
 }
 
-async function restorePlainFile(targetRoot, contentRef, restorePath) {
+async function restorePlainFile(targetRoot, contentRef, restorePath, options = {}) {
   const absoluteSource = resolveLogicalPath(targetRoot, contentRef.path);
+  const toleranceMs = options.mtimeToleranceMs === undefined
+    ? DEFAULT_MTIME_TOLERANCE_MS
+    : Number(options.mtimeToleranceMs);
+  if (await fs.pathExists(restorePath)) {
+    const sourceStat = await fs.lstat(absoluteSource);
+    const destStat = await fs.lstat(restorePath);
+    if (!shouldCopyWhenSourceNewer(sourceStat, destStat, toleranceMs)) {
+      return {
+        restored: false,
+        action: destStat.mtimeMs > (sourceStat.mtimeMs + toleranceMs) ? 'skipped-newer' : 'unchanged'
+      };
+    }
+  }
   await fs.ensureDir(path.dirname(restorePath));
   await fs.copy(absoluteSource, restorePath, { preserveTimestamps: true, overwrite: true });
+  return {
+    restored: true,
+    action: 'copied'
+  };
 }
 
 async function cleanupTempFiles(targetRoot) {

@@ -193,6 +193,72 @@ describe('progress panel renderer', () => {
     expect(html).not.toContain('data-progress-pool="copy"');
   });
 
+  test('completed last run shows source and target inventory instead of workers', () => {
+    const html = renderBackupProgressPanel({
+      targetRoot: '/backup-target',
+      source: { machineId: 'machine-a', sourceId: 'source-a' },
+      entry: {
+        progress: { status: 'completed', filesProcessed: 3, filesCopied: 3, copiedBytes: 12, workers: {} },
+        summary: {
+          status: 'completed',
+          scanResult: {
+            kind: 'changes',
+            sourceFileCount: 3,
+            sourceSizeBytes: 12,
+            targetFileCount: 2,
+            targetSizeBytes: 8
+          }
+        }
+      },
+      progressKey: '/backup-target::machine-a::source-a'
+    });
+
+    expect(html).toContain('progress-last-run');
+    expect(html).toContain('Backup Changes');
+    expect(html).toContain('data-scan-side="source"');
+    expect(html).toContain('3 files');
+    expect(html).toContain('12 B');
+    expect(html).toContain('data-scan-side="target"');
+    expect(html).toContain('2 files');
+    expect(html).toContain('8 B');
+    expect(html).not.toContain('data-progress-pool="file"');
+  });
+
+  test('AT-SCAN02 last-run report shows Source backed up, Failed, Ignored, and Total', () => {
+    const html = renderBackupProgressPanel({
+      targetRoot: '/backup-target',
+      source: { machineId: 'machine-a', sourceId: 'source-a' },
+      entry: {
+        progress: { status: 'completed', filesProcessed: 3, filesCopied: 2, copiedBytes: 9, workers: {} },
+        summary: {
+          status: 'completed',
+          scanResult: {
+            kind: 'full',
+            sourceFileCount: 2,
+            sourceSizeBytes: 9,
+            targetFileCount: 2,
+            targetSizeBytes: 9,
+            failedFileCount: 1,
+            failedSizeBytes: 4,
+            failed: [{ path: 'docs/bad.txt', error: 'EIO', sourceBytes: 4 }],
+            ignoredFileCount: 1,
+            ignoredSizeBytes: 8,
+            totalFileCount: 4,
+            totalSizeBytes: 21
+          }
+        }
+      },
+      progressKey: '/backup-target::machine-a::source-a'
+    });
+
+    expect(html).toContain('Source backed up');
+    expect(html).toContain('Failed');
+    expect(html).toContain('docs/bad.txt');
+    expect(html).toContain('Ignored');
+    expect(html).toContain('Total');
+    expect(html).toContain('4 files · 21 B');
+  });
+
   test('forces immediate rendering for short-lived copy events', () => {
     expect(shouldRenderImmediatelyForProgress({ event: { type: 'copy-progress' } })).toBe(true);
     expect(shouldRenderImmediatelyForProgress({ event: { type: 'task-started', pool: 'copy' } })).toBe(true);

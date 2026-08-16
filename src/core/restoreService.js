@@ -1,9 +1,15 @@
 const fs = require('fs-extra');
 const path = require('path');
 const { restorePlainFile } = require('./plainFileStorage');
-const { loadBackupSchema } = require('./backupSchema');
-const { getSourceTargetRoot } = require('./pathPlanner');
+const { loadBackupSchema, updateBackupSource } = require('./backupSchema');
+const { getSourceFolderName, getSourceTargetRoot } = require('./pathPlanner');
 const { toPosixPath } = require('./layout');
+const { ChangeTracker } = require('./changeTracking/ChangeTracker');
+const {
+  clearRestoreJob,
+  loadRestoreJob,
+  saveRestoreJob
+} = require('./restoreJobStore');
 
 async function findSourceRecord(appDataRoot, machineId, sourceId) {
   const schema = await loadBackupSchema(appDataRoot);
@@ -53,7 +59,8 @@ function createRestoreProgressState({
   totalBytes,
   workers,
   queue,
-  throughputBytesPerSecond
+  throughputBytesPerSecond,
+  message
 }) {
   return {
     mode,
@@ -65,6 +72,7 @@ function createRestoreProgressState({
     copiedBytes,
     totalBytes,
     throughputBytesPerSecond,
+    message: message || null,
     workers,
     queues: {
       file: queue
@@ -120,13 +128,48 @@ async function collectRestoreTasks(targetRoot, source) {
     });
   });
 
-  return tasks;
+  return {
+    sourceRoot,
+    sourceTargetRoot,
+    tasks
+  };
+}
+
+function resolveDestinationRoot(requestedDestinationRoot, source, appendFolder) {
+  if (!appendFolder) {
+    return requestedDestinationRoot;
+  }
+  const folderName = getSourceFolderName(source);
+  return path.join(requestedDestinationRoot, folderName);
+}
+
+async function markSourceNeedsRescanAfterRestore(appDataRoot, targetRoot, machineId, sourceId) {
+  if (!appDataRoot || !targetRoot || !machineId || !sourceId) {
+    return;
+  }
+
+  const tracker = new ChangeTracker(appDataRoot);
+  await tracker.clearAfterFullBackup({ sourceId });
+
+  await updateBackupSource(appDataRoot, targetRoot, machineId, sourceId, (current) => ({
+    ...current,
+    watchState: {
+      ...(current.watchState || {}),
+      dirtyRef: current.watchState?.dirtyRef || `watch/${sourceId}.dirty.json`,
+      needsRescan: true,
+      lastEventAt: current.watchState?.lastEventAt || null
+    }
+  }));
 }
 
 async function restoreSource(targetRoot, input) {
+  const appDataRoot = input.appDataRoot || targetRoot;
   const requestedDestinationRoot = path.resolve(input.destinationRoot);
-  const sourceRecord = await findSourceRecord(input.appDataRoot || targetRoot, input.machineId, input.sourceId);
+  const sourceRecord = await findSourceRecord(appDataRoot, input.machineId, input.sourceId);
   const onProgress = typeof input.onProgress === 'function' ? input.onProgress : null;
+  const shouldPause = typeof input.shouldPause === 'function' ? input.shouldPause : () => false;
+  const shouldStop = typeof input.shouldStop === 'function' ? input.shouldStop : () => false;
+  const appendFolder = Boolean(input.appendFolder);
   const maxWorkers = Math.max(1, Number(input.maxWorkers || 1));
   const startedAtMs = Date.now();
   const startedAtIso = new Date(startedAtMs).toISOString();
@@ -136,32 +179,102 @@ async function restoreSource(targetRoot, input) {
     restoredFiles: 0,
     skippedRecords: 0,
     destinationRoot: requestedDestinationRoot,
+    requestedDestinationRoot,
     copiedBytes: 0,
-    totalBytes: 0
+    totalBytes: 0,
+    status: 'completed',
+    message: null,
+    appendFolder
   };
 
   if (!sourceRecord) {
+    summary.message = `Source not found: ${input.machineId}/${input.sourceId}`;
+    summary.status = 'completed';
     return summary;
   }
 
-  const sourceRoot = getSourceTargetRoot(sourceRecord.source.machineId, sourceRecord.source);
-  const sourceRestoreFolderName = path.basename(sourceRoot) || path.basename(sourceRecord.source.sourcePath || '') || 'restored-source';
-  const destinationRoot = path.join(requestedDestinationRoot, sourceRestoreFolderName);
+  const destinationRoot = resolveDestinationRoot(
+    requestedDestinationRoot,
+    sourceRecord.source,
+    appendFolder
+  );
   summary.destinationRoot = destinationRoot;
-  summary.requestedDestinationRoot = requestedDestinationRoot;
 
-  const tasks = await collectRestoreTasks(targetRoot, sourceRecord.source);
-  const workers = {};
-  const activeTasks = {};
+  const { sourceTargetRoot, tasks: collectedTasks } = await collectRestoreTasks(
+    targetRoot,
+    sourceRecord.source
+  );
+
+  let tasks = collectedTasks;
   let nextTaskIndex = 0;
   let copiedBytes = 0;
-  const totalBytes = tasks.reduce((sum, task) => sum + task.totalBytes, 0);
+  let resumed = false;
+
+  const existingJob = input.forceNewRestore
+    ? null
+    : await loadRestoreJob(appDataRoot, input.sourceId);
+  if (
+    existingJob
+    && existingJob.status === 'paused'
+    && existingJob.targetRoot === path.resolve(targetRoot)
+    && existingJob.destinationRoot === destinationRoot
+    && Array.isArray(existingJob.tasks)
+  ) {
+    tasks = existingJob.tasks;
+    nextTaskIndex = Number(existingJob.nextTaskIndex || 0);
+    copiedBytes = Number(existingJob.copiedBytes || 0);
+    summary.restoredFiles = Number(existingJob.restoredFiles || 0);
+    resumed = true;
+  }
+
+  const totalBytes = tasks.reduce((sum, task) => sum + Number(task.totalBytes || 0), 0);
   summary.totalBytes = totalBytes;
-  const workerCount = Math.min(maxWorkers, Math.max(1, tasks.length || 1));
+  summary.copiedBytes = copiedBytes;
+
+  if (!(await fs.pathExists(sourceTargetRoot)) || tasks.length === 0) {
+    summary.message = `Backup folder empty or missing: ${sourceTargetRoot}`;
+    summary.status = 'completed';
+    summary.restoredFiles = 0;
+    summary.copiedBytes = 0;
+    summary.totalBytes = 0;
+    await clearRestoreJob(appDataRoot, input.sourceId);
+    if (onProgress) {
+      onProgress({
+        summary,
+        progress: createRestoreProgressState({
+          mode: 'restore',
+          status: 'completed',
+          startedAt: startedAtIso,
+          destinationRoot,
+          filesProcessed: 0,
+          filesCopied: 0,
+          copiedBytes: 0,
+          totalBytes: 0,
+          workers: {},
+          queue: createRestoreQueueSnapshot([], 0, {}),
+          throughputBytesPerSecond: 0,
+          message: summary.message
+        }),
+        event: {
+          type: 'restore-completed',
+          pool: 'file',
+          message: summary.message
+        }
+      });
+    }
+    return summary;
+  }
+
+  const workers = {};
+  const activeTasks = {};
+  const workerCount = Math.min(maxWorkers, Math.max(1, tasks.length - nextTaskIndex || 1));
   for (let index = 0; index < workerCount; index += 1) {
     const workerId = `restore-file-${index + 1}`;
     workers[workerId] = createRestoreWorker(workerId);
   }
+
+  let terminalStatus = 'completed';
+  let pauseRequestedSeen = false;
 
   const emitProgress = (event) => {
     if (!onProgress) {
@@ -169,9 +282,20 @@ async function restoreSource(targetRoot, input) {
     }
     const elapsedSeconds = Math.max(0.001, (Date.now() - startedAtMs) / 1000);
     const queue = createRestoreQueueSnapshot(tasks, nextTaskIndex, activeTasks);
+    let status = 'running';
+    if (event?.type === 'restore-completed') {
+      status = 'completed';
+    } else if (event?.type === 'restore-paused' || event?.type === 'restore-pausing') {
+      status = event?.type === 'restore-pausing' ? 'pausing' : 'paused';
+    } else if (event?.type === 'restore-stopped') {
+      status = 'stopped';
+    } else if (pauseRequestedSeen && event?.type !== 'restore-completed') {
+      status = 'pausing';
+    }
+
     const progress = createRestoreProgressState({
       mode: 'restore',
-      status: event?.type === 'restore-completed' ? 'completed' : 'running',
+      status,
       startedAt: startedAtIso,
       destinationRoot,
       filesProcessed: summary.restoredFiles,
@@ -180,14 +304,17 @@ async function restoreSource(targetRoot, input) {
       totalBytes,
       workers,
       queue,
-      throughputBytesPerSecond: copiedBytes / elapsedSeconds
+      throughputBytesPerSecond: copiedBytes / elapsedSeconds,
+      message: summary.message
     });
+    progress.resumed = resumed;
 
     onProgress({
       summary: {
         ...summary,
         copiedBytes,
-        totalBytes
+        totalBytes,
+        status
       },
       progress,
       event
@@ -195,13 +322,28 @@ async function restoreSource(targetRoot, input) {
   };
 
   emitProgress({
-    type: 'restore-started',
+    type: resumed ? 'restore-resumed' : 'restore-started',
     pool: 'file'
   });
 
   const workerIds = Object.keys(workers);
   await Promise.all(workerIds.map(async (workerId) => {
     while (true) {
+      if (shouldStop()) {
+        terminalStatus = 'stopped';
+        return;
+      }
+      if (shouldPause()) {
+        pauseRequestedSeen = true;
+        terminalStatus = 'paused';
+        emitProgress({
+          type: 'restore-pausing',
+          pool: 'file',
+          workerId
+        });
+        return;
+      }
+
       const taskIndex = nextTaskIndex;
       nextTaskIndex += 1;
       const task = tasks[taskIndex];
@@ -243,6 +385,12 @@ async function restoreSource(targetRoot, input) {
       const restorePath = path.join(destinationRoot, ...task.relativePath.split('/'));
       await restorePlainFile(targetRoot, { type: 'plain', path: task.logicalPath }, restorePath);
 
+      if (shouldStop()) {
+        terminalStatus = 'stopped';
+        delete activeTasks[workerId];
+        return;
+      }
+
       summary.restoredFiles += 1;
       copiedBytes += task.totalBytes;
       summary.copiedBytes = copiedBytes;
@@ -265,6 +413,50 @@ async function restoreSource(targetRoot, input) {
       });
     }
   }));
+
+  summary.copiedBytes = copiedBytes;
+  summary.status = terminalStatus;
+
+  if (terminalStatus === 'paused') {
+    await saveRestoreJob(appDataRoot, input.sourceId, {
+      status: 'paused',
+      targetRoot: path.resolve(targetRoot),
+      machineId: input.machineId,
+      sourceId: input.sourceId,
+      destinationRoot,
+      requestedDestinationRoot,
+      appendFolder,
+      nextTaskIndex,
+      restoredFiles: summary.restoredFiles,
+      copiedBytes,
+      totalBytes,
+      tasks,
+      updatedAt: new Date().toISOString()
+    });
+    emitProgress({
+      type: 'restore-paused',
+      pool: 'file'
+    });
+    return summary;
+  }
+
+  await clearRestoreJob(appDataRoot, input.sourceId);
+
+  if (terminalStatus === 'stopped') {
+    summary.message = summary.message || 'Restore stopped.';
+    emitProgress({
+      type: 'restore-stopped',
+      pool: 'file'
+    });
+    return summary;
+  }
+
+  await markSourceNeedsRescanAfterRestore(
+    appDataRoot,
+    sourceRecord.targetRoot || targetRoot,
+    input.machineId,
+    input.sourceId
+  );
 
   emitProgress({
     type: 'restore-completed',
@@ -316,6 +508,9 @@ async function restoreLogicalFile(targetRoot, input) {
 }
 
 module.exports = {
+  collectRestoreTasks,
+  findSourceRecord,
+  resolveDestinationRoot,
   restoreLogicalFile,
   restoreLogicalTree,
   restoreSource

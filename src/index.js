@@ -6,8 +6,9 @@ const os = require('os');
 const fs = require('fs-extra');
 const { ensureBackupSchema, loadBackupSchema } = require('./core/backupSchema');
 const { registerSource, removeSource } = require('./core/sourceRegistry');
-const { backupSource } = require('./core/backupCoordinator');
+const { backupSource, clearBackupRunState } = require('./core/backupCoordinator');
 const { restoreLogicalTree, restoreSource } = require('./core/restoreService');
+const { clearRestoreJob, loadRestoreJob } = require('./core/restoreJobStore');
 const { ensureLocalConfig, loadLocalConfig, saveLocalConfig } = require('./core/localConfig');
 const { addTarget, listTargets, removeTarget, requireRegisteredTarget, setTargetCollapsed } = require('./core/targetRegistry');
 const { createTargetAvailabilityMonitor, normalizePlatform } = require('./core/targetAvailability');
@@ -212,7 +213,17 @@ async function buildDashboardState() {
         reason: entry.unavailableReason
       });
     }
-    return entry;
+    const sources = await Promise.all((entry.sources || []).map(async (source) => {
+      const restoreJob = await loadRestoreJob(getAppDataRoot(), source.sourceId);
+      return {
+        ...source,
+        restoreJob: restoreJob && restoreJob.status === 'paused' ? restoreJob : null
+      };
+    }));
+    return {
+      ...entry,
+      sources
+    };
   }));
 
   return {
@@ -614,7 +625,8 @@ function registerIpcHandlers() {
       status: 'running'
     });
     const control = {
-      pauseRequested: false
+      pauseRequested: false,
+      stopRequested: false
     };
     activeBackups.set(key, control);
 
@@ -627,6 +639,7 @@ function registerIpcHandlers() {
         initialCopyWorkers: workerPools.copy,
         maxCopyWorkers: workerPools.copy,
         shouldPause: () => control.pauseRequested,
+        shouldStop: () => control.stopRequested,
         onProgress: ({ summary: progressSummary, progress, event, trace }) => {
           const payload = {
             targetRoot: resolvedTargetRoot,
@@ -649,6 +662,9 @@ function registerIpcHandlers() {
       if (summary.status === 'paused') {
         logger.info('Backup paused.', summary);
         logToRenderer('info', 'Backup paused.', summary);
+      } else if (summary.status === 'stopped') {
+        logger.info('Backup stopped.', summary);
+        logToRenderer('info', 'Backup stopped.', summary);
       } else {
         logger.info('Backup completed.', summary);
         logToRenderer('info', 'Backup completed.', summary);
@@ -668,28 +684,105 @@ function registerIpcHandlers() {
   handle('app:pause-backup', async (_event, input) => {
     const targetRoot = await requireTargetRoot(input);
     const key = backupKey(targetRoot, input.machineId, input.sourceId);
-    const control = activeBackups.get(key);
-    if (!control) {
-      logger.warn('Backup pause ignored because no active backup was found.', {
+    const backupControl = activeBackups.get(key);
+    if (backupControl) {
+      backupControl.pauseRequested = true;
+      const activeProgress = activeBackupProgress.get(key);
+      const queueSnapshot = activeProgress?.progress?.queues || null;
+      logger.info('Backup pause requested.', {
+        machineId: input.machineId,
+        sourceId: input.sourceId,
+        queues: queueSnapshot
+      });
+      logToRenderer('info', 'Pause requested. Cancelling queued files and stopping in-flight copy work...', {
+        sourceId: input.sourceId,
+        queues: queueSnapshot
+      });
+      return { accepted: true, mode: 'backup' };
+    }
+
+    const restoreControl = activeRestores.get(key);
+    if (restoreControl) {
+      restoreControl.pauseRequested = true;
+      logger.info('Restore pause requested.', {
         machineId: input.machineId,
         sourceId: input.sourceId
       });
-      return { accepted: false };
+      logToRenderer('info', 'Restore pause requested.', {
+        sourceId: input.sourceId
+      });
+      return { accepted: true, mode: 'restore' };
     }
 
-    control.pauseRequested = true;
-    const activeProgress = activeBackupProgress.get(key);
-    const queueSnapshot = activeProgress?.progress?.queues || null;
-    logger.info('Backup pause requested.', {
+    logger.warn('Pause ignored because no active backup or restore was found.', {
       machineId: input.machineId,
-      sourceId: input.sourceId,
-      queues: queueSnapshot
+      sourceId: input.sourceId
     });
-    logToRenderer('info', 'Pause requested. Cancelling queued files and stopping in-flight copy work...', {
-      sourceId: input.sourceId,
-      queues: queueSnapshot
+    return { accepted: false };
+  });
+
+  handle('app:stop-backup', async (_event, input) => {
+    const targetRoot = await requireTargetRoot(input);
+    const key = backupKey(targetRoot, input.machineId, input.sourceId);
+    const control = activeBackups.get(key);
+    if (control) {
+      control.stopRequested = true;
+      control.pauseRequested = false;
+      logger.info('Backup stop requested.', {
+        machineId: input.machineId,
+        sourceId: input.sourceId
+      });
+      logToRenderer('info', 'Backup stop requested.', {
+        sourceId: input.sourceId
+      });
+      return { accepted: true, stoppedActive: true };
+    }
+
+    await clearBackupRunState(getAppDataRoot(), targetRoot, input.machineId, input.sourceId);
+    logger.info('Paused backup job cleared.', {
+      machineId: input.machineId,
+      sourceId: input.sourceId
     });
-    return { accepted: true };
+    logToRenderer('info', 'Paused backup discarded.', {
+      sourceId: input.sourceId
+    });
+    return {
+      accepted: true,
+      stoppedActive: false,
+      dashboard: await buildDashboardState()
+    };
+  });
+
+  handle('app:stop-restore', async (_event, input) => {
+    const targetRoot = await requireTargetRoot(input);
+    const key = backupKey(targetRoot, input.machineId, input.sourceId);
+    const control = activeRestores.get(key);
+    if (control) {
+      control.stopRequested = true;
+      control.pauseRequested = false;
+      logger.info('Restore stop requested.', {
+        machineId: input.machineId,
+        sourceId: input.sourceId
+      });
+      logToRenderer('info', 'Restore stop requested.', {
+        sourceId: input.sourceId
+      });
+      return { accepted: true, stoppedActive: true };
+    }
+
+    await clearRestoreJob(getAppDataRoot(), input.sourceId);
+    logger.info('Paused restore job cleared.', {
+      machineId: input.machineId,
+      sourceId: input.sourceId
+    });
+    logToRenderer('info', 'Paused restore discarded.', {
+      sourceId: input.sourceId
+    });
+    return {
+      accepted: true,
+      stoppedActive: false,
+      dashboard: await buildDashboardState()
+    };
   });
 
   handle('app:restore-source', async (_event, input) => {
@@ -702,36 +795,89 @@ function registerIpcHandlers() {
       throw new Error('Restore already running for this source.');
     }
 
-    const result = await dialog.showOpenDialog(mainWindow, {
-      properties: ['openDirectory', 'createDirectory'],
-      title: 'Select Restore Destination'
-    });
-
-    if (result.canceled || result.filePaths.length === 0) {
-      return null;
+    const schema = await ensureAppSchema();
+    const targetSources = (schema.targets || []).find((entry) => (
+      path.resolve(entry.path) === path.resolve(targetRoot)
+    ));
+    const source = (targetSources?.sources || []).find((entry) => (
+      entry.sourceId === input.sourceId
+      && (!input.machineId || entry.machineId === input.machineId)
+    ));
+    if (!source) {
+      throw new Error(`Source not found: ${input.machineId}/${input.sourceId}`);
     }
 
-    const destinationRoot = result.filePaths[0];
+    const appendFolder = Boolean(input.appendFolder);
+    const pausedJob = await loadRestoreJob(getAppDataRoot(), input.sourceId);
+    let destinationRoot = input.destinationRoot
+      || (pausedJob && pausedJob.status === 'paused' && pausedJob.destinationRoot)
+      || source.sourcePath;
+
+    if (!destinationRoot) {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openDirectory', 'createDirectory'],
+        title: 'Select Restore Destination',
+        defaultPath: source.sourcePath || undefined
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return null;
+      }
+      destinationRoot = result.filePaths[0];
+    }
+
+    if (!input.destinationRoot && !pausedJob && source.sourcePath) {
+      const confirm = await dialog.showMessageBox(mainWindow, {
+        type: 'question',
+        buttons: ['Restore', 'Choose other folder', 'Cancel'],
+        defaultId: 0,
+        cancelId: 2,
+        title: 'Restore into source',
+        message: appendFolder
+          ? `Restore backup into ${path.join(source.sourcePath, path.basename(source.sourcePath))}?`
+          : `Restore backup into ${source.sourcePath}?`,
+        detail: appendFolder
+          ? 'Append folder to source path is on.'
+          : 'Files will be written into the registered source folder (no extra nested folder).'
+      });
+      if (confirm.response === 2) {
+        return null;
+      }
+      if (confirm.response === 1) {
+        const result = await dialog.showOpenDialog(mainWindow, {
+          properties: ['openDirectory', 'createDirectory'],
+          title: 'Select Restore Destination',
+          defaultPath: source.sourcePath || undefined
+        });
+        if (result.canceled || result.filePaths.length === 0) {
+          return null;
+        }
+        destinationRoot = result.filePaths[0];
+      } else {
+        destinationRoot = source.sourcePath;
+      }
+    }
+
     const workerPools = await loadWorkerPoolsForBackup();
     logger.info('Source restore requested.', {
       targetRoot,
       machineId: input.machineId,
       sourceId: input.sourceId,
       destinationRoot,
+      appendFolder,
       restoreWorkers: workerPools.copy
     });
     logToRenderer('info', 'Source restore started.', {
       targetRoot,
       sourceId: input.sourceId,
-      destinationRoot
+      destinationRoot,
+      appendFolder
     });
 
-    activeRestores.set(key, {
-      targetRoot,
-      machineId: input.machineId,
-      sourceId: input.sourceId,
-      destinationRoot
-    });
+    const control = {
+      pauseRequested: false,
+      stopRequested: false
+    };
+    activeRestores.set(key, control);
 
     try {
       const summary = await restoreSource(targetRoot, {
@@ -739,7 +885,11 @@ function registerIpcHandlers() {
         machineId: input.machineId,
         sourceId: input.sourceId,
         destinationRoot,
+        appendFolder,
+        forceNewRestore: Boolean(input.forceNewRestore),
         maxWorkers: workerPools.copy,
+        shouldPause: () => control.pauseRequested,
+        shouldStop: () => control.stopRequested,
         onProgress: ({ summary: progressSummary, progress, event }) => {
           const payload = {
             targetRoot,
@@ -758,8 +908,20 @@ function registerIpcHandlers() {
         }
       });
       activeBackupProgress.delete(key);
-      logger.info('Source restore completed.', summary);
-      logToRenderer('info', 'Source restore completed.', summary);
+      if (summary.status === 'paused') {
+        logger.info('Source restore paused.', summary);
+        logToRenderer('info', 'Source restore paused.', summary);
+      } else if (summary.status === 'stopped') {
+        logger.info('Source restore stopped.', summary);
+        logToRenderer('info', 'Source restore stopped.', summary);
+      } else {
+        logger.info('Source restore completed.', summary);
+        logToRenderer(
+          summary.message ? 'warn' : 'info',
+          summary.message || 'Source restore completed.',
+          summary
+        );
+      }
       return {
         summary,
         dashboard: await buildDashboardState()

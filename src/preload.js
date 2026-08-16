@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('myBackup', {
   saveSourceIgnoreRules: (input) => ipcRenderer.invoke('app:save-source-ignore-rules', input),
   runBackup: (input) => ipcRenderer.invoke('app:run-backup', input),
   pauseBackup: (input) => ipcRenderer.invoke('app:pause-backup', input),
+  stopBackup: (input) => ipcRenderer.invoke('app:stop-backup', input),
+  stopRestore: (input) => ipcRenderer.invoke('app:stop-restore', input),
   setLogLevel: (input) => ipcRenderer.invoke('app:set-log-level', input),
   restoreSource: (input) => ipcRenderer.invoke('app:restore-source', input),
   restoreMerged: (input) => ipcRenderer.invoke('app:restore-merged', input),

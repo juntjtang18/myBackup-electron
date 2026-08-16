@@ -128,6 +128,7 @@ function splitMergedSource(source, targetId, now = new Date()) {
     scanSeq: source.backupStatus?.scanSeq,
     error: source.backupStatus?.error,
     backupJob: source.backupJob || null,
+    scanResult: source.scanResult || null,
     needsRescan: Boolean(source.watchState?.needsRescan),
     lastEventAt: source.watchState?.lastEventAt || null
   }, now);
@@ -145,6 +146,7 @@ function mergeSource(definition, status, now = new Date()) {
     },
     backupStatus: status?.status || {},
     backupJob: status?.backupJob || null,
+    scanResult: status?.scanResult || null,
     createdAt: definition.createdAt,
     updatedAt: definition.updatedAt || nowIso(now)
   }, now);

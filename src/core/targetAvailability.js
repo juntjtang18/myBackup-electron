@@ -136,6 +136,7 @@ async function mapSourceDashboardEntry(source) {
     backupJob: source.backupJob || null,
     sourceSizeBytes: source.sourceSizeBytes ?? null,
     backupSizeBytes: source.backupSizeBytes ?? null,
+    scanResult: source.scanResult || null,
     lastCompletedAt: source.lastCompletedAt
   };
 }

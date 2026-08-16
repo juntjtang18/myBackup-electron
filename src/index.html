@@ -463,7 +463,7 @@
       border: 1px solid var(--line);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
-      overflow: hidden;
+      overflow: visible;
     }
 
     .target-panel.unavailable {
@@ -485,6 +485,7 @@
       user-select: none;
       background: #e8f2f1;
       border-bottom: 1px solid transparent;
+      border-radius: var(--radius) var(--radius) 0 0;
     }
 
     .target-panel.is-active .target-panel-header {
@@ -810,6 +811,10 @@
       display: none;
     }
 
+    .target-panel.collapsed .target-panel-header {
+      border-radius: var(--radius);
+    }
+
     .sources-wrap {
       padding-top: 8px;
     }
@@ -931,6 +936,27 @@
     .source-card-source-icon {
       color: #4f6b9a;
       background: #eef3fa;
+    }
+
+    .source-card-scan-stats {
+      margin-top: 4px;
+      font-size: 0.72rem;
+      line-height: 1.2;
+      color: #7d8b9c;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .source-card-target .source-card-scan-stats {
+      text-align: right;
+    }
+
+    .source-card-scan-cross {
+      margin-left: 10px;
+      font-size: 0.76rem;
+      color: #5b6b7c;
+      white-space: nowrap;
     }
 
     .source-card-path {
@@ -1470,95 +1496,6 @@
       opacity: 0.55;
     }
 
-    .backup-action-menu {
-      position: relative;
-      display: inline-flex;
-      flex: 0 0 auto;
-      --backup-action-toggle-width: 23px;
-      width: 128px;
-      min-width: 128px;
-      max-width: 128px;
-    }
-
-    .backup-action-menu .btn-action-backup {
-      width: 100%;
-      min-width: 100%;
-      max-width: 100%;
-    }
-
-    .backup-action-menu.has-menu > .btn-action-backup {
-      padding-right: var(--backup-action-toggle-width);
-    }
-
-    .backup-action-dropdown {
-      position: absolute;
-      left: 0;
-      top: calc(100% + 6px);
-      z-index: 20;
-      display: none;
-      width: 100%;
-      min-width: 100%;
-      padding: 6px;
-      border: 1px solid #d6dee9;
-      border-radius: 8px;
-      background: #ffffff;
-      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
-    }
-
-    .backup-action-menu.open .backup-action-dropdown {
-      display: block;
-    }
-
-    .backup-action-toggle {
-      position: absolute;
-      top: 0;
-      right: 0;
-      bottom: 0;
-      width: var(--backup-action-toggle-width);
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      border: 0;
-      border-left: 1px solid transparent;
-      border-radius: 0 8px 8px 0;
-      background: transparent;
-      color: inherit;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.14s ease, border-color 0.14s ease, background 0.14s ease;
-      cursor: pointer;
-    }
-
-    .backup-action-toggle svg {
-      width: 11px;
-      height: 11px;
-    }
-
-    .backup-action-menu.has-menu:hover .backup-action-toggle,
-    .backup-action-menu.has-menu:focus-within .backup-action-toggle,
-    .backup-action-menu.has-menu.open .backup-action-toggle {
-      opacity: 1;
-      pointer-events: auto;
-      border-left-color: rgba(40, 52, 70, 0.18);
-    }
-
-    .backup-action-menu.has-menu.open .backup-action-toggle,
-    .backup-action-menu.has-menu .backup-action-toggle:hover {
-      background: rgba(30, 41, 59, 0.06);
-    }
-
-    .btn-action-full-backup-menu.btn-action-backup {
-      width: 100%;
-      min-width: 100%;
-      max-width: 100%;
-      height: 48px;
-      min-height: 48px;
-      padding-right: 8px;
-      justify-content: center;
-      align-items: center;
-      text-align: center;
-    }
-
     .toggle-changes-button.active {
       background: #24435d;
       border-color: #24435d;
@@ -1853,6 +1790,69 @@
     }
 
     .progress-summary strong { color: var(--ink); }
+
+    .progress-last-run {
+      display: grid;
+      gap: 8px;
+    }
+
+    .progress-last-run-heading {
+      font-size: 0.72rem;
+      font-weight: 650;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .progress-last-run-sides {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .progress-last-run-side {
+      min-width: 0;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fafc;
+    }
+
+    .progress-last-run-label {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+
+    .progress-last-run-count {
+      font-size: 0.92rem;
+      font-weight: 650;
+      color: var(--ink);
+    }
+
+    .progress-last-run-size {
+      font-size: 0.78rem;
+      color: #5b6b7c;
+    }
+
+    .progress-last-run-section {
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fafc;
+    }
+
+    .progress-last-run-list {
+      margin: 6px 0 0;
+      padding-left: 16px;
+      font-size: 0.74rem;
+      color: #5b6b7c;
+    }
+
+    .progress-last-run-item {
+      margin: 2px 0;
+      word-break: break-all;
+    }
 
     .progress-pools {
       display: grid;

@@ -63,6 +63,56 @@ function createBackupStatus(input = {}, now = new Date()) {
   };
 }
 
+function normalizeScanReportRow(row, kind) {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+  if (kind === 'failed') {
+    return {
+      path: String(row.path || ''),
+      error: String(row.error || ''),
+      sourceBytes: Number(row.sourceBytes || 0)
+    };
+  }
+  return {
+    path: String(row.path || ''),
+    sourceBytes: Number(row.sourceBytes || 0),
+    targetBytes: Number(row.targetBytes || 0)
+  };
+}
+
+function createScanResult(input) {
+  if (!input || typeof input !== 'object') {
+    return null;
+  }
+  return {
+    kind: input.kind === 'changes' ? 'changes' : 'full',
+    sourceFileCount: Number(input.sourceFileCount || 0),
+    sourceSizeBytes: Number(input.sourceSizeBytes || 0),
+    targetFileCount: Number(input.targetFileCount || 0),
+    targetSizeBytes: Number(input.targetSizeBytes || 0),
+    missingCount: Number(input.missingCount || 0),
+    backedUp: Boolean(input.backedUp),
+    filesCopied: Number(input.filesCopied || 0),
+    errors: Number(input.errors || 0),
+    totalFileCount: Number(input.totalFileCount || 0),
+    totalSizeBytes: Number(input.totalSizeBytes || 0),
+    ignoredFileCount: Number(input.ignoredFileCount || 0),
+    ignoredSizeBytes: Number(input.ignoredSizeBytes || 0),
+    failedFileCount: Number(input.failedFileCount || 0),
+    failedSizeBytes: Number(input.failedSizeBytes || 0),
+    skippedNewerFileCount: Number(input.skippedNewerFileCount || 0),
+    skippedNewerSourceSizeBytes: Number(input.skippedNewerSourceSizeBytes || 0),
+    skippedNewerTargetSizeBytes: Number(input.skippedNewerTargetSizeBytes || 0),
+    failed: Array.isArray(input.failed)
+      ? input.failed.map((row) => normalizeScanReportRow(row, 'failed')).filter(Boolean)
+      : [],
+    skippedNewer: Array.isArray(input.skippedNewer)
+      ? input.skippedNewer.map((row) => normalizeScanReportRow(row, 'skipped-newer')).filter(Boolean)
+      : []
+  };
+}
+
 function createBackupJob(input = {}, now = new Date()) {
   if (!input || typeof input !== 'object') {
     return null;
@@ -105,6 +155,7 @@ function createSourceStatusRecord(input = {}, now = new Date()) {
     sourceId: input.sourceId,
     status: createBackupStatus(statusInput, now),
     backupJob: createBackupJob(input.backupJob || input.job || null, now),
+    scanResult: createScanResult(input.scanResult),
     needsRescan: Boolean(input.needsRescan),
     lastEventAt: input.lastEventAt || null,
     updatedAt: input.updatedAt || nowIso(now)
@@ -184,6 +235,7 @@ function createSourceRecord(input, now = new Date()) {
     backupSizeBytes: input.backupSizeBytes === undefined || input.backupSizeBytes === null
       ? null
       : Number(input.backupSizeBytes),
+    scanResult: createScanResult(input.scanResult),
     lastCompletedAt: input.lastCompletedAt || null,
     createdAt: input.createdAt || nowIso(now),
     updatedAt: input.updatedAt || nowIso(now)
@@ -519,6 +571,7 @@ module.exports = {
   createAppConfig,
   createBackupJob,
   createBackupStatus,
+  createScanResult,
   createFileContentRef,
   createHashRecord,
   createMachineRecord,

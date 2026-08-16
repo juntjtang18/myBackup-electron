@@ -1,70 +1,28 @@
 # Backup Status Checkpointing
 
+**Component:** [B3](./B3-mybackup-design-backup-status.md)
+
 ## Goal
 
-Persist backup progress safely for pause/resume and crash recovery without turning
-`data/status/*.json` into a write bottleneck during high-throughput small-file runs.
+Persist a small folder bookmark so Pause / Resume can skip already-walked folders. Not a completeness guarantee on a live tree.
 
-## Design
+## Bookmark
 
-The backup coordinator owns the runtime progress state. File workers never write
-status JSON directly.
+- `status` — `running` / `paused` / `completed` / `failed` / `stopped`
+- `cursor.folder` — unfinished folder (treated as **not started**)
+- `copiedBytes` / `copiedFiles` — totals from **finished** folders only
 
-### Runtime State (authoritative in-memory)
+Resume starts that folder from scratch and accumulates onto those totals.
 
-- `copiedBytes`: accumulated bytes for fully copied files only
-- `cursor`: current folder checkpoint (`relativePath`, `folderHash`, run metadata)
-- `status`: `running` / `paused` / `completed`
-- `scanSeq`: current change-tracking sequence
+## Pause / Resume / Stop
 
-### Coalescing Writer
+1. Pause: halt, cleanup temps, write `paused` + cursor  
+2. Resume: walk from cursor folder onward  
+3. Stop: same halt; clear job + cursor  
+4. Complete: `completed`; `cursor: null`
 
-`createStatusCheckpointWriter` provides one write lane for running checkpoints:
+Inserts before the cursor are out of scope for this run (same as inserts into already-finished folders).
 
-- `markDirty()`: signal that runtime state changed
-- `flushPending()`: wait until all queued/coalesced writes are persisted
-- `close()`: flush then stop accepting new dirty signals
+## Running writes
 
-Behavior:
-
-- Multiple `markDirty()` calls in one burst are coalesced into one persisted write
-  containing the latest snapshot.
-- If state changes while a write is in flight, one follow-up write persists the
-  latest snapshot.
-- At most one JSON write is in flight at a time.
-
-## Event Flow
-
-1. Backup starts: source `backupStatus` enters `running`.
-2. Folder transition: coordinator updates in-memory cursor, calls `markDirty()`.
-3. File completed: coordinator updates in-memory `copiedBytes`, calls `markDirty()`.
-4. Pause requested:
-   - stop queues/workers
-   - `flushPending()` running checkpoint writes
-   - remove unfinished temp files
-   - persist terminal `paused` state with final `copiedBytes` and cursor
-5. Resume:
-   - read persisted status JSON
-   - initialize in-memory progress from JSON
-   - continue traversal/copy from persisted cursor
-6. Completion:
-   - `flushPending()`
-   - persist terminal `completed` state
-
-## Copy-Byte Semantics
-
-- Only fully copied files contribute to `copiedBytes`.
-- Partial in-flight file chunks are not persisted.
-- On resume, incomplete files restart from source and are not double-counted.
-
-## Crash Window
-
-The design intentionally allows a small window where recent in-memory completed
-bytes may not yet be on disk if the process crashes between coalesced flushes.
-This trades minimal potential byte lag for much lower JSON write contention.
-
-## Legacy Cutoff
-
-- Removed per-file awaited status JSON writes from worker completion path.
-- Running status persistence now goes through the coalescing writer only.
-- Terminal states (`paused`, `completed`) still use explicit awaited writes.
+`statusCheckpointWriter` coalesces in-memory snapshots so workers do not write status JSON per file.

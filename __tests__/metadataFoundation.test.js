@@ -54,9 +54,9 @@ const {
   verifyStoredPlainFile,
   writePlainFile
 } = require('../src/core/plainFileStorage');
-const { backupSource } = require('../src/core/backupCoordinator');
+const { backupSource, clearBackupRunState } = require('../src/core/backupCoordinator');
 const { buildFolderTraversalStack } = require('../src/core/scanner/folderWalker');
-const { parseIgnoreFile, shouldIgnorePath, buildIgnoreRules } = require('../src/core/ignoreMatcher');
+const { parseIgnoreFile, shouldIgnorePath, buildIgnoreRules, writeSourceIgnoreFile } = require('../src/core/ignoreMatcher');
 const { readJsonIfExists, writeJsonAtomic } = require('../src/core/jsonStore');
 const { createWatchService } = require('../src/core/watch/watchService');
 const { ChangeJournal } = require('../src/core/changeTracking/ChangeJournal');
@@ -1813,18 +1813,18 @@ describe('metadata foundation', () => {
     });
 
     expect(summary.status).toBe('paused');
-    expect(summary.filesCopied).toBe(1);
+    expect(summary.filesCopied).toBe(0);
     const pausedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
     expect(pausedSource.backupStatus).toMatchObject({
       status: 'paused',
-      copiedBytes: firstContent.length
+      copiedBytes: 0
     });
     expect(pausedSource.backupJob).toMatchObject({
       id: summary.scanId,
       type: 'full',
       status: 'paused',
       progress: {
-        completedBytes: firstContent.length
+        completedBytes: 0
       }
     });
     expect(await cleanupTempFiles(tempRootPath)).toBe(0);
@@ -2011,6 +2011,432 @@ describe('metadata foundation', () => {
 
     expect(await fs.readFile(targetFilePath(tempRootPath, source, 'a', 'one.txt'), 'utf8')).toBe('one');
     expect(await fs.readFile(targetFilePath(tempRootPath, source, 'b', 'two.txt'), 'utf8')).toBe('two');
+  });
+
+  test('pause treats unfinished folder as not started for saved counts', async () => {
+    const sourceRoot = path.join(tempRootPath, 'folder-baseline-source');
+    writeFixture(path.join(sourceRoot, 'done', 'one.txt'), 'aaaaa');
+    writeFixture(path.join(sourceRoot, 'open', 'two.txt'), 'bbbb');
+    writeFixture(path.join(sourceRoot, 'open', 'three.txt'), 'cccc');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'folder-baseline-host',
+      seed: 'folder-baseline-seed',
+      now: new Date('2026-08-16T08:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-08-16T08:05:00Z'));
+
+    let filesFinished = 0;
+    const paused = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-16T08:10:00Z'),
+      forceNewScan: true,
+      maxCopyWorkers: 1,
+      initialCopyWorkers: 1,
+      shouldPause: () => filesFinished >= 2,
+      onProgress: ({ event }) => {
+        if (event?.type === 'file-progress') {
+          filesFinished += 1;
+        }
+      }
+    });
+
+    expect(paused.status).toBe('paused');
+    expect(paused.copiedBytes).toBe(5);
+    const pausedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(pausedSource.backupStatus).toMatchObject({
+      status: 'paused',
+      copiedBytes: 5,
+      cursor: {
+        relativePath: 'open'
+      }
+    });
+    expect(pausedSource.backupJob.progress.completedBytes).toBe(5);
+
+    const completed = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-16T08:20:00Z'),
+      maxCopyWorkers: 1,
+      initialCopyWorkers: 1
+    });
+    expect(completed.status).toBe('completed');
+    expect(await fs.readFile(targetFilePath(tempRootPath, source, 'done', 'one.txt'), 'utf8')).toBe('aaaaa');
+    expect(await fs.readFile(targetFilePath(tempRootPath, source, 'open', 'two.txt'), 'utf8')).toBe('bbbb');
+    expect(await fs.readFile(targetFilePath(tempRootPath, source, 'open', 'three.txt'), 'utf8')).toBe('cccc');
+  });
+
+  test('stop clears backup job so the next run does not resume from that cursor', async () => {
+    const sourceRoot = path.join(tempRootPath, 'stop-abandon-source');
+    writeFixture(path.join(sourceRoot, 'done', 'one.txt'), 'aaaaa');
+    writeFixture(path.join(sourceRoot, 'open', 'two.txt'), 'bbbb');
+    writeFixture(path.join(sourceRoot, 'open', 'three.txt'), 'cccc');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'stop-abandon-host',
+      seed: 'stop-abandon-seed',
+      now: new Date('2026-08-16T09:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-08-16T09:05:00Z'));
+
+    let filesFinished = 0;
+    const stopped = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-16T09:10:00Z'),
+      forceNewScan: true,
+      maxCopyWorkers: 1,
+      initialCopyWorkers: 1,
+      shouldStop: () => filesFinished >= 2,
+      onProgress: ({ event }) => {
+        if (event?.type === 'file-progress') {
+          filesFinished += 1;
+        }
+      }
+    });
+
+    expect(stopped.status).toBe('stopped');
+    expect(stopped.scanResult).toBeUndefined();
+    const stoppedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(stoppedSource.backupJob).toBeNull();
+    expect(stoppedSource.backupStatus.cursor).toBeNull();
+
+    const completed = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-16T09:20:00Z'),
+      forceNewScan: true,
+      maxCopyWorkers: 1,
+      initialCopyWorkers: 1
+    });
+    expect(completed.status).toBe('completed');
+    expect(completed.scanId).not.toBe(stopped.scanId);
+    expect(await fs.readFile(targetFilePath(tempRootPath, source, 'done', 'one.txt'), 'utf8')).toBe('aaaaa');
+    expect(await fs.readFile(targetFilePath(tempRootPath, source, 'open', 'two.txt'), 'utf8')).toBe('bbbb');
+    expect(await fs.readFile(targetFilePath(tempRootPath, source, 'open', 'three.txt'), 'utf8')).toBe('cccc');
+  });
+
+  test('idle stop clears a paused backup job', async () => {
+    const sourceRoot = path.join(tempRootPath, 'idle-stop-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha');
+    writeFixture(path.join(sourceRoot, 'docs', 'b.txt'), 'beta');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'idle-stop-host',
+      seed: 'idle-stop-seed',
+      now: new Date('2026-08-16T09:30:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-08-16T09:35:00Z'));
+
+    let filesFinished = 0;
+    const paused = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-16T09:40:00Z'),
+      forceNewScan: true,
+      maxCopyWorkers: 1,
+      initialCopyWorkers: 1,
+      shouldPause: () => filesFinished >= 1,
+      onProgress: ({ event }) => {
+        if (event?.type === 'file-progress') {
+          filesFinished += 1;
+        }
+      }
+    });
+    expect(paused.status).toBe('paused');
+    const pausedSource = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(pausedSource.backupJob.status).toBe('paused');
+
+    await clearBackupRunState(
+      tempRootPath,
+      tempRootPath,
+      machine.machineId,
+      source.sourceId,
+      new Date('2026-08-16T09:41:00Z')
+    );
+    const cleared = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(cleared.backupJob).toBeNull();
+    expect(cleared.backupStatus.cursor).toBeNull();
+  });
+
+  test('AT-SCAN01 Full Scan persists source and target inventory on the source record', async () => {
+    const sourceRoot = path.join(tempRootPath, 'scan-result-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha');
+    writeFixture(path.join(sourceRoot, 'docs', 'b.txt'), 'beta');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'scan-result-host',
+      seed: 'scan-result-seed',
+      now: new Date('2026-08-16T10:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-08-16T10:05:00Z'));
+
+    const summary = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-16T10:10:00Z'),
+      forceNewScan: true
+    });
+
+    expect(summary.status).toBe('completed');
+    expect(summary.forceNewScan).toBe(true);
+    expect(summary.scanResult).toMatchObject({
+      kind: 'full',
+      sourceFileCount: 2,
+      sourceSizeBytes: 9,
+      targetFileCount: 2,
+      targetSizeBytes: 9,
+      missingCount: 0,
+      backedUp: true,
+      errors: 0
+    });
+
+    const loaded = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(loaded.scanResult).toEqual(summary.scanResult);
+
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha2');
+    const newerDate = new Date('2026-08-16T10:19:00Z');
+    fs.utimesSync(path.join(sourceRoot, 'docs', 'a.txt'), newerDate, newerDate);
+    await markDirtyFolder(tempRootPath, source, 'docs', newerDate);
+    const incremental = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-16T10:20:00Z'),
+      forceNewScan: false
+    });
+    expect(incremental.scanResult).toMatchObject({
+      kind: 'changes',
+      sourceFileCount: expect.any(Number),
+      sourceSizeBytes: expect.any(Number),
+      targetFileCount: incremental.filesCopied,
+      targetSizeBytes: incremental.copiedBytes,
+      backedUp: true
+    });
+    expect(incremental.scanResult.sourceFileCount).toBeGreaterThan(0);
+    expect(incremental.filesCopied).toBeGreaterThan(0);
+    const afterIncremental = await loadBackupSource(tempRootPath, tempRootPath, machine.machineId, source.sourceId);
+    expect(afterIncremental.scanResult).toEqual(incremental.scanResult);
+  });
+
+  test('AT-SCAN02-1 ignored files are in Total not copied', async () => {
+    const sourceRoot = path.join(tempRootPath, 'scan02-ignored-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha');
+    writeFixture(path.join(sourceRoot, 'docs', 'skip.tmp'), 'tmp-ignore');
+    writeFixture(path.join(sourceRoot, 'node_modules', 'pkg', 'index.js'), 'ignored-nm');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'scan02-ignored-host',
+      seed: 'scan02-ignored-seed',
+      now: new Date('2026-08-16T12:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-08-16T12:05:00Z'));
+    await writeSourceIgnoreFile(tempRootPath, source, 'node_modules/\n*.tmp\n');
+
+    const summary = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-16T12:10:00Z'),
+      forceNewScan: true
+    });
+
+    expect(summary.scanResult).toMatchObject({
+      kind: 'full',
+      sourceFileCount: 1,
+      targetFileCount: 1,
+      ignoredFileCount: 2,
+      totalFileCount: 3
+    });
+    expect(summary.scanResult.sourceFileCount).toBe(summary.scanResult.targetFileCount);
+    expect(summary.scanResult.totalFileCount).toBe(
+      summary.scanResult.sourceFileCount + summary.scanResult.ignoredFileCount
+    );
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'a.txt'))).toBe(true);
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'skip.tmp'))).toBe(false);
+    expect(await fs.pathExists(path.join(tempRootPath, getSourceTargetRoot(source.machineId, source), 'node_modules'))).toBe(false);
+  });
+
+  test('AT-SCAN02-2 skip-newer is reported and omitted from matching columns', async () => {
+    const sourceRoot = path.join(tempRootPath, 'scan02-skip-newer-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'f1.txt'), 's'.repeat(512));
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'scan02-skip-newer-host',
+      seed: 'scan02-skip-newer-seed',
+      now: new Date('2026-08-16T12:20:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-08-16T12:25:00Z'));
+
+    await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-16T12:30:00Z'),
+      forceNewScan: true
+    });
+
+    const copiedPath = targetFilePath(tempRootPath, source, 'docs', 'f1.txt');
+    await fs.writeFile(copiedPath, 't'.repeat(620));
+    const sourceStat = await fs.stat(path.join(sourceRoot, 'docs', 'f1.txt'));
+    const newerTargetDate = new Date(sourceStat.mtimeMs + 60_000);
+    await fs.utimes(copiedPath, newerTargetDate, newerTargetDate);
+
+    const summary = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-16T12:35:00Z'),
+      forceNewScan: true
+    });
+
+    expect(summary.filesCopied).toBe(0);
+    expect(summary.scanResult.sourceFileCount).toBe(0);
+    expect(summary.scanResult.targetFileCount).toBe(0);
+    expect(summary.scanResult.skippedNewerFileCount).toBe(1);
+    expect(summary.scanResult.skippedNewerSourceSizeBytes).toBe(512);
+    expect(summary.scanResult.skippedNewer[0]).toMatchObject({
+      path: 'docs/f1.txt',
+      sourceBytes: 512,
+      targetBytes: 620
+    });
+    expect(await fs.readFile(copiedPath, 'utf8')).toBe('t'.repeat(620));
+  });
+
+  test('AT-SCAN02-3 copy failure is listed under Failed and the run completes', async () => {
+    const sourceRoot = path.join(tempRootPath, 'scan02-failed-source');
+    const goodFile = path.join(sourceRoot, 'docs', 'good.txt');
+    const badFile = path.join(sourceRoot, 'docs', 'bad.txt');
+    writeFixture(goodFile, 'alpha');
+    writeFixture(badFile, 'beta');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'scan02-failed-host',
+      seed: 'scan02-failed-seed',
+      now: new Date('2026-08-16T12:40:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-08-16T12:45:00Z'));
+
+    const originalCreateReadStream = fs.createReadStream.bind(fs);
+    const streamSpy = jest.spyOn(fs, 'createReadStream').mockImplementation((candidate, options) => {
+      if (String(candidate) === badFile) {
+        const error = new Error('mock copy failure');
+        error.code = 'EIO';
+        throw error;
+      }
+      return originalCreateReadStream(candidate, options);
+    });
+
+    const summary = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-16T12:50:00Z'),
+      forceNewScan: true
+    });
+    streamSpy.mockRestore();
+
+    expect(summary.status).toBe('completed');
+    expect(summary.scanResult.failedFileCount).toBe(1);
+    expect(summary.scanResult.failed[0]).toMatchObject({
+      path: 'docs/bad.txt',
+      error: 'mock copy failure',
+      sourceBytes: 4
+    });
+    expect(summary.scanResult.sourceFileCount).toBe(1);
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'good.txt'))).toBe(true);
+  });
+
+  test('AT-SCAN02-4 clean Full Backup Source backed up == Target and Total == Finder', async () => {
+    const sourceRoot = path.join(tempRootPath, 'scan02-clean-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha');
+    writeFixture(path.join(sourceRoot, 'docs', 'b.txt'), 'beta');
+    writeFixture(path.join(sourceRoot, 'docs', 'skip.tmp'), 'tmp-ignore');
+    await fs.symlink('a.txt', path.join(sourceRoot, 'docs', 'link-a'));
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'scan02-clean-host',
+      seed: 'scan02-clean-seed',
+      now: new Date('2026-08-16T13:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-08-16T13:05:00Z'));
+    await writeSourceIgnoreFile(tempRootPath, source, '*.tmp\n');
+
+    const summary = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-16T13:10:00Z'),
+      forceNewScan: true
+    });
+
+    expect(summary.scanResult.sourceFileCount).toBe(summary.scanResult.targetFileCount);
+    expect(summary.scanResult.sourceSizeBytes).toBe(summary.scanResult.targetSizeBytes);
+    expect(summary.scanResult.failedFileCount).toBe(0);
+    expect(summary.scanResult.skippedNewerFileCount).toBe(0);
+    expect(summary.scanResult.totalFileCount).toBe(
+      summary.scanResult.sourceFileCount + summary.scanResult.ignoredFileCount
+    );
+    expect(summary.scanResult.totalFileCount).toBe(4);
+    expect(summary.scanResult.sourceFileCount).toBe(3);
+    expect(summary.scanResult.ignoredFileCount).toBe(1);
+    const copiedLink = targetFilePath(tempRootPath, source, 'docs', 'link-a');
+    expect(await fs.lstat(copiedLink)).toMatchObject({ nlink: expect.any(Number) });
+    expect((await fs.lstat(copiedLink)).isSymbolicLink()).toBe(true);
+    expect(await fs.readlink(copiedLink)).toBe('a.txt');
+  });
+
+  test('AT-BUG01 empty incremental completes without hanging', async () => {
+    const sourceRoot = path.join(tempRootPath, 'empty-incremental-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'empty-incremental-host',
+      seed: 'empty-incremental-seed',
+      now: new Date('2026-08-16T11:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-08-16T11:05:00Z'));
+
+    await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-16T11:10:00Z'),
+      forceNewScan: true
+    });
+
+    const emptyIncremental = await Promise.race([
+      backupSource(tempRootPath, machine.machineId, source.sourceId, {
+        now: new Date('2026-08-16T11:15:00Z'),
+        forceNewScan: false
+      }),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Empty incremental hung')), 5000);
+      })
+    ]);
+
+    expect(emptyIncremental.status).toBe('completed');
+    expect(emptyIncremental.mode).toBe('incremental');
+    expect(emptyIncremental.scanResult).toMatchObject({
+      kind: 'changes',
+      sourceFileCount: 0,
+      sourceSizeBytes: 0,
+      filesCopied: 0,
+      errors: 0
+    });
   });
 
   test('resumed backup progress starts from persisted copied bytes', async () => {
@@ -2361,7 +2787,7 @@ dist/**
     expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'good.txt'))).toBe(true);
 
     const reportContent = await fs.readFile(summary.reportPath, 'utf8');
-    expect(reportContent).toContain('"type":"file-stat-error"');
+    expect(reportContent).toMatch(/"type":"file-(stat-error|error)"/);
     expect(reportContent).toContain('"relativePath":"docs/bad.txt"');
   });
 
@@ -2502,9 +2928,211 @@ dist/**
     });
 
     expect(summary.restoredFiles).toBe(2);
-    expect(summary.destinationRoot).toBe(path.join(restoreRoot, 'restore-source'));
-    expect(await fs.readFile(path.join(restoreRoot, 'restore-source', 'docs', 'a.txt'), 'utf8')).toBe('alpha');
-    expect(await fs.readFile(path.join(restoreRoot, 'restore-source', 'docs', 'nested', 'b.txt'), 'utf8')).toBe('beta');
+    expect(summary.destinationRoot).toBe(restoreRoot);
+    expect(await fs.readFile(path.join(restoreRoot, 'docs', 'a.txt'), 'utf8')).toBe('alpha');
+    expect(await fs.readFile(path.join(restoreRoot, 'docs', 'nested', 'b.txt'), 'utf8')).toBe('beta');
+  });
+
+  test('AT-RST01-1 restore default writes into source/a not source/a/a', async () => {
+    const sourceRoot = path.join(tempRootPath, 'local', 'pictures-a');
+    writeFixture(path.join(sourceRoot, 'docs', 'photo.txt'), 'photo');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'rst01-host',
+      seed: 'rst01-seed',
+      now: new Date('2026-08-15T08:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      targetFolder: '',
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-08-15T08:05:00Z'));
+
+    expect(getSourceTargetRoot(machine.machineId, source)).toBe('pictures-a');
+
+    await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-15T08:10:00Z'),
+      forceNewScan: true
+    });
+
+    expect(await fs.pathExists(path.join(tempRootPath, 'pictures-a', 'docs', 'photo.txt'))).toBe(true);
+
+    const summary = await restoreSource(tempRootPath, {
+      appDataRoot: tempRootPath,
+      machineId: machine.machineId,
+      sourceId: source.sourceId,
+      destinationRoot: sourceRoot,
+      appendFolder: false
+    });
+
+    expect(summary.restoredFiles).toBe(1);
+    expect(summary.destinationRoot).toBe(sourceRoot);
+    expect(await fs.readFile(path.join(sourceRoot, 'docs', 'photo.txt'), 'utf8')).toBe('photo');
+    expect(await fs.pathExists(path.join(sourceRoot, 'pictures-a', 'docs', 'photo.txt'))).toBe(false);
+  });
+
+  test('AT-RST01-2 empty or missing target/a copies nothing with clear message', async () => {
+    const sourceRoot = path.join(tempRootPath, 'empty-restore-source');
+    fs.ensureDirSync(sourceRoot);
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'rst01-empty-host',
+      seed: 'rst01-empty-seed',
+      now: new Date('2026-08-15T09:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      targetFolder: '',
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-08-15T09:05:00Z'));
+
+    const destinationRoot = path.join(tempRootPath, 'empty-restore-dest');
+    fs.ensureDirSync(destinationRoot);
+
+    const summary = await restoreSource(tempRootPath, {
+      appDataRoot: tempRootPath,
+      machineId: machine.machineId,
+      sourceId: source.sourceId,
+      destinationRoot
+    });
+
+    expect(summary.restoredFiles).toBe(0);
+    expect(summary.status).toBe('completed');
+    expect(summary.message).toMatch(/Backup folder empty or missing/);
+    expect(await fs.readdir(destinationRoot)).toEqual([]);
+  });
+
+  test('AT-RST01-3 restore appendFolder nests source folder under destination', async () => {
+    const sourceRoot = path.join(tempRootPath, 'append-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'nested.txt'), 'nested');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'rst01-append-host',
+      seed: 'rst01-append-seed',
+      now: new Date('2026-08-15T10:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      targetFolder: '',
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-08-15T10:05:00Z'));
+
+    await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-15T10:10:00Z'),
+      forceNewScan: true
+    });
+
+    const destinationRoot = path.join(tempRootPath, 'append-dest');
+    const summary = await restoreSource(tempRootPath, {
+      appDataRoot: tempRootPath,
+      machineId: machine.machineId,
+      sourceId: source.sourceId,
+      destinationRoot,
+      appendFolder: true
+    });
+
+    expect(summary.restoredFiles).toBe(1);
+    expect(summary.destinationRoot).toBe(path.join(destinationRoot, 'append-source'));
+    expect(await fs.readFile(
+      path.join(destinationRoot, 'append-source', 'docs', 'nested.txt'),
+      'utf8'
+    )).toBe('nested');
+  });
+
+  test('AT-RST01-4 pause mid-restore can resume and stop abandons', async () => {
+    const sourceRoot = path.join(tempRootPath, 'pause-restore-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha');
+    writeFixture(path.join(sourceRoot, 'docs', 'b.txt'), 'beta');
+    writeFixture(path.join(sourceRoot, 'docs', 'c.txt'), 'gamma');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'rst01-pause-host',
+      seed: 'rst01-pause-seed',
+      now: new Date('2026-08-15T11:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      targetFolder: '',
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-08-15T11:05:00Z'));
+
+    await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-15T11:10:00Z'),
+      forceNewScan: true
+    });
+
+    const destinationRoot = path.join(tempRootPath, 'pause-restore-dest');
+    let pauseAfterFirst = false;
+    const paused = await restoreSource(tempRootPath, {
+      appDataRoot: tempRootPath,
+      machineId: machine.machineId,
+      sourceId: source.sourceId,
+      destinationRoot,
+      maxWorkers: 1,
+      shouldPause: () => pauseAfterFirst,
+      onProgress: ({ event }) => {
+        if (event?.type === 'file-progress') {
+          pauseAfterFirst = true;
+        }
+      }
+    });
+
+    expect(paused.status).toBe('paused');
+    expect(paused.restoredFiles).toBeGreaterThanOrEqual(1);
+    expect(paused.restoredFiles).toBeLessThan(3);
+
+    const { loadRestoreJob, clearRestoreJob } = require('../src/core/restoreJobStore');
+    const job = await loadRestoreJob(tempRootPath, source.sourceId);
+    expect(job).toMatchObject({
+      status: 'paused',
+      destinationRoot
+    });
+
+    const resumed = await restoreSource(tempRootPath, {
+      appDataRoot: tempRootPath,
+      machineId: machine.machineId,
+      sourceId: source.sourceId,
+      destinationRoot,
+      maxWorkers: 1
+    });
+    expect(resumed.status).toBe('completed');
+    expect(resumed.restoredFiles).toBe(3);
+    expect(await loadRestoreJob(tempRootPath, source.sourceId)).toBeNull();
+
+    writeFixture(path.join(sourceRoot, 'docs', 'd.txt'), 'delta');
+    await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-08-15T11:20:00Z'),
+      forceNewScan: true
+    });
+
+    const stopDest = path.join(tempRootPath, 'stop-restore-dest');
+    let stopRequested = false;
+    const stopped = await restoreSource(tempRootPath, {
+      appDataRoot: tempRootPath,
+      machineId: machine.machineId,
+      sourceId: source.sourceId,
+      destinationRoot: stopDest,
+      forceNewRestore: true,
+      maxWorkers: 1,
+      shouldStop: () => stopRequested,
+      onProgress: ({ event }) => {
+        if (event?.type === 'file-progress') {
+          stopRequested = true;
+        }
+      }
+    });
+
+    expect(stopped.status).toBe('stopped');
+    expect(await loadRestoreJob(tempRootPath, source.sourceId)).toBeNull();
+    await clearRestoreJob(tempRootPath, source.sourceId);
   });
 
   test('restores a single logical file by logical path', async () => {

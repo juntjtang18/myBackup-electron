@@ -335,6 +335,85 @@
     `;
   }
 
+  function renderLastRunSection(label, fileCount, sizeBytes, extraHtml = '') {
+    return `
+      <section class="progress-last-run-section" data-scan-section="${escapeHtml(label)}">
+        <div class="progress-last-run-label">${escapeHtml(label)}</div>
+        <div class="progress-last-run-count">${Number(fileCount || 0)} files · ${formatBytes(sizeBytes || 0)}</div>
+        ${extraHtml}
+      </section>
+    `;
+  }
+
+  function renderSkippedNewerRows(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return '';
+    }
+    const items = rows.map((row) => `
+      <li class="progress-last-run-item">
+        ${escapeHtml(row.path || '')}
+        · source ${formatBytes(row.sourceBytes || 0)}
+        · target ${formatBytes(row.targetBytes || 0)}
+      </li>
+    `).join('');
+    return `<ul class="progress-last-run-list">${items}</ul>`;
+  }
+
+  function renderFailedRows(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return '';
+    }
+    const items = rows.map((row) => `
+      <li class="progress-last-run-item">
+        ${escapeHtml(row.path || '')}
+        · ${escapeHtml(row.error || 'copy failed')}
+        · ${formatBytes(row.sourceBytes || 0)}
+      </li>
+    `).join('');
+    return `<ul class="progress-last-run-list">${items}</ul>`;
+  }
+
+  function renderLastRunInventory(scanResult) {
+    if (!scanResult) {
+      return '';
+    }
+    const kindLabel = scanResult.kind === 'changes' ? 'Backup Changes' : 'Full Backup';
+    const reportSections = scanResult.kind === 'full' ? `
+        ${Number(scanResult.failedFileCount || 0) > 0 ? renderLastRunSection(
+          'Failed',
+          scanResult.failedFileCount,
+          scanResult.failedSizeBytes,
+          renderFailedRows(scanResult.failed)
+        ) : ''}
+        ${Number(scanResult.skippedNewerFileCount || 0) > 0 ? renderLastRunSection(
+          'Skipped (target newer)',
+          scanResult.skippedNewerFileCount,
+          scanResult.skippedNewerSourceSizeBytes,
+          renderSkippedNewerRows(scanResult.skippedNewer)
+        ) : ''}
+        ${renderLastRunSection('Ignored', scanResult.ignoredFileCount, scanResult.ignoredSizeBytes)}
+        ${renderLastRunSection('Total', scanResult.totalFileCount, scanResult.totalSizeBytes)}
+    ` : '';
+    return `
+      <div class="progress-last-run" data-scan-kind="${escapeHtml(scanResult.kind || 'full')}">
+        <div class="progress-last-run-heading">${escapeHtml(kindLabel)}</div>
+        <div class="progress-last-run-sides">
+          <section class="progress-last-run-side" data-scan-side="source">
+            <div class="progress-last-run-label">${scanResult.kind === 'full' ? 'Source backed up' : 'Source'}</div>
+            <div class="progress-last-run-count">${Number(scanResult.sourceFileCount || 0)} files</div>
+            <div class="progress-last-run-size">${formatBytes(scanResult.sourceSizeBytes || 0)}</div>
+          </section>
+          <section class="progress-last-run-side" data-scan-side="target">
+            <div class="progress-last-run-label">Target</div>
+            <div class="progress-last-run-count">${Number(scanResult.targetFileCount || 0)} files</div>
+            <div class="progress-last-run-size">${formatBytes(scanResult.targetSizeBytes || 0)}</div>
+          </section>
+        </div>
+        ${reportSections}
+      </div>
+    `;
+  }
+
   function renderBackupProgressPanel(input) {
     const entry = input.entry;
     if (!entry || !entry.progress) {
@@ -345,12 +424,18 @@
     const safeKey = safeDomId(progressKey);
     const view = createProgressViewModel(entry);
     const showQueueDetails = Boolean(input.showProgressQueueDetails);
+    const scanResult = entry.summary?.scanResult || input.source?.scanResult || null;
+    const isFinished = view.summary.status === 'completed'
+      || view.summary.status === 'stopped'
+      || view.summary.status === 'failed';
     return `
       <div class="source-progress-panel" id="progress-panel-${safeKey}">
-        ${renderSummary(view.summary)}
+        ${isFinished && scanResult ? renderLastRunInventory(scanResult) : renderSummary(view.summary)}
+        ${isFinished && scanResult ? '' : `
         <div class="progress-pools">
           ${renderPoolPanel(view.pools.file || view.pools.hash, safeKey, showQueueDetails)}
         </div>
+        `}
       </div>
     `;
   }
@@ -360,14 +445,19 @@
     const eventPool = payload?.event?.pool;
     return eventType === 'backup-paused'
       || eventType === 'backup-completed'
+      || eventType === 'backup-stopped'
       || eventType === 'backup-started'
       || eventType === 'restore-started'
+      || eventType === 'restore-resumed'
       || eventType === 'restore-completed'
+      || eventType === 'restore-paused'
+      || eventType === 'restore-stopped'
       || eventType === 'restore-failed'
       || eventType === 'copy-progress'
       || eventType === 'file-progress'
       || ((eventPool === 'copy' || eventPool === 'file') && (eventType === 'task-started' || eventType === 'task-completed'))
       || payload?.progress?.status === 'paused'
+      || payload?.progress?.status === 'stopped'
       || payload?.progress?.status === 'failed';
   }
 

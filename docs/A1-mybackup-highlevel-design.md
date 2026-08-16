@@ -1,6 +1,6 @@
 # MyBackup — High-level design
 
-MyBackup is an Electron app that backs up registered **source** folders to registered **target** roots (local or external volumes) and can restore those trees back into a source path.
+MyBackup is an Electron app that backs up registered **source** folders to registered **target** roots (local or external volumes) and can restore those trees into a folder the user chooses.
 
 ## Core concepts
 
@@ -9,7 +9,7 @@ MyBackup is an Electron app that backs up registered **source** folders to regis
 | Target | Backup destination root chosen by the user |
 | Source | Local folder registered under a target (`source/a`) |
 | Append on backup | When checked, `source/a` is stored under `target/a` |
-| App data | Per-machine local schema (`data/`), not a portable volume catalog |
+| App data | Per-machine local schema (`data/`). Owns source and target **definitions**. Not a portable volume catalog. Detail: [B4](./B4-mybackup-design-registration.md) |
 
 ## Completeness on a live tree
 
@@ -27,4 +27,4 @@ Detail: [B3](./B3-mybackup-design-backup-status.md).
 
 ## Layers
 
-See [B0](./B0-mybackup-design-path-layout.md) … [B3](./B3-mybackup-design-backup-status.md). Delivery via [C0](./C0-mybackup-backlog.md) + [C1](./C1-mybackup-iteration-plan.md).
+See [B0](./B0-mybackup-design-path-layout.md) … [B4](./B4-mybackup-design-registration.md). Delivery via [C0](./C0-mybackup-backlog.md) + [C1](./C1-mybackup-iteration-plan.md).

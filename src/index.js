@@ -8,6 +8,7 @@ const { ensureBackupSchema, loadBackupSchema } = require('./core/backupSchema');
 const { registerSource, removeSource } = require('./core/sourceRegistry');
 const { backupSource, clearBackupRunState } = require('./core/backupCoordinator');
 const { restoreLogicalTree, restoreSource } = require('./core/restoreService');
+const { chooseRestoreDestination } = require('./core/restoreDestination');
 const { clearRestoreJob, loadRestoreJob } = require('./core/restoreJobStore');
 const { ensureLocalConfig, loadLocalConfig, saveLocalConfig } = require('./core/localConfig');
 const { addTarget, listTargets, removeTarget, requireRegisteredTarget, setTargetCollapsed } = require('./core/targetRegistry');
@@ -807,55 +808,47 @@ function registerIpcHandlers() {
       throw new Error(`Source not found: ${input.machineId}/${input.sourceId}`);
     }
 
-    const appendFolder = Boolean(input.appendFolder);
     const pausedJob = await loadRestoreJob(getAppDataRoot(), input.sourceId);
-    let destinationRoot = input.destinationRoot
-      || (pausedJob && pausedJob.status === 'paused' && pausedJob.destinationRoot)
-      || source.sourcePath;
-
-    if (!destinationRoot) {
-      const result = await dialog.showOpenDialog(mainWindow, {
-        properties: ['openDirectory', 'createDirectory'],
-        title: 'Select Restore Destination',
-        defaultPath: source.sourcePath || undefined
-      });
-      if (result.canceled || result.filePaths.length === 0) {
-        return null;
-      }
-      destinationRoot = result.filePaths[0];
-    }
-
-    if (!input.destinationRoot && !pausedJob && source.sourcePath) {
-      const confirm = await dialog.showMessageBox(mainWindow, {
-        type: 'question',
-        buttons: ['Restore', 'Choose other folder', 'Cancel'],
-        defaultId: 0,
-        cancelId: 2,
-        title: 'Restore into source',
-        message: appendFolder
-          ? `Restore backup into ${path.join(source.sourcePath, path.basename(source.sourcePath))}?`
-          : `Restore backup into ${source.sourcePath}?`,
-        detail: appendFolder
-          ? 'Append folder to source path is on.'
-          : 'Files will be written into the registered source folder (no extra nested folder).'
-      });
-      if (confirm.response === 2) {
-        return null;
-      }
-      if (confirm.response === 1) {
+    const choice = await chooseRestoreDestination({
+      source,
+      input,
+      pausedJob,
+      pickDirectory: async ({ title, defaultPath }) => {
         const result = await dialog.showOpenDialog(mainWindow, {
           properties: ['openDirectory', 'createDirectory'],
-          title: 'Select Restore Destination',
-          defaultPath: source.sourcePath || undefined
+          title,
+          defaultPath
         });
         if (result.canceled || result.filePaths.length === 0) {
           return null;
         }
-        destinationRoot = result.filePaths[0];
-      } else {
-        destinationRoot = source.sourcePath;
+        return result.filePaths[0];
+      },
+      askAppend: async ({ destinationRoot, sourceFolderName, defaultAppend }) => {
+        const appendedPath = path.join(destinationRoot, sourceFolderName);
+        const confirm = await dialog.showMessageBox(mainWindow, {
+          type: 'question',
+          buttons: ['Restore', 'Cancel'],
+          defaultId: 0,
+          cancelId: 1,
+          title: 'Restore',
+          message: `Restore into ${destinationRoot}?`,
+          detail: defaultAppend
+            ? `Append on: files go into ${appendedPath}.`
+            : `Append off: contents of the backup folder go into the chosen folder.\nOn: ${appendedPath}`,
+          checkboxLabel: 'Append source folder name',
+          checkboxChecked: Boolean(defaultAppend)
+        });
+        if (confirm.response !== 0) {
+          return null;
+        }
+        return Boolean(confirm.checkboxChecked);
       }
+    });
+    if (!choice) {
+      return null;
     }
+    const { destinationRoot, appendFolder } = choice;
 
     const workerPools = await loadWorkerPoolsForBackup();
     logger.info('Source restore requested.', {

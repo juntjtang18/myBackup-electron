@@ -6,7 +6,7 @@
 
 ## Restore
 
-[restore/](./restore/) — RST-01 path + engine pause.
+[restore/](./restore/) — RST-01 path + engine pause · RST-02 ask destination.
 
 ---
 

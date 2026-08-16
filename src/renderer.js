@@ -14,6 +14,7 @@ const state = {
   sourceChangeExpanded: {},
   sourceChanges: {},
   sourceExcludeEditors: {},
+  sourceActionHints: {},
   runtimeFlags: {
     traceProgressUi: true,
     showProgressQueueDetails: false
@@ -744,6 +745,23 @@ function getLogsPlainText() {
     .join('\n');
 }
 
+function formatCompletedBackupLog(summary) {
+  if (!summary) {
+    return 'Backup summary.';
+  }
+  if (summary.status === 'paused') {
+    return 'Backup paused.';
+  }
+  const scan = summary.scanResult;
+  if (scan?.kind === 'full') {
+    return `Full Backup complete. Source backed up ${Number(scan.sourceFileCount || 0)} files · Target ${Number(scan.targetFileCount || 0)} files · Ignored ${Number(scan.ignoredFileCount || 0)} · Total ${Number(scan.totalFileCount || 0)}.`;
+  }
+  if (scan?.kind === 'changes') {
+    return `Backup Changes complete. ${Number(summary.filesCopied || scan.filesCopied || 0)} files copied.`;
+  }
+  return summary.status === 'completed' ? 'Backup completed.' : 'Backup summary.';
+}
+
 function appendLog(level, message, details) {
   const entry = {
     level,
@@ -1190,6 +1208,7 @@ function renderTargetSourcesTable(target) {
                 <span class="source-card-backup-text">Last backup ${escapeHtml(formatTimestamp(source.lastCompletedAt))}</span>
                 ${scanCrossLabel ? `<span class="source-card-scan-cross">${escapeHtml(scanCrossLabel)}</span>` : ''}
               </div>
+              ${state.sourceActionHints[key] ? `<div class="source-card-hint">${escapeHtml(state.sourceActionHints[key])}</div>` : ''}
             </div>
             <div class="${actionRowClass}">
               ${restoreRunControls}
@@ -2194,6 +2213,35 @@ async function runBackup(targetRoot, machineId, sourceId, button, forceNewScan =
       appendLog('warn', 'Backup target is unavailable.');
       return;
     }
+    const isPausedResume = source?.backupJob?.status === 'paused'
+      || source?.backupStatus?.status === 'paused';
+    if (!forceNewScan && !isPausedResume && target?.id) {
+      const changeKey = sourceChangeKey(target.id, sourceId);
+      try {
+        const data = await window.myBackup.getChangeList({
+          targetId: target.id,
+          sourceId
+        });
+        const pendingCount = Array.isArray(data?.items) ? data.items.length : 0;
+        state.sourceChanges[changeKey] = {
+          loading: false,
+          error: null,
+          data
+        };
+        if (pendingCount === 0) {
+          const hint = 'There is no changes to backup.';
+          state.sourceActionHints[key] = hint;
+          appendLog('warn', hint);
+          renderSources();
+          return;
+        }
+        delete state.sourceActionHints[key];
+      } catch (error) {
+        appendLog('warn', error.message || 'Failed to check pending changes.');
+      }
+    } else {
+      delete state.sourceActionHints[key];
+    }
     if (collapseSourceChanges(target?.id, sourceId)) {
       renderSources();
     }
@@ -2217,6 +2265,7 @@ async function runBackup(targetRoot, machineId, sourceId, button, forceNewScan =
       },
       event: null
     };
+    state.progressPanelExpanded[key] = true;
     appendLog('info', 'Progress trace: optimistic running row created.', {
       key,
       progressPanelLoaded: Boolean(window.myBackupProgressPanel)
@@ -2259,6 +2308,9 @@ async function runBackup(targetRoot, machineId, sourceId, button, forceNewScan =
       },
       event: { type: `backup-${terminalStatus}` }
     });
+    if (terminalStatus === 'completed' || terminalStatus === 'paused') {
+      state.progressPanelExpanded[key] = true;
+    }
     renderDashboard();
     if (result?.summary?.status === 'completed') {
       const { target } = findDashboardSource(targetRoot, machineId, sourceId);
@@ -2269,7 +2321,7 @@ async function runBackup(targetRoot, machineId, sourceId, button, forceNewScan =
         await loadSourceChanges(target.id, sourceId);
       }
     }
-    appendLog('info', result.summary.status === 'paused' ? 'Backup paused.' : 'Backup summary.', result.summary);
+    appendLog('info', formatCompletedBackupLog(result?.summary));
   } catch (error) {
     clearBackupUiState(key);
     renderSources();
@@ -2335,8 +2387,7 @@ async function runRestoreSource(targetRoot, machineId, sourceId, button) {
     const result = await window.myBackup.restoreSource({
       targetRoot,
       machineId,
-      sourceId,
-      appendFolder: false
+      sourceId
     });
     if (result?.dashboard) {
       state.dashboard = result.dashboard;

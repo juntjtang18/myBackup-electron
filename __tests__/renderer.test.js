@@ -248,6 +248,16 @@ describe('renderer target offline behavior', () => {
 
     testApi.renderTargets();
     expect(targetsContainer.innerHTML).toContain('source-changes-panel');
+    global.window.myBackup.getChangeList.mockResolvedValue({
+      generatedAt: '2026-06-16T07:00:00.000Z',
+      items: [
+        {
+          relativePath: 'docs',
+          changedAt: '2026-06-16T07:00:00.000Z',
+          eventCount: 2
+        }
+      ]
+    });
 
     await testApi.runBackup('/Volumes/ST/Backup', 'machine-a', 'source-a');
 
@@ -279,10 +289,17 @@ describe('renderer target offline behavior', () => {
       dashboard: { targets: [target] },
       summary: { status: 'completed' }
     });
-    global.window.myBackup.getChangeList.mockResolvedValue({
-      generatedAt: '2026-06-17T07:00:00.000Z',
-      items: []
-    });
+    global.window.myBackup.getChangeList
+      .mockResolvedValueOnce({
+        generatedAt: '2026-06-16T07:00:00.000Z',
+        items: [
+          { relativePath: 'docs', changedAt: '2026-06-16T07:00:00.000Z', eventCount: 2 }
+        ]
+      })
+      .mockResolvedValueOnce({
+        generatedAt: '2026-06-17T07:00:00.000Z',
+        items: []
+      });
 
     testApi.renderTargets();
     expect(targetsContainer.innerHTML).toContain('Changes (1)');
@@ -305,10 +322,16 @@ describe('renderer target offline behavior', () => {
       dashboard: { targets: [target] },
       summary: { status: 'paused' }
     });
+    global.window.myBackup.getChangeList.mockResolvedValue({
+      generatedAt: '2026-06-16T07:00:00.000Z',
+      items: [
+        { relativePath: 'docs', changedAt: '2026-06-16T07:00:00.000Z', eventCount: 2 }
+      ]
+    });
 
     await testApi.runBackup('/Volumes/ST/Backup', 'machine-a', 'source-a');
 
-    expect(global.window.myBackup.getChangeList).not.toHaveBeenCalled();
+    expect(global.window.myBackup.getChangeList).toHaveBeenCalledTimes(1);
   });
 
   test('full scan action forces a new full scan backup run', async () => {
@@ -323,6 +346,81 @@ describe('renderer target offline behavior', () => {
       sourceId: 'source-a',
       forceNewScan: true
     });
+  });
+
+  test('Backup Changes opens the progress panel while running and keeps the report after complete', async () => {
+    const testApi = loadRendererTestApi();
+    global.window.myBackupProgressPanel = {
+      renderBackupProgressPanel: jest.fn(() => '<div class="source-progress-panel">live progress</div>'),
+      normalizeProgress: jest.fn(() => ({ summary: { status: 'running' } })),
+      shouldRenderImmediatelyForProgress: jest.fn(() => true)
+    };
+    const target = createTarget();
+    testApi.state.dashboard.targets = [target];
+    let resolveRunBackup;
+    global.window.myBackup.runBackup = jest.fn(() => new Promise((resolve) => {
+      resolveRunBackup = resolve;
+    }));
+    global.window.myBackup.getChangeList.mockResolvedValue({
+      generatedAt: '2026-06-16T07:00:00.000Z',
+      items: [{ relativePath: 'docs', changedAt: '2026-06-16T07:00:00.000Z', eventCount: 1 }]
+    });
+
+    const runPromise = testApi.runBackup('/Volumes/ST/Backup', 'machine-a', 'source-a');
+    await flushAsyncWork();
+
+    const key = '/Volumes/ST/Backup::machine-a::source-a';
+    expect(testApi.state.progressPanelExpanded[key]).toBe(true);
+    expect(targetsContainer.innerHTML).toContain('source-progress-panel');
+
+    resolveRunBackup({
+      dashboard: { targets: [target] },
+      summary: {
+        status: 'completed',
+        mode: 'incremental',
+        filesCopied: 1,
+        scanResult: { kind: 'changes', sourceFileCount: 1, targetFileCount: 1 }
+      }
+    });
+    await runPromise;
+
+    expect(testApi.state.progressPanelExpanded[key]).toBe(true);
+    expect(targetsContainer.innerHTML).toContain('source-progress-panel');
+  });
+
+  test('Full Backup complete opens the last-run report and logs a short summary', async () => {
+    const testApi = loadRendererTestApi();
+    global.window.myBackupProgressPanel = {
+      renderBackupProgressPanel: jest.fn(() => '<div class="source-progress-panel">last run</div>'),
+      normalizeProgress: jest.fn(() => ({ summary: { status: 'completed' } })),
+      shouldRenderImmediatelyForProgress: jest.fn(() => true)
+    };
+    const target = createTarget();
+    testApi.state.dashboard.targets = [target];
+    global.window.myBackup.runBackup.mockResolvedValue({
+      dashboard: { targets: [target] },
+      summary: {
+        status: 'completed',
+        mode: 'full',
+        filesCopied: 0,
+        scanResult: {
+          kind: 'full',
+          sourceFileCount: 344,
+          targetFileCount: 344,
+          ignoredFileCount: 43,
+          totalFileCount: 387
+        }
+      }
+    });
+
+    await testApi.runBackup('/Volumes/ST/Backup', 'machine-a', 'source-a', null, true);
+
+    const key = '/Volumes/ST/Backup::machine-a::source-a';
+    expect(testApi.state.progressPanelExpanded[key]).toBe(true);
+    expect(targetsContainer.innerHTML).toContain('source-progress-panel');
+    expect(testApi.state.logs.some((entry) => (
+      entry.message === 'Full Backup complete. Source backed up 344 files · Target 344 files · Ignored 43 · Total 387.'
+    ))).toBe(true);
   });
 
   test('active backup renders the source card arrow in copying state', () => {
@@ -753,6 +851,12 @@ describe('renderer target offline behavior', () => {
         scanResult: { kind: 'changes', sourceFileCount: 2, sourceSizeBytes: 10 }
       }
     });
+    global.window.myBackup.getChangeList.mockResolvedValue({
+      generatedAt: '2026-06-16T07:00:00.000Z',
+      items: [
+        { relativePath: 'docs', changedAt: '2026-06-16T07:00:00.000Z', eventCount: 2 }
+      ]
+    });
 
     await testApi.runBackup('/Volumes/ST/Backup', 'machine-a', 'source-a');
     testApi.renderTargets();
@@ -766,30 +870,22 @@ describe('renderer target offline behavior', () => {
     expect(targetsContainer.innerHTML).not.toContain('stop-backup-button');
   });
 
-  test('AT-BUG01-2 Backup Changes with no pending changes completes and returns idle', async () => {
+  test('AT-BUG01-2 Backup Changes with no pending changes shows a hint and stays idle', async () => {
     const testApi = loadRendererTestApi();
     const target = createTarget();
     testApi.state.dashboard.targets = [target];
-    global.window.myBackup.runBackup.mockResolvedValue({
-      dashboard: { targets: [target] },
-      summary: {
-        status: 'completed',
-        mode: 'incremental',
-        filesCopied: 0,
-        scanResult: {
-          kind: 'changes',
-          sourceFileCount: 0,
-          sourceSizeBytes: 0,
-          targetFileCount: 0,
-          targetSizeBytes: 0
-        }
-      }
+    global.window.myBackup.getChangeList.mockResolvedValue({
+      generatedAt: '2026-06-16T07:00:00.000Z',
+      items: []
     });
 
     await testApi.runBackup('/Volumes/ST/Backup', 'machine-a', 'source-a');
     testApi.renderTargets();
 
-    expect(testApi.state.backupProgress['/Volumes/ST/Backup::machine-a::source-a'].progress.status).toBe('completed');
+    expect(global.window.myBackup.runBackup).not.toHaveBeenCalled();
+    expect(testApi.state.sourceActionHints['/Volumes/ST/Backup::machine-a::source-a']).toBe('There is no changes to backup.');
+    expect(testApi.state.logs.some((entry) => entry.message === 'There is no changes to backup.')).toBe(true);
+    expect(targetsContainer.innerHTML).toContain('There is no changes to backup.');
     expect(targetsContainer.innerHTML).toContain('run-backup-button');
     expect(targetsContainer.innerHTML).not.toContain('pause-backup-button');
     expect(targetsContainer.innerHTML).not.toContain('is-copying');
@@ -822,9 +918,14 @@ describe('renderer target offline behavior', () => {
         scanResult: target.sources[0].scanResult
       }
     });
+    global.window.myBackup.getChangeList.mockResolvedValue({
+      generatedAt: '2026-06-16T07:00:00.000Z',
+      items: [
+        { relativePath: 'docs', changedAt: '2026-06-16T07:00:00.000Z', eventCount: 1 }
+      ]
+    });
 
     await testApi.runBackup('/Volumes/ST/Backup', 'machine-a', 'source-a');
-    testApi.toggleSourceProgressPanel('/Volumes/ST/Backup', 'machine-a', 'source-a');
 
     const key = '/Volumes/ST/Backup::machine-a::source-a';
     expect(testApi.state.progressPanelExpanded[key]).toBe(true);

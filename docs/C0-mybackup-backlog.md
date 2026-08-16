@@ -19,7 +19,7 @@
 
 | Status | Count | Notes |
 |---|---|---|
-| ✅ done | 7 | RST-01, UI-01, UI-02, SCAN-01, BUG-01, UI-03, SCAN-02 |
+| ✅ done | 8 | RST-01, RST-02, UI-01, UI-02, SCAN-01, BUG-01, UI-03, SCAN-02 |
 | 📋 planned | 0 | — |
 | ⏸️ unscheduled | 0 | — |
 
@@ -29,11 +29,12 @@
 
 ## Restore
 
-**Design:** [B0](./B0-mybackup-design-path-layout.md) · [B1](./B1-mybackup-design-restore.md) · **Code:** `src/core/restoreService.js`, `pathPlanner.js`
+**Design:** [B0](./B0-mybackup-design-path-layout.md) · [B1](./B1-mybackup-design-restore.md) · [B4](./B4-mybackup-design-registration.md) · **Code:** `src/core/restoreService.js`, `pathPlanner.js`
 
 | ID | Summary | Pri | Iter | Status | Detail |
 |---|---|---|---|---|---|
 | RST-01 | Restore `target/a` → `source/a` (no second append); engine pause/resume/stop; empty → copy nothing | P0 | I1 | ✅ | [detail](./backlog/restore/RST-01-restore-path-and-pause.md) |
+| RST-02 | Click Restore asks for `newsource`; append on → `newsource/a` | P1 | — | ✅ | [detail](./backlog/restore/RST-02-restore-asks-destination.md) |
 
 ---
 

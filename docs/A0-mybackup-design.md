@@ -8,7 +8,7 @@ Entry point for MyBackup design and delivery docs.
 
 ```text
 A*  Overall          system scope, north star, architecture
-B*  Layer/component  path layout · restore · change tracking · backup status
+B*  Layer/component  path layout · restore · change tracking · backup status · registration
 C*  Lower level      backlog · iterations · deep dives
 ```
 
@@ -27,6 +27,7 @@ C*  Lower level      backlog · iterations · deep dives
 | **B1** | Restore | [B1-mybackup-design-restore.md](./B1-mybackup-design-restore.md) |
 | **B2** | Change tracking | [B2-mybackup-design-change-tracking.md](./B2-mybackup-design-change-tracking.md) |
 | **B3** | Backup status / checkpointing | [B3-mybackup-design-backup-status.md](./B3-mybackup-design-backup-status.md) |
+| **B4** | Registration / metadata | [B4-mybackup-design-registration.md](./B4-mybackup-design-registration.md) |
 
 ---
 

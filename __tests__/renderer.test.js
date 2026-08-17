@@ -119,6 +119,29 @@ describe('renderer target offline behavior', () => {
     expect(targetsContainer.innerHTML).not.toMatch(/run-backup-button"[^>]*data-target-root="\/Volumes\/ST\/Backup"[^>]*data-machine-id="machine-a"[^>]*data-source-id="source-a"[^>]*disabled/);
   });
 
+  test('AT-CAT01-3 catalog offline row keeps Restore on and Backup off', () => {
+    const testApi = loadRendererTestApi();
+    testApi.state.dashboard.targets = [createTarget({
+      sources: [createSource({
+        catalogOffline: true,
+        locator: 'comp-a:/Users/ziyu/gpa',
+        sourcePath: '/Users/ziyu/gpa',
+        setId: 'set-gpa',
+        sourceId: 'set-gpa'
+      })]
+    })];
+    testApi.renderTargets();
+
+    expect(targetsContainer.innerHTML).toContain('Offline');
+    expect(targetsContainer.innerHTML).toContain('comp-a:/Users/ziyu/gpa');
+    expect(targetsContainer.innerHTML).toMatch(/toggle-changes-button"[^>]*disabled/);
+    expect(targetsContainer.innerHTML).toMatch(/run-backup-button"[^>]*disabled/);
+    expect(targetsContainer.innerHTML).toMatch(/run-full-scan-button"[^>]*disabled/);
+    expect(targetsContainer.innerHTML).toContain('restore-source-button');
+    expect(targetsContainer.innerHTML).not.toMatch(/restore-source-button"[^>]*disabled/);
+    expect(targetsContainer.innerHTML).toMatch(/exclude-settings-button"[^>]*disabled/);
+  });
+
   test('AT-UI03-1 idle source shows four peer icon buttons and no dropdown', () => {
     const testApi = loadRendererTestApi();
     testApi.state.dashboard.targets = [createTarget()];
@@ -130,9 +153,111 @@ describe('renderer target offline behavior', () => {
     expect(targetsContainer.innerHTML).toContain('run-full-scan-button');
     expect(targetsContainer.innerHTML).toContain('Full Backup');
     expect(targetsContainer.innerHTML).toContain('restore-source-button');
+    expect(targetsContainer.innerHTML).toContain('exclude-settings-button');
+    expect(targetsContainer.innerHTML).toMatch(/actions-group--normal[\s\S]*exclude-settings-button/);
     expect(targetsContainer.innerHTML).not.toContain('backup-action-toggle');
     expect(targetsContainer.innerHTML).not.toContain('backup-action-dropdown');
     expect(targetsContainer.innerHTML).not.toContain('backup-action-menu');
+  });
+
+  test('source actions hide the exclude panel when it is open', async () => {
+    const testApi = loadRendererTestApi();
+    testApi.state.dashboard.targets = [createTarget()];
+    testApi.state.sourceExcludeEditors['target-a::source-a'] = {
+      open: true,
+      loading: false,
+      saving: false,
+      error: null,
+      draftText: '*.tmp\n',
+      originalText: '*.tmp\n',
+      defaultTemplate: '*.tmp\n'
+    };
+    testApi.renderTargets();
+    expect(targetsContainer.innerHTML).toContain('exclude-editor-panel');
+
+    testApi.toggleSourceChanges('target-a', 'source-a');
+    expect(testApi.state.sourceExcludeEditors['target-a::source-a'].open).toBe(false);
+    expect(targetsContainer.innerHTML).not.toContain('exclude-editor-panel');
+
+    testApi.state.sourceExcludeEditors['target-a::source-a'].open = true;
+    testApi.renderTargets();
+    expect(targetsContainer.innerHTML).toContain('exclude-editor-panel');
+
+    await testApi.runBackup('/Volumes/ST/Backup', 'machine-a', 'source-a', null);
+    expect(testApi.state.sourceExcludeEditors['target-a::source-a'].open).toBe(false);
+    expect(targetsContainer.innerHTML).not.toContain('exclude-editor-panel');
+  });
+
+  test('add source stays pending until exclude rules are saved', async () => {
+    const testApi = loadRendererTestApi();
+    const addedSource = createSource({
+      sourceId: 'source-new',
+      sourcePath: '/Users/you/Documents'
+    });
+    window.myBackup.addSource = jest.fn(async (input) => ({
+      conflict: false,
+      dashboard: {
+        targets: [createTarget({
+          sources: [addedSource]
+        })]
+      },
+      rulesText: input.rulesText
+    }));
+    testApi.state.dashboard.targets = [createTarget({ sources: [] })];
+    testApi.beginPendingAddSource({
+      targetId: 'target-a',
+      targetRoot: '/Volumes/ST/Backup',
+      machineId: 'machine-a',
+      sourcePath: '/Users/you/Documents',
+      targetFolder: '',
+      includeSourceRoot: false,
+      targetSubdir: 'Documents',
+      confirmMerge: false,
+      defaultTemplate: '*.tmp\n'
+    });
+    testApi.renderTargets();
+
+    expect(window.myBackup.addSource).not.toHaveBeenCalled();
+    expect(targetsContainer.innerHTML).toContain('exclude-editor-panel');
+    expect(targetsContainer.innerHTML).toContain('Save exclude rules to add this source');
+    expect(targetsContainer.innerHTML).toContain('Not added yet');
+    expect(targetsContainer.innerHTML).toContain('1 source');
+
+    await testApi.saveExcludeEditorPanel('target-a', testApi.PENDING_SOURCE_ID);
+
+    expect(window.myBackup.addSource).toHaveBeenCalledWith(expect.objectContaining({
+      sourcePath: '/Users/you/Documents',
+      includeSourceRoot: false,
+      rulesText: '*.tmp\n'
+    }));
+    expect(testApi.state.pendingAddSource).toBeNull();
+    expect(testApi.state.dashboard.targets[0].sources[0].sourceId).toBe('source-new');
+  });
+
+  test('cancel exclude discards the pending source without registering it', () => {
+    const testApi = loadRendererTestApi();
+    window.myBackup.addSource = jest.fn();
+    testApi.state.dashboard.targets = [createTarget({ sources: [] })];
+    testApi.beginPendingAddSource({
+      targetId: 'target-a',
+      targetRoot: '/Volumes/ST/Backup',
+      machineId: 'machine-a',
+      sourcePath: '/Users/you/Documents',
+      targetFolder: '',
+      includeSourceRoot: true,
+      targetSubdir: 'Documents',
+      confirmMerge: false,
+      defaultTemplate: '*.tmp\n'
+    });
+    testApi.renderTargets();
+    expect(targetsContainer.innerHTML).toContain('exclude-editor-panel');
+
+    testApi.closeExcludeEditorPanel('target-a', testApi.PENDING_SOURCE_ID);
+
+    expect(window.myBackup.addSource).not.toHaveBeenCalled();
+    expect(testApi.state.pendingAddSource).toBeNull();
+    expect(targetsContainer.innerHTML).not.toContain('exclude-editor-panel');
+    expect(targetsContainer.innerHTML).toContain('No sources in this target');
   });
 
   test('AT-UI03-1 needs-rescan still shows Backup Changes disabled and Full Backup visible', () => {
@@ -894,6 +1019,52 @@ describe('renderer target offline behavior', () => {
     expect(targetsContainer.innerHTML).not.toContain('pause-backup-button');
     expect(targetsContainer.innerHTML).not.toContain('stop-backup-button');
     expect(targetsContainer.innerHTML).not.toContain('resume-backup-button');
+  });
+
+  test('settled Full Backup is idle even when leftover mode is full', () => {
+    const testApi = loadRendererTestApi();
+    const target = createTarget();
+    testApi.state.dashboard.targets = [target];
+    testApi.state.backupProgress['/Volumes/ST/Backup::machine-a::source-a'] = {
+      progress: { status: 'completed', mode: 'full' },
+      summary: { status: 'completed', mode: 'full' },
+      event: { type: 'backup-completed' }
+    };
+
+    const run = testApi.getSourceRunState(target, target.sources[0]);
+    expect(run.live).toBe(false);
+    expect(run.backupLive).toBe(false);
+    expect(run.backupRun).toBe(false);
+    expect(run.mode).toBe('full');
+    expect(testApi.targetHasActiveBackup(target)).toBe(false);
+
+    testApi.renderTargets();
+    expect(targetsContainer.innerHTML).not.toContain('target-running-dot');
+    expect(targetsContainer.innerHTML).not.toContain('is-active');
+    expect(targetsContainer.innerHTML).toContain('restore-source-button');
+    expect(targetsContainer.innerHTML).not.toContain('pause-backup-button');
+  });
+
+  test('completed Full Backup does not block Restore', async () => {
+    const testApi = loadRendererTestApi();
+    const target = createTarget();
+    testApi.state.dashboard.targets = [target];
+    global.window.myBackup.restoreSource = jest.fn(async () => ({
+      dashboard: { targets: [target] },
+      summary: { status: 'completed', restoredFiles: 0 }
+    }));
+    testApi.state.backupProgress['/Volumes/ST/Backup::machine-a::source-a'] = {
+      progress: { status: 'completed', mode: 'full' },
+      summary: { status: 'completed', mode: 'full' },
+      event: { type: 'backup-completed' }
+    };
+
+    await testApi.runRestoreSource('/Volumes/ST/Backup', 'machine-a', 'source-a');
+
+    expect(global.window.myBackup.restoreSource).toHaveBeenCalled();
+    expect(testApi.state.logs.some((entry) => (
+      String(entry.message || '').includes('Backup is running')
+    ))).toBe(false);
   });
 
   test('AT-BUG01-1 Backup Changes with pending changes returns idle buttons', async () => {

@@ -2,35 +2,38 @@ const path = require('path');
 const fs = require('fs-extra');
 const { toPosixPath } = require('./layout');
 const { sanitizeSegment } = require('./ids');
+const { SOURCE_IGNORE_TEMPLATE } = require('../excludeEditorPanel');
 
 const DEFAULT_IGNORE_PATTERNS = [
   '.DS_Store',
   '._*',
   'Thumbs.db',
-  'Desktop.ini'
+  'Desktop.ini',
+  '.mybackup/'
 ];
 
-const SOURCE_IGNORE_TEMPLATE = [
-  '# Temporary files',
-  '*.tmp',
-  '*.temp',
-  '~$*',
+const MYBACKUP_IGNORE_SECTION = [
   '',
-  '# System files',
-  '.DS_Store',
-  '._*',
-  'Thumbs.db',
-  'Desktop.ini',
-  '',
-  '# OS metadata',
-  '.Spotlight-V100/',
-  '.Trashes/',
-  '.fseventsd/',
-  '',
-  '# VCS metadata',
-  '.git/',
+  '# MyBackup metadata',
+  '.mybackup/',
   ''
 ].join('\n');
+
+function ignoreTextHasMybackupRule(text) {
+  return String(text || '').split(/\r?\n/).some((line) => {
+    const trimmed = line.trim();
+    return trimmed === '.mybackup/' || trimmed === '.mybackup';
+  });
+}
+
+function withMybackupIgnoreRule(text) {
+  const normalized = String(text || '').replace(/\r\n/g, '\n');
+  if (ignoreTextHasMybackupRule(normalized)) {
+    return normalized;
+  }
+  const trimmed = normalized.replace(/\s+$/, '');
+  return `${trimmed}${trimmed ? '\n' : ''}${MYBACKUP_IGNORE_SECTION}`;
+}
 
 function escapeRegex(value) {
   return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
@@ -170,6 +173,13 @@ async function ensureSourceIgnoreFile(appDataRoot, source, template = SOURCE_IGN
   await fs.ensureDir(path.dirname(ignorePath));
   if (!(await fs.pathExists(ignorePath))) {
     await fs.writeFile(ignorePath, template, 'utf8');
+    return ignorePath;
+  }
+
+  const current = (await fs.readFile(ignorePath, 'utf8')).replace(/\r\n/g, '\n');
+  const migrated = withMybackupIgnoreRule(current);
+  if (migrated !== current) {
+    await fs.writeFile(ignorePath, migrated, 'utf8');
   }
   return ignorePath;
 }

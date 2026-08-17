@@ -137,7 +137,13 @@ async function mapSourceDashboardEntry(source) {
     sourceSizeBytes: source.sourceSizeBytes ?? null,
     backupSizeBytes: source.backupSizeBytes ?? null,
     scanResult: source.scanResult || null,
-    lastCompletedAt: source.lastCompletedAt
+    lastCompletedAt: source.lastCompletedAt,
+    setId: source.setId || null,
+    relativeRoot: source.relativeRoot !== undefined ? source.relativeRoot : null,
+    folderName: source.folderName || null,
+    catalogOffline: Boolean(source.catalogOffline),
+    locator: source.locator || null,
+    lastBackup: source.lastBackup || null
   };
 }
 

@@ -2614,6 +2614,9 @@ dist/**
     expect(shouldIgnorePath(rules, 'Lightroom Catalog.lrdata', true)).toBe(false);
     expect(shouldIgnorePath(rules, 'Caches/Lightroom Catalog.lrdata/previews.db', false)).toBe(false);
     expect(shouldIgnorePath(rules, 'docs/readme.txt', false)).toBe(false);
+    expect(shouldIgnorePath(rules, '.mybackup', true)).toBe(true);
+    expect(shouldIgnorePath(rules, '.mybackup/tmp/96b501362ccc-stage.asar', false)).toBe(true);
+    expect(shouldIgnorePath(rules, 'folder/.mybackup/catalog.json', false)).toBe(true);
   });
 
   test('backupSource includes node_modules by default without .mbignore', async () => {
@@ -2641,6 +2644,35 @@ dist/**
     expect(summary.filesProcessed).toBe(2);
     expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'a.txt'))).toBe(true);
     expect(await fs.pathExists(path.join(tempRootPath, getSourceTargetRoot(source.machineId, source), 'node_modules'))).toBe(true);
+  });
+
+  test('backupSource skips .mybackup metadata in the source tree', async () => {
+    const sourceRoot = path.join(tempRootPath, 'skip-mybackup-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'keep.txt'), 'keep');
+    writeFixture(path.join(sourceRoot, '.mybackup', 'tmp', 'stage.asar'), 'should-not-copy');
+    writeFixture(path.join(sourceRoot, '.mybackup', 'catalog.json'), '{"sets":[]}');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'skip-mybackup-host',
+      seed: 'skip-mybackup-seed',
+      now: new Date('2026-06-09T12:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-09T12:05:00Z'));
+
+    const summary = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-09T12:10:00Z'),
+      forceNewScan: true
+    });
+
+    expect(summary.filesProcessed).toBe(1);
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'keep.txt'))).toBe(true);
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, '.mybackup', 'catalog.json'))).toBe(false);
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, '.mybackup', 'tmp', 'stage.asar'))).toBe(false);
   });
 
   test('full scan copy skips files when target file is newer than source', async () => {

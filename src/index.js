@@ -1,3 +1,4 @@
+process.noAsar = true;
 process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || '16';
 
 const { app, BrowserWindow, clipboard, dialog, ipcMain, screen } = require('electron');
@@ -5,7 +6,12 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs-extra');
 const { ensureBackupSchema, loadBackupSchema } = require('./core/backupSchema');
-const { registerSource, removeSource } = require('./core/sourceRegistry');
+const {
+  catalogSetToSource,
+  findSet,
+  loadCatalog
+} = require('./core/targetCatalog');
+const { addSourceToTarget, removeSource } = require('./core/sourceRegistry');
 const { backupSource, clearBackupRunState } = require('./core/backupCoordinator');
 const { restoreLogicalTree, restoreSource } = require('./core/restoreService');
 const { chooseRestoreDestination } = require('./core/restoreDestination');
@@ -19,8 +25,8 @@ const { configureLogger, createLogger, getLogLevel } = require('./core/logger');
 const { getSourceTargetRoot, normalizeTargetFolder } = require('./core/pathPlanner');
 const { loadRuntimeFlags } = require('./core/runtimeFlags');
 const {
-  ensureSourceIgnoreFile,
   readSourceIgnoreFile,
+  SOURCE_IGNORE_TEMPLATE,
   writeSourceIgnoreFile
 } = require('./core/ignoreMatcher');
 
@@ -258,6 +264,59 @@ async function requireTargetRoot(input) {
   return requireRegisteredTarget(getAppDataRoot(), input && input.targetRoot);
 }
 
+async function maybeOfferAddRestoredSource({ targetRoot, source, destinationRoot }) {
+  if (!destinationRoot || !source || !mainWindow || mainWindow.isDestroyed()) {
+    return null;
+  }
+
+  const confirm = await dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    buttons: ['Add Source', 'Not Now'],
+    defaultId: 0,
+    cancelId: 1,
+    title: 'Add restored folder as source?',
+    message: 'Restore finished to a folder that is not a source.',
+    detail: `${destinationRoot}\n\nAdd it as a new source with the same exclude rules? Existing sources stay unchanged.`
+  });
+  if (confirm.response !== 0) {
+    return null;
+  }
+
+  const schema = await ensureAppSchema();
+  const ignore = await readSourceIgnoreFile(getAppDataRoot(), source).catch(() => null);
+  const locals = (schema.targets || [])
+    .filter((target) => path.resolve(target.path) === path.resolve(targetRoot))
+    .flatMap((target) => target.sources || []);
+  const setAlreadyBound = Boolean(
+    source.setId
+    && locals.some((entry) => entry.setId === source.setId)
+  );
+  const added = await addSourceToTarget(getAppDataRoot(), {
+    targetRoot,
+    machineId: schema.machine.machineId,
+    sourcePath: destinationRoot,
+    targetFolder: source.targetFolder || '',
+    includeSourceRoot: source.includeSourceRoot,
+    relativeRoot: source.relativeRoot,
+    folderName: source.folderName,
+    setId: setAlreadyBound ? undefined : (source.setId || undefined),
+    rulesText: ignore?.rulesText || SOURCE_IGNORE_TEMPLATE
+  }, schema.machine);
+  if (watchService) {
+    await watchService.refresh();
+    setDaemonStatus(await watchService.getStatus());
+  }
+  logger.info('Added restored folder as a new source.', {
+    sourcePath: destinationRoot,
+    sourceId: added.sourceId
+  });
+  logToRenderer('info', 'Added restored folder as a new source.', {
+    sourcePath: destinationRoot,
+    sourceId: added.sourceId
+  });
+  return added;
+}
+
 async function requireSourceById(input) {
   if (!input || !input.targetId || !input.sourceId) {
     throw new Error('Target id and source id are required.');
@@ -452,9 +511,18 @@ function registerIpcHandlers() {
   });
 
   handle('app:add-source', async (_event, input) => {
+    if (!input || typeof input.rulesText !== 'string') {
+      throw new Error('Exclude rules must be saved before adding a source.');
+    }
     const targetRoot = await requireTargetRoot(input);
     const schema = await ensureAppSchema();
     const sourcePath = path.resolve(input.sourcePath || '');
+    if (!sourcePath) {
+      throw new Error('Source folder is required.');
+    }
+    if (!(await fs.pathExists(sourcePath))) {
+      throw new Error('Source folder does not exist.');
+    }
     const targetFolder = normalizeTargetFolder(input.targetFolder || '');
     const includeSourceRoot = Boolean(input?.includeSourceRoot);
     const sourceTargetRoot = getSourceTargetRoot(schema.machine.machineId, {
@@ -474,14 +542,14 @@ function registerIpcHandlers() {
         targetSourceRoot
       };
     }
-    const source = await registerSource(getAppDataRoot(), {
+    const source = await addSourceToTarget(getAppDataRoot(), {
       targetRoot,
       machineId: schema.machine.machineId,
       sourcePath,
       targetFolder,
-      includeSourceRoot
-    });
-    await ensureSourceIgnoreFile(getAppDataRoot(), source);
+      includeSourceRoot,
+      rulesText: input.rulesText
+    }, schema.machine);
     logger.info('Source registered.', {
       sourceId: source.sourceId,
       sourcePath: source.sourcePath,
@@ -536,7 +604,8 @@ function registerIpcHandlers() {
     const removed = await removeSource(getAppDataRoot(), {
       targetRoot,
       machineId: input.machineId,
-      sourceId: input.sourceId
+      sourceId: input.sourceId,
+      setId: input.setId
     });
     logger.info('Source removed from app list.', {
       targetRoot,
@@ -800,10 +869,18 @@ function registerIpcHandlers() {
     const targetSources = (schema.targets || []).find((entry) => (
       path.resolve(entry.path) === path.resolve(targetRoot)
     ));
-    const source = (targetSources?.sources || []).find((entry) => (
+    let source = (targetSources?.sources || []).find((entry) => (
       entry.sourceId === input.sourceId
-      && (!input.machineId || entry.machineId === input.machineId)
-    ));
+      || entry.setId === input.sourceId
+      || (input.setId && entry.setId === input.setId)
+    )) || null;
+    if (!source) {
+      const catalog = await loadCatalog(targetRoot);
+      const set = findSet(catalog, input.sourceId) || findSet(catalog, input.setId);
+      if (set) {
+        source = catalogSetToSource(set);
+      }
+    }
     if (!source) {
       throw new Error(`Source not found: ${input.machineId}/${input.sourceId}`);
     }
@@ -914,6 +991,14 @@ function registerIpcHandlers() {
           summary.message || 'Source restore completed.',
           summary
         );
+        if (summary.offerNewSource) {
+          const added = await maybeOfferAddRestoredSource({
+            targetRoot,
+            source,
+            destinationRoot: summary.destinationRoot
+          });
+          summary.addedRestoredSource = Boolean(added);
+        }
       }
       return {
         summary,

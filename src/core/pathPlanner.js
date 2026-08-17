@@ -30,6 +30,9 @@ function normalizeTargetFolder(targetFolder) {
 }
 
 function getSourceFolderName(source) {
+  if (source && typeof source.folderName === 'string' && source.folderName.trim()) {
+    return source.folderName.trim();
+  }
   return path.basename(path.resolve(source.sourcePath || '')) || source.sourceId;
 }
 
@@ -44,6 +47,9 @@ function shouldIncludeSourceRoot(source) {
 }
 
 function getSourceTargetRoot(_machineId, source) {
+  if (source && source.relativeRoot !== undefined && source.relativeRoot !== null) {
+    return normalizeTargetFolder(source.relativeRoot);
+  }
   const targetFolder = normalizeTargetFolder(source.targetFolder);
   if (!shouldIncludeSourceRoot(source)) {
     return targetFolder;

@@ -1,14 +1,19 @@
 # B1 — Restore
 
-**Index:** [A0](./A0-mybackup-design.md) · **Registration:** [B4](./B4-mybackup-design-registration.md) · **Paths:** [B0](./B0-mybackup-design-path-layout.md) · **Prior note:** [restore-source-progress.md](./restore-source-progress.md)
+**Index:** [A0](./A0-mybackup-design.md) · **Registration:** [B4](./B4-mybackup-design-registration.md) (history) · [B5](./B5-mybackup-design-target-catalog.md) (next) · **Paths:** [B0](./B0-mybackup-design-path-layout.md)
 
-Layer that copies files from the backup tree under a target into a local destination.
+**Next (CAT-01):** Restore from catalog set. Ask path. Wire `computerId:/path`. Copy rule unchanged (keep-newer).
 
-Pause / Resume use the same **bookmark** model as backup ([B3](./B3-mybackup-design-backup-status.md)): folder cursor + completed work; Pause saves it; Stop clears it. Restore stores its bookmark in the restore job file, not `backupJob`.
+```text
+as implemented     source must exist in data/sources/
+next               Add Target → catalog row → Restore → wire binding
+```
+
+Pause / Resume: same bookmark as backup ([B3](./B3-mybackup-design-backup-status.md)). Job file in app data.
 
 ---
 
-## Locked (current)
+## History — locked as implemented
 
 Restore is **source-row–centric**. It starts from a registered source on this Mac, not from a volume catalog ([B4](./B4-mybackup-design-registration.md)).
 
@@ -69,9 +74,9 @@ dest missing        → write
 dest newer or same  → skip
 ```
 
-### Consequence
+### Consequence (history)
 
-On a computer with no registered source or target, Restore cannot start even if the backup drive is attached. That is current design, not a gap in the copy engine.
+On a computer with no registered source or target, Restore cannot start even if the backup drive is attached. **Next:** [B5](./B5-mybackup-design-target-catalog.md) — Add Target is enough.
 
 ---
 

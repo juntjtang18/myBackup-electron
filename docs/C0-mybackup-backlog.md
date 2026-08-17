@@ -19,17 +19,27 @@
 
 | Status | Count | Notes |
 |---|---|---|
-| ✅ done | 8 | RST-01, RST-02, UI-01, UI-02, SCAN-01, BUG-01, UI-03, SCAN-02 |
+| ✅ done | 9 | RST-01, RST-02, UI-01, UI-02, SCAN-01, BUG-01, UI-03, SCAN-02, CAT-01 |
 | 📋 planned | 0 | — |
 | ⏸️ unscheduled | 0 | — |
 
-**Current focus:** **I2** ✅ — stuck-running fix + button simplify + last-run report · [C3](./C3-mybackup-iteration2-plan.md)
+**Current focus:** I3 ✅ CAT-01 shipped · [B5](./B5-mybackup-design-target-catalog.md)
+
+---
+
+## Catalog / portability
+
+**Design:** [B5](./B5-mybackup-design-target-catalog.md) · [B4](./B4-mybackup-design-registration.md)
+
+| ID | Summary | Pri | Iter | Status | Detail |
+|---|---|---|---|---|---|
+| CAT-01 | Target catalog: Add Target lists sets; Restore wires `computerId:/path` | P1 | I3 | ✅ | [detail](./backlog/catalog/CAT-01-target-catalog.md) |
 
 ---
 
 ## Restore
 
-**Design:** [B0](./B0-mybackup-design-path-layout.md) · [B1](./B1-mybackup-design-restore.md) · [B4](./B4-mybackup-design-registration.md) · **Code:** `src/core/restoreService.js`, `pathPlanner.js`
+**Design:** [B0](./B0-mybackup-design-path-layout.md) · [B1](./B1-mybackup-design-restore.md) · [B5](./B5-mybackup-design-target-catalog.md) · **History:** [B4](./B4-mybackup-design-registration.md) · **Code:** `src/core/restoreService.js`, `pathPlanner.js`
 
 | ID | Summary | Pri | Iter | Status | Detail |
 |---|---|---|---|---|---|

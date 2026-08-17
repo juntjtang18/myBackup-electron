@@ -2,11 +2,17 @@
 
 **Index:** [A0](./A0-mybackup-design.md) · **Restore:** [B1](./B1-mybackup-design-restore.md) · **Paths:** [B0](./B0-mybackup-design-path-layout.md)
 
-Where source definitions, target definitions, ignore rules, run status, and the file index live **as implemented**. This is the current design, not a proposed change.
+**Status:** as implemented — **history**. Keep for reference.  
+**Next:** [B5](./B5-mybackup-design-target-catalog.md) · [CAT-01](./backlog/catalog/CAT-01-target-catalog.md)
+
+```text
+B4 (this file)     definitions in this Mac data/
+B5 (next)          sets on the target; this Mac only binds a path
+```
 
 ---
 
-## Locked (current)
+## History — locked as implemented
 
 **Source and target definitions live in this computer’s app data.** They do not live in the source folder. They are not the source of truth on the target volume.
 
@@ -172,11 +178,11 @@ flowchart LR
 
 ---
 
-## Portability — rejected (keep current design)
+## Portability
 
-A marker file (`target/.mybackup/target.json`) was considered so a drive could introduce itself. **Rejected.**
+Walk the disk to find a target: **no**. Copy `data/targets.json` onto the drive: **no**.
 
-The target can be any folder on the disk (`a/`, `b/f`, `b/c/d/`, `e/`). A marker in the target folder would force a walk of every directory to find it. That is the wrong design. Do not add a volume catalog. Do not copy `targets.json` onto the drive. Do not change registration.
+Proposed: Add Target → read `target/.mybackup/catalog.json`. [B5](./B5-mybackup-design-target-catalog.md) · [CAT-01](./backlog/catalog/CAT-01-target-catalog.md). Until then: B Add Source or Finder copy.
 
 On another computer the user already has two ways. Both fit the current design.
 

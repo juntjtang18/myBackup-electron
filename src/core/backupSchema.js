@@ -100,10 +100,13 @@ function splitMergedSource(source, targetId, now = new Date()) {
   const definition = createSourceDefinitionRecord({
     machineId: source.machineId,
     sourceId: source.sourceId,
+    setId: source.setId,
     targetId,
     sourcePath: source.sourcePath,
     targetFolder: source.targetFolder,
     includeSourceRoot: source.includeSourceRoot,
+    relativeRoot: source.relativeRoot,
+    folderName: source.folderName,
     watchEnabled: source.watchEnabled,
     backupIntervalMinutes: source.backupIntervalMinutes,
     baselineAt: source.baselineAt,

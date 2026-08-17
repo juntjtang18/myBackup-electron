@@ -1,6 +1,6 @@
 const os = require('os');
 const path = require('path');
-const { createMachineId, createScanId, createSourceId } = require('./ids');
+const { createComputerId, createMachineId, createScanId, createSourceId, isUuidComputerId, readOsComputerName } = require('./ids');
 const { toPosixPath } = require('./layout');
 const { normalizeTargetFolder } = require('./pathPlanner');
 
@@ -172,12 +172,16 @@ function createAppConfig(overrides = {}, now = new Date()) {
 }
 
 function createMachineRecord(input = {}, now = new Date()) {
-  const hostname = input.hostname || os.hostname();
+  const hostname = input.hostname || readOsComputerName();
   const machineId = input.machineId || createMachineId(hostname, input.seed || `${hostname}-${os.platform()}`);
+  const computerId = input.computerId && !isUuidComputerId(input.computerId)
+    ? createComputerId(input.computerId)
+    : createComputerId(hostname);
 
   return {
     schemaVersion: SCHEMA_VERSION,
     machineId,
+    computerId,
     displayName: input.displayName || hostname,
     hostname,
     platform: input.platform || os.platform(),
@@ -200,6 +204,15 @@ function createSourceRecord(input, now = new Date()) {
   const includeSourceRoot = input.includeSourceRoot === undefined
     ? true
     : Boolean(input.includeSourceRoot);
+  const relativeRoot = input.relativeRoot === undefined || input.relativeRoot === null
+    ? null
+    : normalizeTargetFolder(input.relativeRoot);
+  const folderName = typeof input.folderName === 'string' && input.folderName.trim()
+    ? input.folderName.trim()
+    : null;
+  const setId = typeof input.setId === 'string' && input.setId.trim()
+    ? input.setId.trim()
+    : null;
 
   const backupStatusInput = {
     ...(input.backupStatus || {})
@@ -216,9 +229,12 @@ function createSourceRecord(input, now = new Date()) {
     schemaVersion: SCHEMA_VERSION,
     machineId: input.machineId,
     sourceId,
+    setId,
     sourcePath: resolvedSourcePath,
     targetFolder,
     includeSourceRoot,
+    relativeRoot,
+    folderName,
     watchEnabled,
     backupIntervalMinutes,
     baselineAt: input.baselineAt || null,
@@ -256,15 +272,27 @@ function createSourceDefinitionRecord(input, now = new Date()) {
   const includeSourceRoot = input.includeSourceRoot === undefined
     ? true
     : Boolean(input.includeSourceRoot);
+  const relativeRoot = input.relativeRoot === undefined || input.relativeRoot === null
+    ? null
+    : normalizeTargetFolder(input.relativeRoot);
+  const folderName = typeof input.folderName === 'string' && input.folderName.trim()
+    ? input.folderName.trim()
+    : null;
+  const setId = typeof input.setId === 'string' && input.setId.trim()
+    ? input.setId.trim()
+    : null;
 
   return {
     schemaVersion: SCHEMA_VERSION,
     machineId: input.machineId,
     sourceId,
+    setId,
     targetId: input.targetId || null,
     sourcePath: resolvedSourcePath,
     targetFolder,
     includeSourceRoot,
+    relativeRoot,
+    folderName,
     watchEnabled,
     backupIntervalMinutes,
     baselineAt: input.baselineAt || null,
@@ -376,6 +404,9 @@ function validateMachineRecord(record) {
     throw new Error(`Unsupported machine schema version: ${record.schemaVersion}`);
   }
   assertNonEmptyString(record.machineId, 'machineId');
+  if (record.computerId !== undefined && record.computerId !== null) {
+    assertNonEmptyString(record.computerId, 'computerId');
+  }
   assertNonEmptyString(record.displayName, 'displayName');
   assertNonEmptyString(record.hostname, 'hostname');
   assertNonEmptyString(record.platform, 'platform');
@@ -391,6 +422,7 @@ function validateSourceRecord(record) {
   }
   assertNonEmptyString(record.machineId, 'machineId');
   assertNonEmptyString(record.sourceId, 'sourceId');
+  assertNullableString(record.setId, 'setId');
   assertNonEmptyString(record.sourcePath, 'sourcePath');
   if (record.targetFolder !== '') {
     assertNonEmptyString(record.targetFolder, 'targetFolder');
@@ -398,6 +430,10 @@ function validateSourceRecord(record) {
   if (record.includeSourceRoot !== undefined) {
     assertBoolean(record.includeSourceRoot, 'includeSourceRoot');
   }
+  if (record.relativeRoot !== undefined && record.relativeRoot !== null && record.relativeRoot !== '') {
+    assertNonEmptyString(record.relativeRoot, 'relativeRoot');
+  }
+  assertNullableString(record.folderName, 'folderName');
   assertBoolean(record.watchEnabled, 'watchEnabled');
   assertNullableNonNegativeInteger(record.backupIntervalMinutes, 'backupIntervalMinutes');
   assertNullableString(record.baselineAt, 'baselineAt');
@@ -442,6 +478,7 @@ function validateSourceDefinitionRecord(record) {
   }
   assertNonEmptyString(record.machineId, 'machineId');
   assertNonEmptyString(record.sourceId, 'sourceId');
+  assertNullableString(record.setId, 'setId');
   assertNonEmptyString(record.sourcePath, 'sourcePath');
   if (record.targetId !== null && record.targetId !== undefined) {
     assertNonEmptyString(record.targetId, 'targetId');
@@ -452,6 +489,10 @@ function validateSourceDefinitionRecord(record) {
   if (record.includeSourceRoot !== undefined) {
     assertBoolean(record.includeSourceRoot, 'includeSourceRoot');
   }
+  if (record.relativeRoot !== undefined && record.relativeRoot !== null && record.relativeRoot !== '') {
+    assertNonEmptyString(record.relativeRoot, 'relativeRoot');
+  }
+  assertNullableString(record.folderName, 'folderName');
   assertBoolean(record.watchEnabled, 'watchEnabled');
   assertNullableNonNegativeInteger(record.backupIntervalMinutes, 'backupIntervalMinutes');
   assertNullableString(record.baselineAt, 'baselineAt');

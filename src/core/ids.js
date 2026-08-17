@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const path = require('path');
+const { normalizeComputerName, readOsComputerName } = require('./osComputerName');
 
 function sanitizeSegment(value) {
   return String(value || 'item')
@@ -41,11 +42,28 @@ function createFolderId(relativePath) {
   return `${sanitizeSegment(base)}-${shortHash(stablePath, 10)}`;
 }
 
+function isUuidComputerId(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));
+}
+
+function createComputerId(hostname) {
+  const raw = normalizeComputerName(hostname) || readOsComputerName() || 'computer';
+  return sanitizeSegment(raw) || 'computer';
+}
+
+function createSetId() {
+  return crypto.randomUUID();
+}
+
 module.exports = {
+  createComputerId,
   createFolderId,
   createMachineId,
   createScanId,
+  createSetId,
   createSourceId,
+  isUuidComputerId,
+  readOsComputerName,
   sanitizeSegment,
   shortHash
 };

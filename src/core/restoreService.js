@@ -11,8 +11,12 @@ const {
   loadRestoreJob,
   saveRestoreJob
 } = require('./restoreJobStore');
+const { catalogSetToSource, findSet, loadCatalog, wireBindingAfterRestore } = require('./targetCatalog');
+const { createLogger } = require('./logger');
 
-async function findSourceRecord(appDataRoot, machineId, sourceId) {
+const logger = createLogger('RestoreService', 'restoreService.js');
+
+async function findSourceRecord(appDataRoot, machineId, sourceId, options = {}) {
   const schema = await loadBackupSchema(appDataRoot);
   for (const target of schema?.targets || []) {
     for (const source of target.sources || []) {
@@ -22,9 +26,29 @@ async function findSourceRecord(appDataRoot, machineId, sourceId) {
           source
         };
       }
+      if (source.setId && (source.setId === sourceId || source.setId === options.setId)) {
+        return {
+          targetRoot: target.path,
+          source
+        };
+      }
     }
   }
-  return null;
+
+  const catalogTargetRoot = options.targetRoot;
+  if (!catalogTargetRoot) {
+    return null;
+  }
+  const catalog = await loadCatalog(catalogTargetRoot);
+  const set = findSet(catalog, sourceId) || findSet(catalog, options.setId);
+  if (!set) {
+    return null;
+  }
+  return {
+    targetRoot: path.resolve(catalogTargetRoot),
+    source: catalogSetToSource(set),
+    fromCatalog: true
+  };
 }
 
 async function walkFiles(rootPath, onFile, relativeRoot = '.') {
@@ -32,7 +56,19 @@ async function walkFiles(rootPath, onFile, relativeRoot = '.') {
     return;
   }
 
-  const entries = await fs.readdir(rootPath, { withFileTypes: true });
+  let entries;
+  try {
+    entries = await fs.readdir(rootPath, { withFileTypes: true });
+  } catch (error) {
+    logger.warn('Skipped restore directory listing; continuing.', {
+      rootPath,
+      relativeRoot,
+      code: error && error.code ? error.code : null,
+      error: error && error.message ? error.message : String(error)
+    });
+    return;
+  }
+
   for (const entry of entries) {
     const absolutePath = path.join(rootPath, entry.name);
     const relativePath = relativeRoot === '.'
@@ -41,10 +77,18 @@ async function walkFiles(rootPath, onFile, relativeRoot = '.') {
     if (entry.isDirectory()) {
       await walkFiles(absolutePath, onFile, relativePath);
     } else if (entry.isFile()) {
-      await onFile({
-        absolutePath,
-        relativePath: toPosixPath(relativePath)
-      });
+      try {
+        await onFile({
+          absolutePath,
+          relativePath: toPosixPath(relativePath)
+        });
+      } catch (error) {
+        logger.warn('Skipped restore file listing; continuing.', {
+          relativePath,
+          code: error && error.code ? error.code : null,
+          error: error && error.message ? error.message : String(error)
+        });
+      }
     }
   }
 }
@@ -169,7 +213,10 @@ async function markSourceNeedsRescanAfterRestore(appDataRoot, targetRoot, machin
 async function restoreSource(targetRoot, input) {
   const appDataRoot = input.appDataRoot || targetRoot;
   const requestedDestinationRoot = path.resolve(input.destinationRoot);
-  const sourceRecord = await findSourceRecord(appDataRoot, input.machineId, input.sourceId);
+  const sourceRecord = await findSourceRecord(appDataRoot, input.machineId, input.sourceId, {
+    targetRoot,
+    setId: input.setId
+  });
   const onProgress = typeof input.onProgress === 'function' ? input.onProgress : null;
   const shouldPause = typeof input.shouldPause === 'function' ? input.shouldPause : () => false;
   const shouldStop = typeof input.shouldStop === 'function' ? input.shouldStop : () => false;
@@ -204,10 +251,19 @@ async function restoreSource(targetRoot, input) {
   );
   summary.destinationRoot = destinationRoot;
 
-  const { sourceTargetRoot, tasks: collectedTasks } = await collectRestoreTasks(
-    targetRoot,
-    sourceRecord.source
-  );
+  let sourceTargetRoot;
+  let collectedTasks = [];
+  try {
+    const collected = await collectRestoreTasks(targetRoot, sourceRecord.source);
+    sourceTargetRoot = collected.sourceTargetRoot;
+    collectedTasks = collected.tasks;
+  } catch (error) {
+    logger.warn('Failed to list restore files; continuing with empty task list.', {
+      targetRoot,
+      error: error && error.message ? error.message : String(error)
+    });
+    sourceTargetRoot = path.join(targetRoot, getSourceTargetRoot(sourceRecord.source.machineId, sourceRecord.source));
+  }
 
   let tasks = collectedTasks;
   let nextTaskIndex = 0;
@@ -331,7 +387,7 @@ async function restoreSource(targetRoot, input) {
   });
 
   const workerIds = Object.keys(workers);
-  await Promise.all(workerIds.map(async (workerId) => {
+  await Promise.allSettled(workerIds.map(async (workerId) => {
     while (true) {
       if (shouldStop()) {
         terminalStatus = 'stopped';
@@ -387,11 +443,24 @@ async function restoreSource(targetRoot, input) {
       });
 
       const restorePath = path.join(destinationRoot, ...task.relativePath.split('/'));
-      const restoreResult = await restorePlainFile(
-        targetRoot,
-        { type: 'plain', path: task.logicalPath },
-        restorePath
-      );
+      let restoreResult;
+      try {
+        restoreResult = await restorePlainFile(
+          targetRoot,
+          { type: 'plain', path: task.logicalPath },
+          restorePath
+        );
+      } catch (error) {
+        logger.warn('Restore file failed; continuing with next file.', {
+          relativePath: task.relativePath,
+          logicalPath: task.logicalPath,
+          code: error && error.code ? error.code : null,
+          error: error && error.message ? error.message : String(error)
+        });
+        summary.skippedRecords += 1;
+        delete activeTasks[workerId];
+        continue;
+      }
 
       if (shouldStop()) {
         terminalStatus = 'stopped';
@@ -463,12 +532,24 @@ async function restoreSource(targetRoot, input) {
     return summary;
   }
 
-  await markSourceNeedsRescanAfterRestore(
+  const wired = await wireBindingAfterRestore({
     appDataRoot,
-    sourceRecord.targetRoot || targetRoot,
-    input.machineId,
-    input.sourceId
-  );
+    targetRoot: sourceRecord.targetRoot || targetRoot,
+    source: sourceRecord.source,
+    destinationRoot,
+    now: new Date()
+  });
+  summary.offerNewSource = Boolean(wired?.offerNewSource);
+  const rescanSource = wired?.source
+    || (sourceRecord.source && !sourceRecord.source.catalogOffline ? sourceRecord.source : null);
+  if (rescanSource?.machineId && rescanSource?.sourceId) {
+    await markSourceNeedsRescanAfterRestore(
+      appDataRoot,
+      sourceRecord.targetRoot || targetRoot,
+      rescanSource.machineId,
+      rescanSource.sourceId
+    );
+  }
 
   emitProgress({
     type: 'restore-completed',
@@ -498,7 +579,18 @@ async function restoreLogicalTree(targetRoot, input) {
     }
 
     const restorePath = path.join(destinationRoot, ...relativePath.split('/'));
-    const restoreResult = await restorePlainFile(targetRoot, { type: 'plain', path: logicalPath }, restorePath);
+    let restoreResult;
+    try {
+      restoreResult = await restorePlainFile(targetRoot, { type: 'plain', path: logicalPath }, restorePath);
+    } catch (error) {
+      logger.warn('Restore file failed; continuing with next file.', {
+        relativePath,
+        logicalPath,
+        error: error && error.message ? error.message : String(error)
+      });
+      summary.skippedRecords = Number(summary.skippedRecords || 0) + 1;
+      return;
+    }
     restoredPaths.add(logicalPath);
     if (restoreResult && restoreResult.restored === false) {
       summary.skippedRecords = Number(summary.skippedRecords || 0) + 1;
@@ -516,10 +608,25 @@ async function restoreLogicalFile(targetRoot, input) {
   const destinationPath = path.resolve(input.destinationPath);
 
   if (!(await fs.pathExists(sourcePath))) {
-    throw new Error(`Logical path not found: ${logicalPath}`);
+    logger.warn('Restore skipped missing logical path.', { logicalPath });
+    return {
+      logicalPath,
+      restored: false
+    };
   }
 
-  await restorePlainFile(targetRoot, { type: 'plain', path: logicalPath }, destinationPath);
+  try {
+    await restorePlainFile(targetRoot, { type: 'plain', path: logicalPath }, destinationPath);
+  } catch (error) {
+    logger.warn('Restore file failed; continuing.', {
+      logicalPath,
+      error: error && error.message ? error.message : String(error)
+    });
+    return {
+      logicalPath,
+      restored: false
+    };
+  }
   return {
     logicalPath,
     restored: true

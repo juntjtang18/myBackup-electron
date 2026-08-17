@@ -1,4 +1,4 @@
-const { readFolderEntries, isMissingPathError, statFile } = require('./scannerUtils');
+const { readFolderEntries, safeCallback, scanFolderFiles } = require('./scannerUtils');
 const { walkFoldersFromCursor } = require('../cursor');
 
 async function scanFullSource(options) {
@@ -20,6 +20,34 @@ async function scanFullSource(options) {
     skippedFiles: 0
   };
 
+  async function scanOneFolder(folder, onDirectories) {
+    await safeCallback('onFolder', onFolder, folder);
+
+    let entries;
+    try {
+      entries = await readFolderEntries(folder.folderPath, folder.relativePath, ignoreMatcher);
+    } catch (error) {
+      summary.skippedFolders += 1;
+      await safeCallback('onMissingFolder', onMissingFolder, folder, error);
+      return;
+    }
+
+    summary.foldersScanned += 1;
+    if (typeof onDirectories === 'function') {
+      onDirectories(entries.directories);
+    }
+
+    const fileSummary = await scanFolderFiles({
+      files: entries.files,
+      shouldAbort,
+      enqueueFile,
+      onFileError: onMissingFile
+    });
+    summary.filesEnqueued += fileSummary.filesEnqueued;
+    summary.skippedFiles += fileSummary.skippedFiles;
+    await safeCallback('onFolderCompleted', onFolderCompleted, folder);
+  }
+
   const folderIterator = resumeFrom
     ? walkFoldersFromCursor(sourcePath, resumeFrom, { ignoreMatcher })
     : null;
@@ -29,50 +57,8 @@ async function scanFullSource(options) {
       if (shouldAbort()) {
         break;
       }
-
-      await onFolder(folder);
-
-      let entries;
-      try {
-        entries = await readFolderEntries(folder.folderPath, folder.relativePath, ignoreMatcher);
-      } catch (error) {
-        if (!isMissingPathError(error)) {
-          throw error;
-        }
-        summary.skippedFolders += 1;
-        await onMissingFolder(folder, error);
-        continue;
-      }
-
-      summary.foldersScanned += 1;
-      const folderTasks = [];
-
-      for (const fileEntry of entries.files) {
-        if (shouldAbort()) {
-          break;
-        }
-
-        let stats;
-        try {
-          stats = await statFile(fileEntry.path);
-        } catch (error) {
-          summary.skippedFiles += 1;
-          await onMissingFile(fileEntry, error);
-          continue;
-        }
-
-        folderTasks.push(enqueueFile({
-          sourceFilePath: fileEntry.path,
-          sourceRelativePath: fileEntry.relativePath,
-          stats
-        }));
-        summary.filesEnqueued += 1;
-      }
-
-      await Promise.allSettled(folderTasks);
-      await onFolderCompleted(folder);
+      await scanOneFolder(folder);
     }
-
     return summary;
   }
 
@@ -83,55 +69,15 @@ async function scanFullSource(options) {
     }
 
     const folder = stack.pop();
-    await onFolder(folder);
-
-    let entries;
-    try {
-      entries = await readFolderEntries(folder.folderPath, folder.relativePath, ignoreMatcher);
-    } catch (error) {
-      if (!isMissingPathError(error)) {
-        throw error;
+    await scanOneFolder(folder, (directories) => {
+      for (let index = directories.length - 1; index >= 0; index -= 1) {
+        const directory = directories[index];
+        stack.push({
+          folderPath: directory.path,
+          relativePath: directory.relativePath
+        });
       }
-      summary.skippedFolders += 1;
-      await onMissingFolder(folder, error);
-      continue;
-    }
-
-    summary.foldersScanned += 1;
-    const folderTasks = [];
-
-    for (let index = entries.directories.length - 1; index >= 0; index -= 1) {
-      const directory = entries.directories[index];
-      stack.push({
-        folderPath: directory.path,
-        relativePath: directory.relativePath
-      });
-    }
-
-    for (const fileEntry of entries.files) {
-      if (shouldAbort()) {
-        break;
-      }
-
-      let stats;
-      try {
-        stats = await statFile(fileEntry.path);
-      } catch (error) {
-        summary.skippedFiles += 1;
-        await onMissingFile(fileEntry, error);
-        continue;
-      }
-
-      folderTasks.push(enqueueFile({
-        sourceFilePath: fileEntry.path,
-        sourceRelativePath: fileEntry.relativePath,
-        stats
-      }));
-      summary.filesEnqueued += 1;
-    }
-
-    await Promise.allSettled(folderTasks);
-    await onFolderCompleted(folder);
+    });
   }
 
   return summary;

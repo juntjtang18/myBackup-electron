@@ -4,6 +4,12 @@
 
 ---
 
+## Catalog / portability
+
+[catalog/](./catalog/) — CAT-01 target catalog (self-contained target, Restore wires locator).
+
+---
+
 ## Restore
 
 [restore/](./restore/) — RST-01 path + engine pause · RST-02 ask destination.

@@ -182,7 +182,7 @@ Use Full Backup for the target-newer case (that is where skip-newer is reported)
 
 ## Shape in code
 
-Implemented: [`__tests__/e2eCopyPath.test.js`](../__tests__/e2eCopyPath.test.js).
+Implemented: [`__tests__/e2eCopyPath.test.js`](../__tests__/e2eCopyPath.test.js) (E2E-01…11). Port target: [`__tests__/e2ePortTarget.test.js`](../__tests__/e2ePortTarget.test.js) (E2E-PORT-01…05).
 
 Helpers only: temp dirs, register target+source, write fixture + mtimes, mark dirty, `backupSource`, `restoreSource`, read tree.
 
@@ -195,3 +195,25 @@ One `describe`, tests named `E2E-01` … `E2E-11` so a failure points at the ste
 ## Acceptance
 
 The suite is done when a clean `jest __tests__/e2eCopyPath.test.js` proves the table in **Locked rules** on one tree, without touching Pause, UI, or versioning.
+
+---
+
+## Port target (second computer)
+
+Same engine helpers. Two app-data roots, one shared `target`.
+
+```text
+A Full Backup → catalog.json
+B Add Target  → offline set (no gpa/ walk)
+B Restore     → copy tree, skip card, wire computerId:/path
+B Full Backup → same target/gpa (even if dest folder is Documents)
+wipe B data   → same OS computerId, no binding → offline, Restore re-wires
+```
+
+| # | Assert |
+|---|---|
+| E2E-PORT-01 | Catalog has set + A locator + `lastBackup` |
+| E2E-PORT-02 | B sees set offline; no `readdir` of `gpa/` |
+| E2E-PORT-03 | Restore to `Documents`; files in; card out; row online; `relativeRoot` stays `gpa` |
+| E2E-PORT-04 | B backup writes `target/gpa`, not `target/Documents`; origin stays A |
+| E2E-PORT-05 | Wipe B app data → same OS `computerId`; Restore re-wires |

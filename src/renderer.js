@@ -4,6 +4,7 @@ const state = {
     targets: []
   },
   addSourceTargetRoot: null,
+  pendingAddSource: null,
   logs: [],
   backupProgress: {},
   pauseRequests: {},
@@ -160,8 +161,98 @@ function progressKey(targetRoot, machineId, sourceId) {
   return `${targetRoot}::${machineId}::${sourceId}`;
 }
 
+const PENDING_SOURCE_ID = '__pending-add__';
+
 function sourceChangeKey(targetId, sourceId) {
   return `${targetId}::${sourceId}`;
+}
+
+function normalizeExcludeText(value) {
+  return window.myBackupExcludeEditor?.normalizeText
+    ? window.myBackupExcludeEditor.normalizeText(value || '')
+    : String(value || '');
+}
+
+function buildPendingSource(pending) {
+  return {
+    machineId: pending.machineId || 'pending',
+    sourceId: PENDING_SOURCE_ID,
+    sourcePath: pending.sourcePath,
+    targetSubdir: pending.targetSubdir || pending.targetFolder || '',
+    targetFolder: pending.targetFolder || '',
+    includeSourceRoot: Boolean(pending.includeSourceRoot),
+    pendingAdd: true,
+    catalogOffline: false,
+    lastCompletedAt: null,
+    baselineAt: null
+  };
+}
+
+function pendingSourceForTarget(target) {
+  const pending = state.pendingAddSource;
+  if (!pending || !target || pending.targetId !== target.id) {
+    return null;
+  }
+  return buildPendingSource(pending);
+}
+
+function sourcesForTarget(target) {
+  const sources = [...(target?.sources || [])];
+  const pending = pendingSourceForTarget(target);
+  if (pending) {
+    sources.unshift(pending);
+  }
+  return sources;
+}
+
+function abortPendingAddSource(options = {}) {
+  const pending = state.pendingAddSource;
+  if (!pending) {
+    return false;
+  }
+  state.pendingAddSource = null;
+  delete state.sourceExcludeEditors[sourceChangeKey(pending.targetId, PENDING_SOURCE_ID)];
+  if (!options.silent) {
+    appendLog('info', 'Source was not added. Exclude rules were not saved.', {
+      sourcePath: pending.sourcePath
+    });
+  }
+  return true;
+}
+
+function pendingTargetSubdir(sourcePath, targetFolder, includeSourceRoot) {
+  const folder = String(targetFolder || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  const name = pathBasename(sourcePath);
+  if (!includeSourceRoot) {
+    return folder;
+  }
+  return folder ? `${folder}/${name}` : name;
+}
+
+function beginPendingAddSource(pending) {
+  abortPendingAddSource({ silent: true });
+  const template = normalizeExcludeText(pending.defaultTemplate || '');
+  state.pendingAddSource = {
+    targetId: pending.targetId,
+    targetRoot: pending.targetRoot,
+    machineId: pending.machineId,
+    sourcePath: pending.sourcePath,
+    targetFolder: pending.targetFolder || '',
+    includeSourceRoot: Boolean(pending.includeSourceRoot),
+    targetSubdir: pending.targetSubdir || pending.sourceTargetRoot || pending.targetFolder || '',
+    confirmMerge: Boolean(pending.confirmMerge),
+    defaultTemplate: template
+  };
+  state.sourceExcludeEditors[sourceChangeKey(pending.targetId, PENDING_SOURCE_ID)] = {
+    open: true,
+    loading: false,
+    saving: false,
+    error: null,
+    draftText: template,
+    originalText: template,
+    defaultTemplate: template,
+    pendingAdd: true
+  };
 }
 
 function collapseSourceChanges(targetId, sourceId) {
@@ -183,12 +274,56 @@ function clearBackupUiState(key) {
   delete state.lastProgressTraceAt[key];
 }
 
+const SETTLED_PROGRESS_STATUSES = new Set(['completed', 'paused', 'stopped', 'failed']);
+
 function isLiveProgressStatus(status) {
-  return Boolean(status)
-    && status !== 'completed'
-    && status !== 'paused'
-    && status !== 'stopped'
-    && status !== 'failed';
+  return Boolean(status) && !SETTLED_PROGRESS_STATUSES.has(status);
+}
+
+function isRestoreProgressMode(mode) {
+  return mode === 'restore';
+}
+
+function getSourceRunState(target, source, activeProgress) {
+  const targetRoot = target?.path || '';
+  const storedProgress = source && targetRoot
+    ? state.backupProgress[progressKey(targetRoot, source.machineId, source.sourceId)]
+    : null;
+  const progress = activeProgress?.progress || storedProgress?.progress || {};
+  const status = progress.status || null;
+  const mode = progress.mode || null;
+  const restore = isRestoreProgressMode(mode);
+  const live = isLiveProgressStatus(status);
+  const pausing = status === 'pausing';
+  const progressPaused = status === 'paused';
+  const backupJobPaused = source?.backupJob?.status === 'paused'
+    || source?.backupStatus?.status === 'paused';
+  const restoreJobPaused = source?.restoreJob?.status === 'paused';
+  const restorePaused = Boolean(restoreJobPaused || (restore && progressPaused));
+  const backupPaused = Boolean(!restore && (progressPaused || backupJobPaused));
+  const restoreLive = live && restore;
+  const backupLive = live && !restore;
+  const restoreRun = restoreLive || restorePaused || (pausing && restore);
+  const backupRun = !restoreRun && (backupLive || backupPaused || (pausing && !restore));
+
+  return {
+    mode: restore ? 'restore' : (mode || null),
+    status,
+    live,
+    pausing,
+    restore,
+    backupLive,
+    restoreLive,
+    backupPaused,
+    restorePaused,
+    backupRun,
+    restoreRun
+  };
+}
+
+function getSourceRunStateByIds(targetRoot, machineId, sourceId) {
+  const { target, source } = findDashboardSource(targetRoot, machineId, sourceId);
+  return getSourceRunState(target, source, state.backupProgress[progressKey(targetRoot, machineId, sourceId)]);
 }
 
 function lastProgressFromSource(targetRoot, source) {
@@ -497,9 +632,10 @@ function renderTargetHeaderLabel(targetPath) {
 }
 
 function targetHasActiveBackup(target) {
-  return (target.sources || []).some((source) => (
-    state.backupProgress[progressKey(target.path, source.machineId, source.sourceId)]
-  ));
+  return (target.sources || []).some((source) => {
+    const run = getSourceRunState(target, source);
+    return run.live || run.pausing;
+  });
 }
 
 let progressRenderTimer = null;
@@ -693,7 +829,8 @@ function renderSourceExcludePanel(target, source) {
     defaultTemplate: editorState.defaultTemplate || '',
     isLoading: Boolean(editorState.loading),
     isSaving: Boolean(editorState.saving),
-    errorMessage: editorState.error || ''
+    errorMessage: editorState.error || '',
+    pendingAdd: Boolean(source.pendingAdd || editorState.pendingAdd)
   });
 }
 
@@ -1067,7 +1204,7 @@ function getBackedUpSizeLabel(source, activeProgress, key = '') {
 
 function renderTargetSourcesTable(target) {
   const targetRoot = target.path;
-  const sources = target.sources || [];
+  const sources = sourcesForTarget(target);
   const showDeleteButtons = Boolean(state.sourceDeleteExpanded[target.id]);
   const transitionState = state.sourceActionTransition[target.id] || '';
   const actionRowClass = showDeleteButtons
@@ -1083,20 +1220,15 @@ function renderTargetSourcesTable(target) {
     const key = progressKey(targetRoot, source.machineId, source.sourceId);
     const changeKey = sourceChangeKey(target.id, source.sourceId);
     const activeProgress = state.backupProgress[key];
-    const activeMode = activeProgress?.progress?.mode || 'backup';
-    const liveProgress = isLiveProgressStatus(activeProgress?.progress?.status);
-    const restoreInProgress = activeMode === 'restore'
-      && liveProgress;
+    const run = getSourceRunState(target, source, activeProgress);
+    const liveProgress = run.live;
+    const restoreInProgress = run.restoreLive;
     const pauseRequested = state.pauseRequests[key];
-    const isPausing = activeProgress?.progress?.status === 'pausing';
-    const pausedCursor = source.backupJob?.status === 'paused' || source.backupStatus?.status === 'paused';
-    const restorePaused = source.restoreJob?.status === 'paused'
-      || (activeProgress?.progress?.mode === 'restore' && activeProgress?.progress?.status === 'paused');
-    const restoreRunMode = restoreInProgress || restorePaused || (isPausing && activeMode === 'restore');
-    const backupInProgress = liveProgress && activeMode !== 'restore';
-    const backupPaused = pausedCursor
-      || (activeProgress?.progress?.mode !== 'restore' && activeProgress?.progress?.status === 'paused');
-    const backupRunMode = !restoreRunMode && (backupInProgress || backupPaused || (isPausing && activeMode !== 'restore'));
+    const isPausing = run.pausing;
+    const restorePaused = run.restorePaused;
+    const restoreRunMode = run.restoreRun;
+    const backupPaused = run.backupPaused;
+    const backupRunMode = run.backupRun;
     const missingSourceSize = source.sourceSizeBytes === null || source.sourceSizeBytes === undefined;
     const requiresFullBackup = !source.baselineAt
       || missingSourceSize
@@ -1105,14 +1237,18 @@ function renderTargetSourcesTable(target) {
     const deleteDisabled = liveProgress || restorePaused;
     const normalModeDisabled = showDeleteButtons;
     const settingsModeDisabled = !showDeleteButtons;
-    const backupChangesDisabled = targetUnavailable || Boolean(pauseRequested) || isPausing || restoreRunMode || requiresFullBackup;
-    const fullBackupDisabled = targetUnavailable || Boolean(pauseRequested) || isPausing || restoreRunMode;
+    const pendingAdd = Boolean(source.pendingAdd);
+    const catalogOffline = Boolean(source.catalogOffline);
+    const backupChangesDisabled = targetUnavailable || catalogOffline || Boolean(pauseRequested) || isPausing || restoreRunMode || requiresFullBackup;
+    const fullBackupDisabled = targetUnavailable || catalogOffline || Boolean(pauseRequested) || isPausing || restoreRunMode;
+    const changesDisabled = normalModeDisabled || catalogOffline;
+    const excludeDisabled = normalModeDisabled || catalogOffline;
     const isCopying = liveProgress && !pauseRequested && !isPausing;
     const targetRootLabel = source.targetSubdir;
     const sourceSideLabel = (restoreInProgress || restorePaused) ? 'Destination' : 'Source';
     const sourceSidePath = (restoreInProgress || restorePaused)
       ? (activeProgress?.progress?.destinationRoot || source.restoreJob?.destinationRoot || source.sourcePath)
-      : source.sourcePath;
+      : (catalogOffline ? (source.locator || source.sourcePath) : source.sourcePath);
     const restoreLabel = restoreInProgress
       ? (pauseRequested || isPausing ? 'Pausing...' : 'Restoring...')
       : (restorePaused ? 'Resume' : 'Restore');
@@ -1135,7 +1271,11 @@ function renderTargetSourcesTable(target) {
         : `Missing ${scanResult.missingCount}`)
       : '';
 
-    const restoreRunControls = restoreRunMode ? `
+    const restoreRunControls = pendingAdd ? `
+              <div class="actions-group actions-group--normal">
+                <div class="source-card-pending-hint">Save exclude rules to add this source.</div>
+              </div>
+    ` : restoreRunMode ? `
               <div class="actions-group actions-group--normal actions-group--restore-run">
                 ${restorePaused ? `
                   <button class="btn btn-sm btn-outline-primary btn-action resume-restore-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="Resume"${normalModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_PLAY, 'Resume')}</button>
@@ -1155,21 +1295,23 @@ function renderTargetSourcesTable(target) {
               </div>
     ` : `
               <div class="actions-group actions-group--normal">
-                <button class="btn btn-sm btn-outline-secondary btn-action btn-action-changes toggle-changes-button${state.sourceChangeExpanded[changeKey] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(sourceChangeLabel)}"${normalModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_CHANGES, sourceChangeLabel)}</button>
+                <button class="btn btn-sm btn-outline-secondary btn-action btn-action-changes toggle-changes-button${state.sourceChangeExpanded[changeKey] ? ' active' : ''}" data-target-id="${escapeHtml(target.id)}" data-source-id="${escapeHtml(source.sourceId)}" title="${escapeHtml(sourceChangeLabel)}"${changesDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_CHANGES, sourceChangeLabel)}</button>
                 <button class="btn btn-sm btn-outline-primary btn-action btn-action-backup run-backup-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="Backup Changes"${backupChangesDisabled || normalModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_BACKUP, 'Backup Changes')}</button>
                 <button class="btn btn-sm ${requiresFullBackup ? 'btn-outline-warning' : 'btn-outline-primary'} btn-action btn-action-backup run-full-scan-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" title="Full Backup"${fullBackupDisabled || normalModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_FULL_SCAN, 'Full Backup')}</button>
                 <button class="btn btn-sm btn-outline-secondary btn-action btn-action-restore restore-source-button" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}"${restoreDisabled || normalModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_RESTORE, restoreLabel)}</button>
+                <button class="btn btn-sm btn-outline-secondary btn-action btn-action-exclude exclude-settings-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}" title="Exclude Setting"${excludeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_EXCLUDE, 'Exclude Setting')}</button>
               </div>
     `;
 
     return `
       <div class="source-card-stack">
-        <article class="source-card${isCopying ? ' is-copying' : ''}" data-source-id="${escapeHtml(source.sourceId)}">
+        <article class="source-card${isCopying ? ' is-copying' : ''}${pendingAdd ? ' is-pending-add' : ''}" data-source-id="${escapeHtml(source.sourceId)}">
           <div class="source-card-top">
             <section class="source-card-side source-card-source">
               <div class="source-card-path-row">
                 ${sourceCardSideIcon(sourceSideLabel)}
                 <div class="source-card-path" title="${escapeHtml(sourceSidePath)}">${escapeHtml(sourceSidePath)}</div>
+                ${catalogOffline ? '<span class="source-card-offline">Offline</span>' : ''}
               </div>
               ${sourceScanLabel ? `<div class="source-card-scan-stats" data-scan-side="source">${escapeHtml(sourceScanLabel)}</div>` : ''}
             </section>
@@ -1205,7 +1347,7 @@ function renderTargetSourcesTable(target) {
                     <path d="M8 4.8V8l2.2 1.6"></path>
                   </svg>
                 </span>
-                <span class="source-card-backup-text">Last backup ${escapeHtml(formatTimestamp(source.lastCompletedAt))}</span>
+                <span class="source-card-backup-text">${pendingAdd ? 'Not added yet' : `Last backup ${escapeHtml(formatTimestamp(source.lastCompletedAt))}`}</span>
                 ${scanCrossLabel ? `<span class="source-card-scan-cross">${escapeHtml(scanCrossLabel)}</span>` : ''}
               </div>
               ${state.sourceActionHints[key] ? `<div class="source-card-hint">${escapeHtml(state.sourceActionHints[key])}</div>` : ''}
@@ -1213,8 +1355,7 @@ function renderTargetSourcesTable(target) {
             <div class="${actionRowClass}">
               ${restoreRunControls}
               <div class="actions-group actions-group--settings">
-                <button class="btn btn-sm btn-outline-secondary btn-action btn-action-exclude exclude-settings-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}" title="Exclude Setting"${settingsModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_EXCLUDE, 'Exclude Setting')}</button>
-                <button class="btn btn-sm btn-outline-danger btn-action btn-action-delete delete-source-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}"${deleteDisabled || settingsModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_TRASH, 'Delete')}</button>
+                <button class="btn btn-sm btn-outline-danger btn-action btn-action-delete delete-source-button" data-target-id="${escapeHtml(target.id)}" data-target-root="${escapeHtml(targetRoot)}" data-machine-id="${escapeHtml(source.machineId)}" data-source-id="${escapeHtml(source.sourceId)}" data-set-id="${escapeHtml(source.setId || source.sourceId)}" data-source-path="${escapeHtml(source.sourcePath)}"${pendingAdd || deleteDisabled || settingsModeDisabled ? ' disabled' : ''}>${withButtonIcon(BUTTON_ICON_TRASH, 'Delete')}</button>
               </div>
             </div>
       </div>
@@ -1342,6 +1483,30 @@ function bindTargetPanelActions(container) {
         sourceId: button.dataset.sourceId,
         sourcePath: button.dataset.sourcePath
       });
+    });
+  });
+
+  container.querySelectorAll('.exclude-editor-preset').forEach((button) => {
+    button.addEventListener('click', () => {
+      const panel = button.closest('.exclude-editor-panel');
+      if (!panel) {
+        return;
+      }
+      const key = sourceChangeKey(panel.dataset.targetId, panel.dataset.sourceId);
+      const editorState = state.sourceExcludeEditors[key];
+      if (!editorState || editorState.loading || editorState.saving) {
+        return;
+      }
+      const editor = window.myBackupExcludeEditor;
+      if (!editor?.toggleIgnorePattern) {
+        return;
+      }
+      editorState.draftText = editor.toggleIgnorePattern(editorState.draftText || '', button.dataset.pattern);
+      const textarea = panel.querySelector('.exclude-editor-textarea');
+      if (textarea) {
+        textarea.value = editorState.draftText;
+      }
+      refreshExcludeEditorPanelUi(panel, editorState);
     });
   });
 
@@ -1473,7 +1638,7 @@ function renderTargets() {
   }
 
   container.innerHTML = targets.map((target) => {
-    const sourceCount = (target.sources || []).length;
+    const sourceCount = sourcesForTarget(target).length;
     const isRunning = targetHasActiveBackup(target);
     const collapsedClass = target.collapsed ? 'collapsed' : '';
     const activeClass = isRunning ? 'is-active' : '';
@@ -1637,13 +1802,16 @@ async function addTarget() {
 }
 
 async function removeTarget(targetId, targetRoot) {
+  dismissExcludeEditorPanels();
   const hasRunning = Object.keys(state.backupProgress).some((key) => key.startsWith(`${targetRoot}::`));
   if (hasRunning) {
     appendLog('warn', 'Cannot remove a target while a backup is running.');
     return;
   }
 
-  const confirmed = window.confirm(`Remove "${targetRoot}" from the app?\n\nBackup data on disk is not deleted.`);
+  const confirmed = window.confirm(
+    `Delete this target from the app and the target catalog?\n\n${targetRoot}\n\nBackup files on disk are not deleted.`
+  );
   if (!confirmed) {
     return;
   }
@@ -1664,6 +1832,7 @@ async function removeTarget(targetId, targetRoot) {
 }
 
 function toggleSourceDeleteMode(targetId) {
+  closeAllExcludeEditorPanels();
   const nextState = !state.sourceDeleteExpanded[targetId];
   state.sourceDeleteExpanded[targetId] = nextState;
   const transitionClass = nextState ? 'is-to-settings' : 'is-to-normal';
@@ -1680,6 +1849,7 @@ function toggleSourceDeleteMode(targetId) {
 }
 
 function toggleSourceProgressPanel(targetRoot, machineId, sourceId) {
+  closeAllExcludeEditorPanels();
   const key = progressKey(targetRoot, machineId, sourceId);
   if (!state.backupProgress[key]) {
     const { source } = findDashboardSource(targetRoot, machineId, sourceId);
@@ -1697,15 +1867,17 @@ function toggleSourceProgressPanel(targetRoot, machineId, sourceId) {
 }
 
 async function removeSourceFromTarget(targetId, targetRoot, machineId, sourceId, sourcePath, button) {
+  dismissExcludeEditorPanels();
   const key = progressKey(targetRoot, machineId, sourceId);
   const changeKey = sourceChangeKey(targetId, sourceId);
-  if (isLiveProgressStatus(state.backupProgress[key]?.progress?.status)) {
+  const run = getSourceRunStateByIds(targetRoot, machineId, sourceId);
+  if (run.live || run.restorePaused) {
     appendLog('warn', 'Cannot delete a source while its backup is running.');
     return;
   }
 
   const confirmed = window.confirm(
-    `Delete source from app list?\n\n${sourcePath}\n\nBackup data on disk is not deleted.`
+    `Delete this source from the app and the target catalog?\n\n${sourcePath}\n\nBackup files on disk are not deleted.`
   );
   if (!confirmed) {
     return;
@@ -1716,7 +1888,8 @@ async function removeSourceFromTarget(targetId, targetRoot, machineId, sourceId,
     state.dashboard = await window.myBackup.removeSource({
       targetRoot,
       machineId,
-      sourceId
+      sourceId,
+      setId: button?.dataset?.setId || sourceId
     });
     delete state.sourceChangeExpanded[changeKey];
     delete state.sourceChanges[changeKey];
@@ -1738,6 +1911,7 @@ async function removeSourceFromTarget(targetId, targetRoot, machineId, sourceId,
 }
 
 async function toggleTargetPanel(targetId) {
+  closeAllExcludeEditorPanels();
   const target = (state.dashboard.targets || []).find((entry) => entry.id === targetId);
   const collapsed = target ? !target.collapsed : false;
   if (target) {
@@ -1795,6 +1969,7 @@ function refreshOpenChangePanels() {
 }
 
 function toggleSourceChanges(targetId, sourceId) {
+  closeAllExcludeEditorPanels();
   const key = sourceChangeKey(targetId, sourceId);
   const nextExpanded = !state.sourceChangeExpanded[key];
   state.sourceChangeExpanded[key] = nextExpanded;
@@ -1807,6 +1982,9 @@ function toggleSourceChanges(targetId, sourceId) {
 
 function findDashboardSourceByIds(targetId, sourceId) {
   const target = (state.dashboard.targets || []).find((entry) => entry.id === targetId);
+  if (sourceId === PENDING_SOURCE_ID && state.pendingAddSource?.targetId === targetId) {
+    return { target, source: buildPendingSource(state.pendingAddSource) };
+  }
   const source = (target?.sources || []).find((entry) => entry.sourceId === sourceId);
   return { target, source };
 }
@@ -1832,7 +2010,7 @@ function refreshExcludeEditorPanelUi(panelElement, editorState) {
     textarea.disabled = isBusy;
   }
   if (saveButton) {
-    saveButton.disabled = isBusy || !isDirty;
+    saveButton.disabled = isBusy || (!isDirty && !editorState.pendingAdd);
     saveButton.textContent = editorState.saving ? 'Saving...' : 'Save';
   }
   if (cancelButton) {
@@ -1841,9 +2019,38 @@ function refreshExcludeEditorPanelUi(panelElement, editorState) {
   if (resetButton) {
     resetButton.disabled = isBusy;
   }
+  panelElement.querySelectorAll('.exclude-editor-preset').forEach((button) => {
+    button.disabled = isBusy;
+  });
+}
+
+function closeAllExcludeEditorPanels() {
+  const abortedPending = abortPendingAddSource();
+  let closed = abortedPending;
+  Object.values(state.sourceExcludeEditors || {}).forEach((editor) => {
+    if (editor?.open) {
+      editor.open = false;
+      editor.error = null;
+      closed = true;
+    }
+  });
+  return closed;
+}
+
+function dismissExcludeEditorPanels() {
+  if (closeAllExcludeEditorPanels()) {
+    renderSources();
+    return true;
+  }
+  return false;
 }
 
 function closeExcludeEditorPanel(targetId, sourceId) {
+  if (sourceId === PENDING_SOURCE_ID) {
+    abortPendingAddSource();
+    renderSources();
+    return;
+  }
   const key = sourceChangeKey(targetId, sourceId);
   const editorState = state.sourceExcludeEditors[key];
   if (!editorState) {
@@ -1862,6 +2069,7 @@ async function toggleExcludeEditorPanel(input) {
     return;
   }
 
+  closeAllExcludeEditorPanels();
   state.sourceExcludeEditors[key] = {
     open: true,
     loading: true,
@@ -1907,14 +2115,48 @@ async function toggleExcludeEditorPanel(input) {
   renderSources();
 }
 
+async function commitPendingAddSource(editorState) {
+  const pending = state.pendingAddSource;
+  if (!pending) {
+    throw new Error('No source is waiting to be added.');
+  }
+
+  const payload = {
+    targetRoot: pending.targetRoot,
+    sourcePath: pending.sourcePath,
+    targetFolder: pending.targetFolder,
+    includeSourceRoot: pending.includeSourceRoot,
+    confirmMerge: pending.confirmMerge,
+    rulesText: editorState.draftText || ''
+  };
+  let response = await window.myBackup.addSource(payload);
+  if (response && response.conflict) {
+    const confirmed = window.confirm(`Target folder already exists:\n${response.targetSourceRoot}\n\nMerge into this folder?`);
+    if (!confirmed) {
+      throw new Error('Add source cancelled.');
+    }
+    response = await window.myBackup.addSource({
+      ...payload,
+      confirmMerge: true
+    });
+  }
+  if (response && response.conflict) {
+    throw new Error('Target folder already exists.');
+  }
+
+  state.pendingAddSource = null;
+  delete state.sourceExcludeEditors[sourceChangeKey(pending.targetId, PENDING_SOURCE_ID)];
+  state.dashboard = response.dashboard;
+  appendLog('info', 'Source registered.', {
+    sourcePath: pending.sourcePath
+  });
+  return response;
+}
+
 async function saveExcludeEditorPanel(targetId, sourceId) {
   const key = sourceChangeKey(targetId, sourceId);
   const editorState = state.sourceExcludeEditors[key];
   if (!editorState || editorState.loading || editorState.saving) {
-    return;
-  }
-  const { source } = findDashboardSourceByIds(targetId, sourceId);
-  if (!source) {
     return;
   }
 
@@ -1923,15 +2165,27 @@ async function saveExcludeEditorPanel(targetId, sourceId) {
   renderSources();
 
   try {
+    if (sourceId === PENDING_SOURCE_ID || editorState.pendingAdd) {
+      await commitPendingAddSource(editorState);
+      renderDashboard();
+      return;
+    }
+
+    const { source } = findDashboardSourceByIds(targetId, sourceId);
+    if (!source) {
+      editorState.saving = false;
+      editorState.error = 'Source is no longer available.';
+      renderSources();
+      return;
+    }
+
     const response = await window.myBackup.saveSourceIgnoreRules({
       targetId,
       machineId: source.machineId,
       sourceId,
       rulesText: editorState.draftText || ''
     });
-    const normalized = window.myBackupExcludeEditor?.normalizeText
-      ? window.myBackupExcludeEditor.normalizeText(response?.rulesText || '')
-      : String(response?.rulesText || '');
+    const normalized = normalizeExcludeText(response?.rulesText || '');
     editorState.originalText = normalized;
     editorState.draftText = normalized;
     editorState.defaultTemplate = response?.defaultTemplate || editorState.defaultTemplate || '';
@@ -1954,6 +2208,7 @@ async function saveExcludeEditorPanel(targetId, sourceId) {
 }
 
 async function openAddSourceFlow(targetRoot) {
+  dismissExcludeEditorPanels();
   if (!targetRoot) {
     appendLog('warn', 'Choose a backup target first.');
     return;
@@ -1992,50 +2247,39 @@ async function browseTargetFolder() {
   }
 }
 
-async function registerSource(event) {
+function registerSource(event) {
   event.preventDefault();
-  const button = document.getElementById('addSourceButton');
   const sourcePath = document.getElementById('sourcePathInput').value.trim();
   const targetFolder = document.getElementById('targetFolderInput').value.trim();
   const includeSourceRoot = Boolean(document.getElementById('includeSourceRootCheckbox')?.checked);
+  const target = (state.dashboard.targets || []).find((entry) => (
+    entry.path === state.addSourceTargetRoot
+  ));
 
   if (!sourcePath) {
     appendLog('error', 'Source folder is required.');
     return;
   }
-
-  try {
-    setBusy(button, true, 'Registering...');
-    let response = await window.myBackup.addSource({
-      targetRoot: state.addSourceTargetRoot,
-      sourcePath,
-      targetFolder,
-      includeSourceRoot,
-      confirmMerge: false
-    });
-    if (response && response.conflict) {
-      const confirmed = window.confirm(`Target folder already exists:\n${response.targetSourceRoot}\n\nMerge into this folder?`);
-      if (!confirmed) {
-        return;
-      }
-      response = await window.myBackup.addSource({
-        targetRoot: state.addSourceTargetRoot,
-        sourcePath,
-        targetFolder,
-        includeSourceRoot,
-        confirmMerge: true
-      });
-    }
-    state.dashboard = response.dashboard;
-    renderDashboard();
-    document.getElementById('sourceForm').reset();
-    updateTargetFolderPlaceholder();
-    hideAddSourceModal();
-  } catch (error) {
-    appendLog('error', error.message || 'Failed to register source.');
-  } finally {
-    setBusy(button, false);
+  if (!target) {
+    appendLog('error', 'Choose a backup target first.');
+    return;
   }
+
+  beginPendingAddSource({
+    targetId: target.id,
+    targetRoot: state.addSourceTargetRoot,
+    machineId: target.sources?.[0]?.machineId || 'pending',
+    sourcePath,
+    targetFolder,
+    includeSourceRoot,
+    targetSubdir: pendingTargetSubdir(sourcePath, targetFolder, includeSourceRoot),
+    confirmMerge: false,
+    defaultTemplate: window.myBackupExcludeEditor?.SOURCE_IGNORE_TEMPLATE || ''
+  });
+  document.getElementById('sourceForm').reset();
+  updateTargetFolderPlaceholder();
+  hideAddSourceModal();
+  renderSources();
 }
 
 function handleBackupProgressPayload(payload) {
@@ -2132,6 +2376,7 @@ function handleBackupProgressPayload(payload) {
 }
 
 async function pauseBackupSource(targetRoot, machineId, sourceId) {
+  dismissExcludeEditorPanels();
   const key = progressKey(targetRoot, machineId, sourceId);
   try {
     state.pauseRequests[key] = true;
@@ -2150,6 +2395,7 @@ async function pauseBackupSource(targetRoot, machineId, sourceId) {
 }
 
 async function stopBackupSource(targetRoot, machineId, sourceId) {
+  dismissExcludeEditorPanels();
   const key = progressKey(targetRoot, machineId, sourceId);
   try {
     const response = await window.myBackup.stopBackup({ targetRoot, machineId, sourceId });
@@ -2177,9 +2423,10 @@ async function stopBackupSource(targetRoot, machineId, sourceId) {
 }
 
 async function runBackup(targetRoot, machineId, sourceId, button, forceNewScan = false) {
+  dismissExcludeEditorPanels();
   const key = progressKey(targetRoot, machineId, sourceId);
-  const activeMode = state.backupProgress[key]?.progress?.mode || null;
-  if (activeMode === 'restore' && isLiveProgressStatus(state.backupProgress[key]?.progress?.status)) {
+  const run = getSourceRunStateByIds(targetRoot, machineId, sourceId);
+  if (run.restoreLive) {
     appendLog('warn', 'Restore is running for this source. Wait until it completes before starting backup.');
     return;
   }
@@ -2192,7 +2439,7 @@ async function runBackup(targetRoot, machineId, sourceId, button, forceNewScan =
     hasExistingProgress: Boolean(state.backupProgress[key])
   });
 
-  if (isLiveProgressStatus(state.backupProgress[key]?.progress?.status)) {
+  if (run.backupLive) {
     try {
       state.pauseRequests[key] = true;
       renderSources();
@@ -2333,6 +2580,7 @@ async function runBackup(targetRoot, machineId, sourceId, button, forceNewScan =
 }
 
 async function pauseRestoreSource(targetRoot, machineId, sourceId) {
+  dismissExcludeEditorPanels();
   const key = progressKey(targetRoot, machineId, sourceId);
   try {
     state.pauseRequests[key] = true;
@@ -2351,6 +2599,7 @@ async function pauseRestoreSource(targetRoot, machineId, sourceId) {
 }
 
 async function stopRestoreSource(targetRoot, machineId, sourceId) {
+  dismissExcludeEditorPanels();
   const key = progressKey(targetRoot, machineId, sourceId);
   try {
     const response = await window.myBackup.stopRestore({ targetRoot, machineId, sourceId });
@@ -2377,14 +2626,14 @@ async function stopRestoreSource(targetRoot, machineId, sourceId) {
 }
 
 async function runRestoreSource(targetRoot, machineId, sourceId, button) {
+  dismissExcludeEditorPanels();
   const key = progressKey(targetRoot, machineId, sourceId);
-  const activeMode = state.backupProgress[key]?.progress?.mode || null;
-  const activeStatus = state.backupProgress[key]?.progress?.status || null;
-  if (activeMode === 'restore' && activeStatus && activeStatus !== 'paused' && activeStatus !== 'stopped') {
+  const run = getSourceRunStateByIds(targetRoot, machineId, sourceId);
+  if (run.restoreLive) {
     appendLog('warn', 'Restore is already running for this source.');
     return;
   }
-  if (activeMode && activeMode !== 'restore') {
+  if (run.backupLive || run.backupPaused) {
     appendLog('warn', 'Backup is running for this source. Pause or wait before restoring.');
     return;
   }
@@ -2628,18 +2877,29 @@ if (typeof module !== 'undefined') {
   module.exports = {
     __test__: {
       state,
+      PENDING_SOURCE_ID,
+      beginPendingAddSource,
+      abortPendingAddSource,
+      saveExcludeEditorPanel,
+      closeExcludeEditorPanel,
+      dismissExcludeEditorPanels,
       collapseSourceChanges,
       applyTerminalProgressToDashboardSource,
       handleBackupProgressPayload,
       renderTargetSourcesTable,
       renderTargets,
       toggleSourceProgressPanel,
+      toggleSourceChanges,
+      toggleSourceDeleteMode,
+      closeAllExcludeEditorPanels,
       runBackup,
       runRestoreSource,
       pauseBackupSource,
       stopBackupSource,
       lastProgressFromSource,
       isLiveProgressStatus,
+      getSourceRunState,
+      targetHasActiveBackup,
       setBusy
     }
   };

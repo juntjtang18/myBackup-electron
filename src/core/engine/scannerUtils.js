@@ -1,9 +1,75 @@
 const fs = require('fs-extra');
 const path = require('path');
 const { isBackupCardRelativePath } = require('../backupCard');
+const { isTargetMetadataRelativePath } = require('../paths');
+const { createLogger } = require('../logger');
+
+const logger = createLogger('ScannerUtils', 'scannerUtils.js');
 
 function isMissingPathError(error) {
   return Boolean(error && error.code === 'ENOENT');
+}
+
+async function safeCallback(name, fn, ...args) {
+  if (typeof fn !== 'function') {
+    return undefined;
+  }
+  try {
+    return await fn(...args);
+  } catch (error) {
+    logger.warn('Scan callback failed; continuing.', {
+      callback: name,
+      code: error && error.code ? error.code : null,
+      error: error && error.message ? error.message : String(error)
+    });
+    return undefined;
+  }
+}
+
+async function scanFolderFiles(options) {
+  const files = options.files || [];
+  const extraFields = options.extraFields || {};
+  const shouldAbort = typeof options.shouldAbort === 'function' ? options.shouldAbort : () => false;
+  const enqueueFile = typeof options.enqueueFile === 'function' ? options.enqueueFile : async () => {};
+  const onFileError = options.onFileError;
+  const folderTasks = [];
+  let filesEnqueued = 0;
+  let skippedFiles = 0;
+
+  for (const fileEntry of files) {
+    if (shouldAbort()) {
+      break;
+    }
+
+    try {
+      const stats = await statFile(fileEntry.path);
+      folderTasks.push(
+        Promise.resolve()
+          .then(() => enqueueFile({
+            sourceFilePath: fileEntry.path,
+            sourceRelativePath: fileEntry.relativePath,
+            stats,
+            ...extraFields
+          }))
+          .catch(async (error) => {
+            skippedFiles += 1;
+            await safeCallback('onFileError', onFileError, fileEntry, error);
+          })
+      );
+      filesEnqueued += 1;
+    } catch (error) {
+      skippedFiles += 1;
+      logger.warn('Skipped file during scan; continuing.', {
+        sourceRelativePath: fileEntry.relativePath,
+        code: error && error.code ? error.code : null,
+        error: error && error.message ? error.message : String(error)
+      });
+      await safeCallback('onFileError', onFileError, fileEntry, error);
+    }
+  }
+
+  await Promise.allSettled(folderTasks);
+  return { filesEnqueued, skippedFiles };
 }
 
 async function readFolderEntries(folderPath, relativeRoot = '.', ignoreMatcher = null) {
@@ -17,6 +83,9 @@ async function readFolderEntries(folderPath, relativeRoot = '.', ignoreMatcher =
       ? entry.name
       : path.posix.join(relativeRoot, entry.name);
     if (entry.isDirectory()) {
+      if (isTargetMetadataRelativePath(relativePath)) {
+        continue;
+      }
       if (ignoreMatcher && ignoreMatcher.shouldIgnore(relativePath, true)) {
         continue;
       }
@@ -47,6 +116,9 @@ async function statFile(filePath) {
 }
 
 function isIgnoredInventoryPath(relativePath, ignoreMatcher) {
+  if (isTargetMetadataRelativePath(relativePath)) {
+    return true;
+  }
   if (relativePath === '.mbignore' || isBackupCardRelativePath(relativePath)) {
     return true;
   }
@@ -79,10 +151,13 @@ async function inventorySourceTree(sourcePath, ignoreMatcher = null) {
     try {
       entries = await fs.readdir(dirPath, { withFileTypes: true });
     } catch (error) {
-      if (isMissingPathError(error)) {
-        return;
-      }
-      throw error;
+      logger.warn('Skipped inventory directory; continuing.', {
+        dirPath,
+        relativeRoot,
+        code: error && error.code ? error.code : null,
+        error: error && error.message ? error.message : String(error)
+      });
+      return;
     }
 
     for (const entry of entries) {
@@ -91,13 +166,26 @@ async function inventorySourceTree(sourcePath, ignoreMatcher = null) {
         : path.posix.join(relativeRoot, entry.name);
       const absolutePath = path.join(dirPath, entry.name);
       if (entry.isDirectory() && !entry.isSymbolicLink()) {
+        if (isTargetMetadataRelativePath(relativePath)) {
+          continue;
+        }
         await visit(absolutePath, relativePath);
         continue;
       }
       if (!entry.isFile() && !entry.isSymbolicLink()) {
         continue;
       }
-      const stat = await fs.lstat(absolutePath);
+      let stat;
+      try {
+        stat = await fs.lstat(absolutePath);
+      } catch (error) {
+        logger.warn('Skipped inventory file; continuing.', {
+          relativePath,
+          code: error && error.code ? error.code : null,
+          error: error && error.message ? error.message : String(error)
+        });
+        continue;
+      }
       const size = Number(stat.size || 0);
       summary.totalFiles += 1;
       summary.totalBytes += size;
@@ -119,5 +207,7 @@ module.exports = {
   isIgnoredInventoryPath,
   isMissingPathError,
   readFolderEntries,
+  safeCallback,
+  scanFolderFiles,
   statFile
 };

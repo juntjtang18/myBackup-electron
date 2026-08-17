@@ -62,8 +62,14 @@ class SourceStatusStore {
     await fs.ensureDir(statusRoot(this.appDataRoot));
     const filePath = sourceStatusPath(this.appDataRoot, normalized.sourceId);
     const backupPath = statusBackupPath(this.appDataRoot, normalized.sourceId);
-    if (await fs.pathExists(filePath)) {
-      await fs.copy(filePath, backupPath, { overwrite: true });
+    try {
+      if (await fs.pathExists(filePath)) {
+        await fs.copy(filePath, backupPath, { overwrite: true });
+      }
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') {
+        throw error;
+      }
     }
     await writeJsonAtomic(filePath, normalized);
     await writeJsonAtomic(backupPath, normalized);

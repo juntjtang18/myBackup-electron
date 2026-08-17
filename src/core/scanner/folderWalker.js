@@ -1,6 +1,7 @@
 const fs = require('fs-extra');
 const path = require('path');
 const { createFolderHash, cursorMatchesFolder, normalizeRelativePath } = require('../cursor/cursorState');
+const { isTargetMetadataRelativePath } = require('../paths');
 const { createLogger } = require('../logger');
 
 const logger = createLogger('FolderWalker', 'folderWalker.js');
@@ -29,6 +30,9 @@ async function listChildDirectories(folder, ignoreMatcher = null) {
     const relativePath = folder.relativePath === '.'
       ? entry.name
       : path.posix.join(folder.relativePath, entry.name);
+    if (isTargetMetadataRelativePath(relativePath)) {
+      continue;
+    }
     if (ignoreMatcher && ignoreMatcher.shouldIgnore(relativePath, true)) {
       continue;
     }
@@ -70,9 +74,12 @@ async function* walkFoldersFromCursor(sourceRoot, cursor = null, options = {}) {
     try {
       children = await listChildDirectories(current, ignoreMatcher);
     } catch (error) {
-      if (!error || error.code !== 'ENOENT') {
-        throw error;
-      }
+      logger.warn('Skipped folder listing; continuing traversal.', {
+        folderPath: current.folderPath,
+        relativePath: current.relativePath,
+        code: error && error.code ? error.code : null,
+        error: error && error.message ? error.message : String(error)
+      });
     }
 
     if (!cursorFound && cursorMatchesFolder(cursor, current)) {

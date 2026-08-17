@@ -8,6 +8,7 @@ function createStatusCheckpointWriter(options = {}) {
 
   const buildSnapshot = options.buildSnapshot;
   const persistSnapshot = options.persistSnapshot;
+  const onError = typeof options.onError === 'function' ? options.onError : null;
   const nowFactory = typeof options.nowFactory === 'function' ? options.nowFactory : () => new Date();
 
   let dirty = false;
@@ -37,6 +38,10 @@ function createStatusCheckpointWriter(options = {}) {
         dirty = false;
         const snapshot = buildSnapshot();
         await persistSnapshot(snapshot, nowFactory());
+      }
+    } catch (error) {
+      if (onError) {
+        onError(error);
       }
     } finally {
       flushing = false;

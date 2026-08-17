@@ -6,10 +6,11 @@ MyBackup is an Electron app that backs up registered **source** folders to regis
 
 | Concept | Meaning |
 |---|---|
-| Target | Backup destination root chosen by the user |
-| Source | Local folder registered under a target (`source/a`) |
-| Append on backup | When checked, `source/a` is stored under `target/a` |
-| App data | Per-machine local schema (`data/`). Owns source and target **definitions**. Not a portable volume catalog. Detail: [B4](./B4-mybackup-design-registration.md) |
+| Target | Folder the user adds. Self-contained: `catalog.json` + files. [B5](./B5-mybackup-design-target-catalog.md) |
+| Source / set | One tree `target/a`. Locator `computerId:/path`. |
+| Binding | This install’s local folder for a set. Watch/pause stay here. |
+| Append on backup | `source/a` stored under `target/a` |
+| App data | This install: opened targets + bindings. **History:** [B4](./B4-mybackup-design-registration.md) owned all definitions here. |
 
 ## Completeness on a live tree
 
@@ -27,4 +28,4 @@ Detail: [B3](./B3-mybackup-design-backup-status.md).
 
 ## Layers
 
-See [B0](./B0-mybackup-design-path-layout.md) … [B4](./B4-mybackup-design-registration.md). Delivery via [C0](./C0-mybackup-backlog.md) + [C1](./C1-mybackup-iteration-plan.md).
+See [B0](./B0-mybackup-design-path-layout.md) … [B5](./B5-mybackup-design-target-catalog.md). [B4](./B4-mybackup-design-registration.md) = as-implemented history. Delivery: [C0](./C0-mybackup-backlog.md) · [CAT-01](./backlog/catalog/CAT-01-target-catalog.md).

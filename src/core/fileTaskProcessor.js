@@ -13,6 +13,22 @@ const { createLogger } = require('./logger');
 
 const logger = createLogger('FileTaskProcessor', 'fileTaskProcessor.js');
 
+function isTransientSourceFileError(error) {
+  const code = error && error.code;
+  return code === 'ENOENT' || code === 'ENOTDIR' || code === 'SOURCE_CHANGED';
+}
+
+function skippedMissingResult(sourceRelativePath, logicalPath) {
+  return {
+    action: 'skipped-missing',
+    fileHash: null,
+    logicalPath: logicalPath || null,
+    sourceRelativePath,
+    sourceBytes: 0,
+    bytesProcessed: 0
+  };
+}
+
 async function processFileTask(input) {
   const {
     targetRoot,
@@ -35,6 +51,70 @@ async function processFileTask(input) {
     sourceRelativePath,
     filePath: sourceFilePath
   });
+
+  try {
+    return await copySourceFile({
+      targetRoot,
+      machineId,
+      source,
+      sourceFilePath,
+      sourceRelativePath,
+      stats,
+      now,
+      shouldAbort,
+      onProgress,
+      chunkSize,
+      mtimeToleranceMs,
+      compareBySourceNewerOnly,
+      mapping
+    });
+  } catch (error) {
+    if (error && error.code === 'PAUSE_CANCELLED') {
+      throw error;
+    }
+    if (isTransientSourceFileError(error)) {
+      logger.warn('Skipped file that disappeared or changed during backup.', {
+        sourceRelativePath,
+        logicalPath: mapping.logicalPath,
+        code: error.code || null,
+        error: error.message
+      });
+      return skippedMissingResult(sourceRelativePath, mapping.logicalPath);
+    }
+    logger.warn('File copy failed; continuing with next file.', {
+      sourceRelativePath,
+      logicalPath: mapping.logicalPath,
+      code: error && error.code ? error.code : null,
+      error: error && error.message ? error.message : String(error)
+    });
+    return {
+      action: 'failed',
+      fileHash: null,
+      logicalPath: mapping.logicalPath,
+      sourceRelativePath,
+      sourceBytes: 0,
+      bytesProcessed: 0,
+      error: error && error.message ? error.message : String(error),
+      errorCode: error && error.code ? error.code : null
+    };
+  }
+}
+
+async function copySourceFile({
+  targetRoot,
+  machineId,
+  source,
+  sourceFilePath,
+  sourceRelativePath,
+  stats,
+  now,
+  shouldAbort,
+  onProgress,
+  chunkSize,
+  mtimeToleranceMs,
+  compareBySourceNewerOnly,
+  mapping
+}) {
   const sourceLstat = stats?.isSymbolicLink?.()
     ? stats
     : await fs.lstat(sourceFilePath);
@@ -159,5 +239,6 @@ async function processFileTask(input) {
 }
 
 module.exports = {
+  isTransientSourceFileError,
   processFileTask
 };

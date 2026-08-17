@@ -7,18 +7,22 @@ const { resolveTargetRoot, toPosixPath } = require('./layout');
 const { createPauseCancelledResult, hashFile, isPauseCancelledResult } = require('./hashService');
 const { DEFAULT_MTIME_TOLERANCE_MS, shouldCopyWhenSourceNewer } = require('./keepNewer');
 
+function createSourceChangedError(message) {
+  const error = new Error(message);
+  error.code = 'SOURCE_CHANGED';
+  return error;
+}
+
 function resolveLogicalPath(targetRoot, logicalPath) {
   return path.join(resolveTargetRoot(targetRoot), ...toPosixPath(logicalPath).split('/'));
 }
 
-function createTempFilePath(targetRoot, jobId, logicalPath) {
-  const extension = path.extname(logicalPath || '');
-  return path.join(getTempRoot(targetRoot), `${jobId}${extension || '.tmp'}`);
+function createTempFilePath(targetRoot, jobId) {
+  return path.join(getTempRoot(targetRoot), `${jobId}.tmp`);
 }
 
-function createStagingTempPath(targetRoot, tempKey, extensionSource = '') {
-  const extension = path.extname(extensionSource || '');
-  return path.join(getTempRoot(targetRoot), `${tempKey}${extension || '.tmp'}`);
+function createStagingTempPath(targetRoot, tempKey) {
+  return path.join(getTempRoot(targetRoot), `${tempKey}.tmp`);
 }
 
 async function applySourceTimes(targetPath, sourceTimes) {
@@ -78,7 +82,7 @@ async function writePlainFile(targetRoot, input) {
     const copiedBytes = (await fs.stat(tempPath)).size;
     if (copiedBytes !== expectedSize) {
       await fs.remove(tempPath);
-      throw new Error(`Copied file size mismatch for ${input.logicalPath}`);
+      throw createSourceChangedError(`Copied file size mismatch for ${input.logicalPath}`);
     }
     await fs.utimes(tempPath, sourceStat.atime, sourceStat.mtime);
     if (typeof input.onProgress === 'function') {
@@ -162,7 +166,7 @@ async function writePlainFile(targetRoot, input) {
   const actualHash = hasher.digest('hex');
   if (copiedBytes !== expectedSize) {
     await fs.remove(tempPath);
-    throw new Error(`Copied file size mismatch for ${input.logicalPath}`);
+    throw createSourceChangedError(`Copied file size mismatch for ${input.logicalPath}`);
   }
   if (input.expectedHash && actualHash !== input.expectedHash) {
     await fs.remove(tempPath);
@@ -254,7 +258,7 @@ async function stageFileWhileHashing(targetRoot, input) {
 
   if (copiedBytes !== expectedSize) {
     await fs.remove(tempPath);
-    throw new Error(`Copied file size mismatch for staging ${input.sourcePath}`);
+    throw createSourceChangedError(`Copied file size mismatch for staging ${input.sourcePath}`);
   }
 
   await fs.utimes(tempPath, sourceStat.atime, sourceStat.mtime);
@@ -333,7 +337,7 @@ async function stageFileForCopy(targetRoot, input) {
 
   if (copiedBytes !== expectedSize) {
     await fs.remove(tempPath);
-    throw new Error(`Copied file size mismatch for staging ${input.sourcePath}`);
+    throw createSourceChangedError(`Copied file size mismatch for staging ${input.sourcePath}`);
   }
 
   await fs.utimes(tempPath, sourceStat.atime, sourceStat.mtime);

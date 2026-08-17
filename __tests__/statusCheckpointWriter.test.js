@@ -77,4 +77,25 @@ describe('statusCheckpointWriter', () => {
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0]).toEqual({ copiedBytes: 4 });
   });
+
+  test('persist errors are reported and do not reject the flush loop', async () => {
+    const errors = [];
+    const writer = createStatusCheckpointWriter({
+      buildSnapshot: () => ({ copiedBytes: 1 }),
+      persistSnapshot: async () => {
+        const error = new Error("ENOENT: no such file or directory, lstat 'status.json'");
+        error.code = 'ENOENT';
+        throw error;
+      },
+      onError: (error) => {
+        errors.push(error);
+      }
+    });
+
+    writer.markDirty();
+    await writer.flushPending();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0].code).toBe('ENOENT');
+  });
 });

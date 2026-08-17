@@ -12,6 +12,11 @@ function toPosixPath(value) {
   return String(value || '').split(path.sep).join('/');
 }
 
+function isTargetMetadataRelativePath(relativePath) {
+  const parts = toPosixPath(relativePath || '').split('/').filter(Boolean);
+  return parts.includes(TARGET_METADATA_ROOT);
+}
+
 function resolveAppDataRoot(appDataRoot) {
   return path.resolve(appDataRoot);
 }
@@ -87,6 +92,10 @@ function targetMetadataRoot(targetRoot) {
   return path.join(resolveTargetRoot(targetRoot), TARGET_METADATA_ROOT);
 }
 
+function catalogPath(targetRoot) {
+  return path.join(targetMetadataRoot(targetRoot), 'catalog.json');
+}
+
 function configPath(targetRoot) {
   return path.join(targetMetadataRoot(targetRoot), 'config.json');
 }
@@ -155,6 +164,7 @@ module.exports = {
   appMetadataRoot,
   backupSourcesPath,
   backupSchemaPath,
+  catalogPath,
   dirtyStatePath,
   sourceDefinitionPath,
   sourceStatusPath,
@@ -165,6 +175,7 @@ module.exports = {
   fileIndexBucketPath,
   fileIndexRoot,
   hashPath,
+  isTargetMetadataRelativePath,
   legacyBackupSourcesPath,
   legacyFileIndexRoot,
   legacyHashRecordPath,

@@ -127,6 +127,71 @@ describe('engine runtime modules', () => {
     expect(enqueued).toEqual(['a/b/file.txt', 'a/b/c/deep.txt']);
   });
 
+  test('full scanner continues when a folder cannot be listed', async () => {
+    const sourcePath = path.join(tempRootPath, 'source');
+    await fs.ensureDir(path.join(sourcePath, 'ok'));
+    await fs.ensureDir(path.join(sourcePath, 'blocked'));
+    await fs.writeFile(path.join(sourcePath, 'ok', 'a.txt'), 'a');
+    await fs.writeFile(path.join(sourcePath, 'blocked', 'b.txt'), 'b');
+
+    const originalReaddir = fs.readdir.bind(fs);
+    const spy = jest.spyOn(fs, 'readdir');
+    spy.mockImplementation(async (candidate, options) => {
+      if (String(candidate) === path.join(sourcePath, 'blocked')) {
+        const error = new Error('permission denied');
+        error.code = 'EACCES';
+        throw error;
+      }
+      return originalReaddir(candidate, options);
+    });
+
+    const enqueued = [];
+    const missing = [];
+    const summary = await scanFullSource({
+      sourcePath,
+      enqueueFile: async (file) => enqueued.push(file.sourceRelativePath),
+      onMissingFolder: async (folder) => missing.push(folder.relativePath)
+    });
+    spy.mockRestore();
+
+    expect(enqueued).toEqual(['ok/a.txt']);
+    expect(missing).toEqual(['blocked']);
+    expect(summary.skippedFolders).toBe(1);
+    expect(summary.filesEnqueued).toBe(1);
+  });
+
+  test('full scanner continues when a file cannot be statted', async () => {
+    const sourcePath = path.join(tempRootPath, 'source');
+    await fs.ensureDir(path.join(sourcePath, 'docs'));
+    await fs.writeFile(path.join(sourcePath, 'docs', 'good.txt'), 'good');
+    await fs.writeFile(path.join(sourcePath, 'docs', 'bad.txt'), 'bad');
+
+    const originalLstat = fs.lstat.bind(fs);
+    const spy = jest.spyOn(fs, 'lstat');
+    spy.mockImplementation(async (candidate) => {
+      if (String(candidate) === path.join(sourcePath, 'docs', 'bad.txt')) {
+        const error = new Error('permission denied');
+        error.code = 'EACCES';
+        throw error;
+      }
+      return originalLstat(candidate);
+    });
+
+    const enqueued = [];
+    const missing = [];
+    const summary = await scanFullSource({
+      sourcePath,
+      enqueueFile: async (file) => enqueued.push(file.sourceRelativePath),
+      onMissingFile: async (fileEntry) => missing.push(fileEntry.relativePath)
+    });
+    spy.mockRestore();
+
+    expect(enqueued).toEqual(['docs/good.txt']);
+    expect(missing).toEqual(['docs/bad.txt']);
+    expect(summary.skippedFiles).toBe(1);
+    expect(summary.filesEnqueued).toBe(1);
+  });
+
   test('file queue and worker pool process enqueued file tasks', async () => {
     const queue = createFileQueue({ capacity: 8 });
     const events = [];

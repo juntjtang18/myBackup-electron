@@ -1,5 +1,5 @@
 const path = require('path');
-const { readFolderEntries, isMissingPathError, statFile } = require('./scannerUtils');
+const { readFolderEntries, safeCallback, scanFolderFiles } = require('./scannerUtils');
 
 function selectDirtyFolders(dirtyState, scanSeq, resumeFrom = null) {
   const selected = Object.entries((dirtyState && dirtyState.folders) || {})
@@ -55,65 +55,38 @@ async function scanDirtyFolders(options) {
     const folderPath = folder.relativePath === '.'
       ? path.resolve(sourcePath)
       : path.join(path.resolve(sourcePath), ...folder.relativePath.split('/'));
-
-    await onFolder({
+    const folderDescriptor = {
       folderPath,
       relativePath: folder.relativePath,
       seq: folder.seq,
       changedAt: folder.changedAt
-    });
+    };
+
+    await safeCallback('onFolder', onFolder, folderDescriptor);
 
     let entries;
     try {
       entries = await readFolderEntries(folderPath, folder.relativePath, ignoreMatcher);
     } catch (error) {
-      if (!isMissingPathError(error)) {
-        throw error;
-      }
       summary.skippedFolders += 1;
-      await onMissingFolder({
-        folderPath,
-        relativePath: folder.relativePath,
-        seq: folder.seq,
-        changedAt: folder.changedAt
-      }, error);
+      await safeCallback('onMissingFolder', onMissingFolder, folderDescriptor, error);
       continue;
     }
 
     summary.foldersScanned += 1;
-    const folderTasks = [];
-
-    for (const fileEntry of entries.files) {
-      if (shouldAbort()) {
-        break;
-      }
-
-      let stats;
-      try {
-        stats = await statFile(fileEntry.path);
-      } catch (error) {
-        summary.skippedFiles += 1;
-        await onMissingFile(fileEntry, error);
-        continue;
-      }
-
-      folderTasks.push(enqueueFile({
-        sourceFilePath: fileEntry.path,
-        sourceRelativePath: fileEntry.relativePath,
-        stats,
+    const fileSummary = await scanFolderFiles({
+      files: entries.files,
+      extraFields: {
         dirtyFolder: folder.relativePath,
         dirtySeq: folder.seq
-      }));
-      summary.filesEnqueued += 1;
-    }
-
-    await Promise.allSettled(folderTasks);
-    await onFolderCompleted({
-      folderPath,
-      relativePath: folder.relativePath,
-      seq: folder.seq,
-      changedAt: folder.changedAt
+      },
+      shouldAbort,
+      enqueueFile,
+      onFileError: onMissingFile
     });
+    summary.filesEnqueued += fileSummary.filesEnqueued;
+    summary.skippedFiles += fileSummary.skippedFiles;
+    await safeCallback('onFolderCompleted', onFolderCompleted, folderDescriptor);
   }
 
   return summary;

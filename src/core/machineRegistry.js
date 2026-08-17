@@ -4,13 +4,15 @@ const {
   createMachineRecord,
   validateMachineRecord
 } = require('./schema');
+const { readOsComputerName } = require('./ids');
 
 async function ensureMachine(appDataRoot, input = {}) {
   const now = input.now || new Date();
+  const hostname = input.hostname || readOsComputerName();
   const schema = await ensureBackupSchema(appDataRoot, {
     machineId: input.machineId,
-    displayName: input.displayName || os.hostname(),
-    hostname: input.hostname || os.hostname(),
+    displayName: input.displayName || hostname,
+    hostname,
     platform: input.platform || os.platform(),
     seed: input.seed
   }, now);

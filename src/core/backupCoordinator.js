@@ -4,6 +4,7 @@ const { cleanupTempFiles } = require('./plainFileStorage');
 const { loadBackupSchema, loadBackupSource, updateBackupSource } = require('./backupSchema');
 const { loadIgnoreMatcher } = require('./ignoreMatcher');
 const { writeBackupCard } = require('./backupCard');
+const { recordCatalogBackup } = require('./targetCatalog');
 const { getSourceFolderName, getSourceTargetRoot, shouldIncludeSourceRoot } = require('./pathPlanner');
 const { createBackupJob, createScanResult } = require('./schema');
 const { createErrorReportWriter } = require('./errorReportStore');
@@ -14,7 +15,7 @@ const { createFileWorkerPool } = require('./engine/fileWorkerPool');
 const { scanFullSource } = require('./engine/fullScanner');
 const { scanDirtyFolders, selectDirtyFolders } = require('./engine/dirtyFolderScanner');
 const { inventorySourceTree } = require('./engine/scannerUtils');
-const { processFileTask } = require('./engine/fileTaskProcessor');
+const { isTransientSourceFileError, processFileTask } = require('./engine/fileTaskProcessor');
 const { ChangeTracker } = require('./changeTracking/ChangeTracker');
 const { createScanId } = require('./ids');
 const { createLogger } = require('./logger');
@@ -631,11 +632,26 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         cursor: snapshot.cursor ? snapshot.cursor.relativePath : null
       });
     },
+    onError: (error) => {
+      logger.warn('Failed to persist running checkpoint.', {
+        machineId,
+        sourceId,
+        error: error && error.message ? error.message : String(error)
+      });
+    },
     nowFactory: () => new Date()
   });
 
   function updateCompletedResult(result, stats) {
     if (!result) {
+      return;
+    }
+    if (result.action === 'skipped-missing') {
+      summary.skippedFiles += 1;
+      progress.skippedFiles = summary.skippedFiles;
+      return;
+    }
+    if (result.action === 'failed') {
       return;
     }
     summary.filesProcessed += 1;
@@ -680,6 +696,17 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       paused = true;
       return null;
     }
+    if (isTransientSourceFileError(error)) {
+      logger.warn('Skipped file that disappeared or changed during backup.', {
+        sourceRelativePath: fileItem.sourceRelativePath,
+        code: error.code || null,
+        message: error.message
+      });
+      summary.skippedFiles += 1;
+      progress.skippedFiles = summary.skippedFiles;
+      emitProgress({ type: 'file-skipped', sourceRelativePath: fileItem.sourceRelativePath }, true);
+      return null;
+    }
     logger.error('File backup failed; continuing with next file.', {
       sourceRelativePath: fileItem.sourceRelativePath,
       code: error.code || null,
@@ -717,11 +744,19 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     const tracked = done.finally(() => pendingFilePromises.delete(tracked));
     pendingFilePromises.add(tracked);
 
-    await fileQueue.push({
-      ...fileItem,
-      resolveFile,
-      rejectFile
-    });
+    try {
+      await fileQueue.push({
+        ...fileItem,
+        resolveFile,
+        rejectFile
+      });
+    } catch (error) {
+      if (error && error.code === 'PAUSE_CANCELLED') {
+        resolveFile(null);
+      } else {
+        rejectFile(error);
+      }
+    }
 
     return tracked
       .then((result) => result)
@@ -768,6 +803,14 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           return null;
         }
 
+        if (result.action === 'failed') {
+          const copyError = new Error(result.error || 'File copy failed');
+          copyError.code = result.errorCode || null;
+          await handleFileError(copyError, item);
+          item.resolveFile(result);
+          return result;
+        }
+
         updateCompletedResult(result, item.stats);
         statusCheckpointWriter.markDirty();
         item.resolveFile(result);
@@ -781,6 +824,17 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
         if (error && error.code === 'PAUSE_CANCELLED') {
           item.resolveFile(null);
           return null;
+        }
+        if (isTransientSourceFileError(error)) {
+          const skipped = {
+            action: 'skipped-missing',
+            sourceRelativePath: item.sourceRelativePath,
+            sourceBytes: 0,
+            bytesProcessed: 0
+          };
+          updateCompletedResult(skipped, item.stats);
+          item.resolveFile(skipped);
+          return skipped;
         }
         item.rejectFile(error);
         throw error;
@@ -910,7 +964,14 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
 
     if (mode === 'incremental') {
       completedDirtyFolders.add(folder.relativePath);
-      await changeTracker.clearChangeIfUnchanged(source, folder.relativePath, dirtyScanSeq, now);
+      try {
+        await changeTracker.clearChangeIfUnchanged(source, folder.relativePath, dirtyScanSeq, now);
+      } catch (error) {
+        logger.warn('Failed to clear dirty folder after scan; continuing.', {
+          relativePath: folder.relativePath,
+          error: error && error.message ? error.message : String(error)
+        });
+      }
       statusCheckpointWriter.markDirty();
     }
 
@@ -931,7 +992,14 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     progress.errors = summary.errors;
     if (mode === 'incremental') {
       completedDirtyFolders.add(folder.relativePath);
-      await changeTracker.clearChangeIfUnchanged(source, folder.relativePath, dirtyScanSeq, now);
+      try {
+        await changeTracker.clearChangeIfUnchanged(source, folder.relativePath, dirtyScanSeq, now);
+      } catch (clearError) {
+        logger.warn('Failed to clear dirty folder after skip; continuing.', {
+          relativePath: folder.relativePath,
+          error: clearError && clearError.message ? clearError.message : String(clearError)
+        });
+      }
       statusCheckpointWriter.markDirty();
     }
     emitProgress({ type: 'folder-skipped', relativePath: folder.relativePath }, true);
@@ -1031,19 +1099,39 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
   }
 
   if (fatalError && !paused) {
-    await statusCheckpointWriter.flushPending();
-    await persistBackupStatusState({
-      status: 'failed',
-      copiedBytes: summary.copiedBytes,
-      cursor: checkpointCursor,
-      scanSeq: dirtyScanSeq,
+    logger.error('Backup scan failed; finishing remaining files and recording the error.', {
+      machineId,
+      sourceId,
+      scanId,
       error: fatalError.message
-    }, new Date());
-    await statusCheckpointWriter.close();
+    });
+    try {
+      await statusCheckpointWriter.flushPending();
+      await persistBackupStatusState({
+        status: 'failed',
+        copiedBytes: summary.copiedBytes,
+        cursor: checkpointCursor,
+        scanSeq: dirtyScanSeq,
+        error: fatalError.message
+      }, new Date());
+      await statusCheckpointWriter.close();
+    } catch (persistError) {
+      logger.warn('Failed to persist backup failure state; continuing.', {
+        machineId,
+        sourceId,
+        error: persistError && persistError.message ? persistError.message : String(persistError)
+      });
+    }
     progress.status = 'failed';
     progress.error = fatalError.message;
     emitProgress({ type: 'backup-failed', error: fatalError.message }, true);
-    throw fatalError;
+    return {
+      ...summary,
+      status: 'failed',
+      error: fatalError.message,
+      forceNewScan: Boolean(options.forceNewScan),
+      mode
+    };
   }
 
   if (paused) {
@@ -1173,7 +1261,20 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
 
   let scanResult = null;
   if (mode === 'full') {
-    const inventory = await inventorySourceTree(source.sourcePath, ignoreMatcher);
+    let inventory = {
+      totalFiles: 0,
+      totalBytes: 0,
+      ignoredFiles: 0,
+      ignoredBytes: 0
+    };
+    try {
+      inventory = await inventorySourceTree(source.sourcePath, ignoreMatcher);
+    } catch (error) {
+      logger.warn('Failed to inventory source tree after backup; continuing.', {
+        sourcePath: source.sourcePath,
+        error: error && error.message ? error.message : String(error)
+      });
+    }
     const failedSizeBytes = failedRows.reduce((sum, row) => sum + Number(row.sourceBytes || 0), 0);
     const skippedNewerSourceSizeBytes = skippedNewerRows.reduce((sum, row) => sum + Number(row.sourceBytes || 0), 0);
     const skippedNewerTargetSizeBytes = skippedNewerRows.reduce((sum, row) => sum + Number(row.targetBytes || 0), 0);
@@ -1217,8 +1318,8 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     scanResult
   }), now);
 
+  const schema = await loadBackupSchema(appDataRoot);
   try {
-    const schema = await loadBackupSchema(appDataRoot);
     await writeBackupCard({
       backupSetRoot: path.join(target.path, getSourceTargetRoot(source.machineId, source)),
       identity: {
@@ -1233,6 +1334,23 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
     });
   } catch (error) {
     logger.warn('Failed to write backup card on the target.', {
+      machineId,
+      sourceId,
+      error: error && error.message ? error.message : String(error)
+    });
+  }
+
+  try {
+    await recordCatalogBackup({
+      appDataRoot,
+      targetRoot,
+      source,
+      computer: schema?.machine || null,
+      kind: mode,
+      now
+    });
+  } catch (error) {
+    logger.warn('Failed to update target catalog after backup.', {
       machineId,
       sourceId,
       error: error && error.message ? error.message : String(error)

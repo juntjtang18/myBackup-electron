@@ -1,6 +1,12 @@
 # B0 — Path layout (backup / restore)
 
-**Index:** [A0](./A0-mybackup-design.md) · **Registration:** [B4](./B4-mybackup-design-registration.md)
+**Index:** [A0](./A0-mybackup-design.md) · **Registration:** [B4](./B4-mybackup-design-registration.md) (history) · [B5](./B5-mybackup-design-target-catalog.md) (next)
+
+```text
+target/
+  .mybackup/catalog.json     next: set list + lastBackup
+  a/                         files + BACKUP.md
+```
 
 ## Backup (append folder checked)
 

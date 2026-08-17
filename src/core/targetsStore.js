@@ -6,6 +6,7 @@ const {
 } = require('./schema');
 const { readJsonIfExists, writeJsonAtomic } = require('./jsonStore');
 const { targetsPath } = require('./paths');
+const { isUuidComputerId } = require('./ids');
 const { createLogger } = require('./logger');
 
 const TARGETS_LAYOUT_VERSION = 1;
@@ -81,7 +82,12 @@ class TargetsStore {
     if (!document) {
       return null;
     }
-    return createTargetsDocument(validateTargetsDocument(document), now);
+    const mintedComputerId = !document.machine?.computerId
+      || isUuidComputerId(document.machine.computerId);
+    return {
+      document: createTargetsDocument(validateTargetsDocument(document), now),
+      mintedComputerId
+    };
   }
 
   async load(now = new Date()) {
@@ -90,7 +96,10 @@ class TargetsStore {
     try {
       const primary = await this.loadFromPath(primaryPath, now);
       if (primary) {
-        return primary;
+        if (primary.mintedComputerId) {
+          await writeJsonAtomic(primaryPath, primary.document);
+        }
+        return primary.document;
       }
     } catch (error) {
       logger.error('Failed to load primary targets document.', {
@@ -107,8 +116,8 @@ class TargetsStore {
       logger.warn('Recovered targets document from backup.', {
         backupPath
       });
-      await writeJsonAtomic(primaryPath, backup);
-      return backup;
+      await writeJsonAtomic(primaryPath, backup.document);
+      return backup.document;
     } catch (error) {
       logger.error('Failed to load targets backup document.', {
         backupPath,

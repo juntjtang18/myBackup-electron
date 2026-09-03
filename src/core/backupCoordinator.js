@@ -1,11 +1,11 @@
 const fs = require('fs-extra');
 const path = require('path');
-const { cleanupTempFiles } = require('./plainFileStorage');
+const { cleanupTempFiles, ensureStoredDirectory } = require('./plainFileStorage');
 const { loadBackupSchema, loadBackupSource, updateBackupSource } = require('./backupSchema');
 const { loadIgnoreMatcher } = require('./ignoreMatcher');
 const { writeBackupCard } = require('./backupCard');
 const { recordCatalogBackup } = require('./targetCatalog');
-const { getSourceFolderName, getSourceTargetRoot, shouldIncludeSourceRoot } = require('./pathPlanner');
+const { getSourceFolderName, getSourceTargetRoot, planLogicalTarget, shouldIncludeSourceRoot } = require('./pathPlanner');
 const { createBackupJob, createScanResult } = require('./schema');
 const { createErrorReportWriter } = require('./errorReportStore');
 const { toPosixPath } = require('./layout');
@@ -782,7 +782,6 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
           chunkSize: options.stageChunkSize,
           shouldAbort: shouldStopForPause,
           mtimeToleranceMs: options.mtimeToleranceMs,
-          compareBySourceNewerOnly: mode === 'full',
           onProgress: (stageProgress) => {
             const workerKey = `file:${worker.id}`;
             progress.workers[workerKey] = {
@@ -951,6 +950,32 @@ async function backupSource(targetRoot, machineId, sourceId, options = {}) {
       status: 'running'
     };
     statusCheckpointWriter.markDirty();
+
+    try {
+      const logicalPath = planLogicalTarget({
+        machineId,
+        source,
+        sourceRelativePath: folder.relativePath === '.' ? '' : folder.relativePath
+      });
+      await ensureStoredDirectory(targetRoot, logicalPath);
+    } catch (error) {
+      logger.error('Failed to create target folder.', {
+        relativePath: folder.relativePath,
+        code: error.code || null,
+        message: error.message
+      });
+      if (errorReport) {
+        await errorReport.append({
+          type: 'folder-error',
+          relativePath: folder.relativePath,
+          path: folder.folderPath,
+          code: error.code || null,
+          message: error.message
+        });
+      }
+      summary.errors += 1;
+      progress.errors = summary.errors;
+    }
   }
 
   async function handleFolderCompleted(folder) {

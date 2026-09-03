@@ -1,7 +1,7 @@
 process.noAsar = true;
 process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || '16';
 
-const { app, BrowserWindow, clipboard, dialog, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Notification, screen, Tray } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs-extra');
@@ -39,6 +39,8 @@ let progressForwardTraceCount = 0;
 const PROGRESS_FORWARD_TRACE_LIMIT = 160;
 const appPlatform = normalizePlatform(process.platform);
 let watchService = null;
+let tray = null;
+let trayMinimizeNotified = false;
 let daemonStatus = {
   running: false,
   watchedSources: 0,
@@ -120,6 +122,79 @@ function sendDaemonStatusToRenderer() {
     return;
   }
   mainWindow.webContents.send('app:daemon-status', daemonStatus);
+}
+
+function createTrayIcon() {
+  // Minimal monochrome dot icon generated in-memory to avoid external asset dependency.
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">
+      <circle cx="8" cy="8" r="5" fill="#2dd46f"/>
+    </svg>
+  `;
+  return nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`);
+}
+
+function restoreFromTray() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  mainWindow.show();
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.focus();
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
+}
+
+function ensureTray() {
+  if (tray) {
+    return tray;
+  }
+  tray = new Tray(createTrayIcon());
+  tray.setToolTip('MyBackup');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    {
+      label: 'Open MyBackup',
+      click: () => restoreFromTray()
+    },
+    {
+      label: 'Quit',
+      click: () => app.quit()
+    }
+  ]));
+  tray.on('click', () => restoreFromTray());
+  return tray;
+}
+
+function minimizeToTrayIfNeeded() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return false;
+  }
+  if (!daemonStatus.running) {
+    return false;
+  }
+  ensureTray();
+  mainWindow.hide();
+  if (!trayMinimizeNotified) {
+    trayMinimizeNotified = true;
+    logToRenderer('info', 'MyBackup minimized to system tray while daemon is running.');
+    if (Notification.isSupported()) {
+      try {
+        new Notification({
+          title: 'MyBackup',
+          body: 'Running in system tray while daemon is active.'
+        }).show();
+      } catch (error) {
+        logger.warn('Failed to show tray minimize notification.', {
+          message: error.message
+        });
+      }
+    }
+  }
+  return true;
 }
 
 function setDaemonStatus(nextStatus) {
@@ -1072,6 +1147,9 @@ function registerIpcHandlers() {
 
   handle('window:minimize', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
+      if (minimizeToTrayIfNeeded()) {
+        return;
+      }
       mainWindow.minimize();
     }
   });
@@ -1140,6 +1218,14 @@ function createWindow() {
     }
   });
 
+  mainWindow.on('minimize', (event) => {
+    if (!daemonStatus.running) {
+      return;
+    }
+    event.preventDefault();
+    minimizeToTrayIfNeeded();
+  });
+
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
 }
 
@@ -1203,6 +1289,10 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', async () => {
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
   if (watchService) {
     await watchService.stop();
     setDaemonStatus(await watchService.getStatus());

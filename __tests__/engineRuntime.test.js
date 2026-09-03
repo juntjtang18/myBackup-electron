@@ -6,6 +6,8 @@ const { scanFullSource } = require('../src/core/engine/fullScanner');
 const { scanDirtyFolders } = require('../src/core/engine/dirtyFolderScanner');
 const { createFileQueue } = require('../src/core/engine/fileQueue');
 const { createFileWorkerPool } = require('../src/core/engine/fileWorkerPool');
+const { shouldCopySourceFile } = require('../src/core/fileTaskProcessor');
+const { createFolderHash, walkFoldersFromCursor } = require('../src/core/cursor');
 
 describe('engine runtime modules', () => {
   let tempRootPath;
@@ -217,5 +219,63 @@ describe('engine runtime modules', () => {
     expect(events).toContain('task-started');
     expect(events).toContain('task-completed');
     expect(events).toContain('worker-stopped');
+  });
+
+  test('file-to-file compare copies missing, size-mismatched, or mtime-changed files', () => {
+    const source = { size: 12, mtimeMs: 1_000_000, isFile: () => true };
+    const matchingTarget = { size: 12, mtimeMs: 1_001_000, isFile: () => true };
+    const sizeMismatch = { size: 4, mtimeMs: 1_000_000, isFile: () => true };
+    const olderTarget = { size: 12, mtimeMs: 10_000, isFile: () => true };
+    const newerTarget = { size: 12, mtimeMs: 2_000_000, isFile: () => true };
+    const directoryTarget = { size: 12, mtimeMs: 1_000_000, isFile: () => false };
+
+    expect(shouldCopySourceFile(source, null, 2000)).toBe(true);
+    expect(shouldCopySourceFile(source, matchingTarget, 2000)).toBe(false);
+    expect(shouldCopySourceFile(source, sizeMismatch, 2000)).toBe(true);
+    expect(shouldCopySourceFile(source, olderTarget, 2000)).toBe(true);
+    expect(shouldCopySourceFile(source, newerTarget, 2000)).toBe(true);
+    expect(shouldCopySourceFile(source, directoryTarget, 2000)).toBe(true);
+  });
+
+  test('full scanner enqueues file symlinks and regular files', async () => {
+    const sourcePath = path.join(tempRootPath, 'symlink-source');
+    const realFile = path.join(sourcePath, 'real.txt');
+    await fs.ensureDir(path.join(sourcePath, 'docs'));
+    await fs.writeFile(realFile, 'linked');
+    await fs.writeFile(path.join(sourcePath, 'docs', 'nested.txt'), 'nested');
+    await fs.symlink(realFile, path.join(sourcePath, 'alias.txt'));
+    await fs.symlink(path.join(sourcePath, 'docs'), path.join(sourcePath, 'docs-link'));
+    await fs.symlink(path.join(sourcePath, 'missing.txt'), path.join(sourcePath, 'broken.txt'));
+
+    const enqueued = [];
+    const summary = await scanFullSource({
+      sourcePath,
+      enqueueFile: async (file) => enqueued.push(file.sourceRelativePath)
+    });
+
+    expect(summary.filesEnqueued).toBe(5);
+    expect(enqueued.sort()).toEqual([
+      'alias.txt',
+      'broken.txt',
+      'docs-link',
+      'docs/nested.txt',
+      'real.txt'
+    ]);
+  });
+
+  test('resume walker falls back to a full tree walk when the cursor folder is gone', async () => {
+    const sourcePath = path.join(tempRootPath, 'missing-cursor-source');
+    await fs.ensureDir(path.join(sourcePath, 'docs'));
+    await fs.writeFile(path.join(sourcePath, 'docs', 'a.txt'), 'a');
+
+    const folders = [];
+    for await (const folder of walkFoldersFromCursor(sourcePath, {
+      relativePath: 'deleted',
+      folderHash: createFolderHash('deleted')
+    })) {
+      folders.push(folder.relativePath);
+    }
+
+    expect(folders).toEqual(['.', 'docs']);
   });
 });

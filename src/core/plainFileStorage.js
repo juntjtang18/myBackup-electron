@@ -59,6 +59,12 @@ async function statStoredPlainFile(targetRoot, logicalPath) {
   return fs.stat(absolutePath);
 }
 
+async function ensureStoredDirectory(targetRoot, logicalPath) {
+  const absolutePath = resolveLogicalPath(targetRoot, logicalPath);
+  await fs.ensureDir(absolutePath);
+  return absolutePath;
+}
+
 async function writePlainFile(targetRoot, input) {
   const absoluteDestination = resolveLogicalPath(targetRoot, input.logicalPath);
   const tempPath = createTempFilePath(targetRoot, input.jobId, input.logicalPath);
@@ -472,6 +478,7 @@ async function cleanupTempFiles(targetRoot) {
 module.exports = {
   cleanupTempFiles,
   createTempFilePath,
+  ensureStoredDirectory,
   createStagingTempPath,
   discardStagedFile,
   finalizePlainFile,

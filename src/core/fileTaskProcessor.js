@@ -8,7 +8,7 @@ const {
   stageFileForCopy,
   statStoredPlainFile,
 } = require('./plainFileStorage');
-const { isMtimeWithinTolerance, shouldCopyWhenSourceNewer } = require('./keepNewer');
+const { isMtimeWithinTolerance } = require('./keepNewer');
 const { createLogger } = require('./logger');
 
 const logger = createLogger('FileTaskProcessor', 'fileTaskProcessor.js');
@@ -29,6 +29,22 @@ function skippedMissingResult(sourceRelativePath, logicalPath) {
   };
 }
 
+function isTargetAValidBackup(stats, targetStat, toleranceMs) {
+  if (!targetStat || (typeof targetStat.isFile === 'function' && !targetStat.isFile())) {
+    return false;
+  }
+
+  if (Number(targetStat.size) !== Number(stats?.size)) {
+    return false;
+  }
+
+  return isMtimeWithinTolerance(stats?.mtimeMs, targetStat.mtimeMs, toleranceMs);
+}
+
+function shouldCopySourceFile(stats, targetStat, toleranceMs) {
+  return !isTargetAValidBackup(stats, targetStat, toleranceMs);
+}
+
 async function processFileTask(input) {
   const {
     targetRoot,
@@ -41,8 +57,7 @@ async function processFileTask(input) {
     shouldAbort,
     onProgress,
     chunkSize,
-    mtimeToleranceMs = 2000,
-    compareBySourceNewerOnly = false
+    mtimeToleranceMs = 2000
   } = input;
 
   const mapping = resolveTargetMapping({
@@ -65,7 +80,6 @@ async function processFileTask(input) {
       onProgress,
       chunkSize,
       mtimeToleranceMs,
-      compareBySourceNewerOnly,
       mapping
     });
   } catch (error) {
@@ -112,7 +126,6 @@ async function copySourceFile({
   onProgress,
   chunkSize,
   mtimeToleranceMs,
-  compareBySourceNewerOnly,
   mapping
 }) {
   const sourceLstat = stats?.isSymbolicLink?.()
@@ -127,50 +140,25 @@ async function copySourceFile({
       return fs.lstat(absolutePath);
     })()
     : await statStoredPlainFile(targetRoot, mapping.logicalPath);
-  if (compareBySourceNewerOnly) {
-    if (targetStat && !shouldCopyWhenSourceNewer(sourceLstat, targetStat, mtimeToleranceMs)) {
-      const sourceMtimeMs = Number(sourceLstat.mtimeMs || 0);
-      const targetMtimeMs = Number(targetStat.mtimeMs || 0);
-      const skippedNewer = targetMtimeMs > (sourceMtimeMs + Number(mtimeToleranceMs || 0));
-      logger.debug('Skipped full-scan file because target is present and not older.', {
-        sourceRelativePath,
-        logicalPath: mapping.logicalPath,
-        targetSize: targetStat.size || 0,
-        targetMtimeMs,
-        sourceMtimeMs,
-        mtimeToleranceMs,
-        skippedNewer
-      });
-      return {
-        action: skippedNewer ? 'skipped-newer' : 'unchanged',
-        fileHash: null,
-        logicalPath: mapping.logicalPath,
-        sourceRelativePath,
-        sourceBytes: Number(sourceLstat.size || 0),
-        targetBytes: Number(targetStat.size || 0),
-        bytesProcessed: 0
-      };
-    }
-  } else if (targetStat
-      && targetStat.size === sourceLstat.size
-      && isMtimeWithinTolerance(sourceLstat.mtimeMs, targetStat.mtimeMs, mtimeToleranceMs)) {
-      logger.debug('Skipped unchanged file from mapped target stat.', {
-        sourceRelativePath,
-        logicalPath: mapping.logicalPath,
-        targetSize: targetStat.size,
-        targetMtimeMs: targetStat.mtimeMs,
-        sourceMtimeMs: sourceLstat.mtimeMs,
-        mtimeToleranceMs
-      });
-      return {
-        action: 'unchanged',
-        fileHash: null,
-        logicalPath: mapping.logicalPath,
-        sourceRelativePath,
-        sourceBytes: Number(sourceLstat.size || 0),
-        targetBytes: Number(targetStat.size || 0),
-        bytesProcessed: 0
-      };
+
+  if (!shouldCopySourceFile(sourceLstat, targetStat, mtimeToleranceMs)) {
+    logger.debug('Skipped unchanged file from mapped target stat.', {
+      sourceRelativePath,
+      logicalPath: mapping.logicalPath,
+      targetSize: targetStat.size,
+      targetMtimeMs: targetStat.mtimeMs,
+      sourceMtimeMs: sourceLstat.mtimeMs,
+      mtimeToleranceMs
+    });
+    return {
+      action: 'unchanged',
+      fileHash: null,
+      logicalPath: mapping.logicalPath,
+      sourceRelativePath,
+      sourceBytes: Number(sourceLstat.size || 0),
+      targetBytes: Number(targetStat.size || 0),
+      bytesProcessed: 0
+    };
   }
 
   if (sourceLstat.isSymbolicLink()) {
@@ -239,6 +227,9 @@ async function copySourceFile({
 }
 
 module.exports = {
+  isMtimeWithinTolerance,
+  isTargetAValidBackup,
   isTransientSourceFileError,
-  processFileTask
+  processFileTask,
+  shouldCopySourceFile
 };

@@ -98,6 +98,16 @@ async function* walkFoldersFromCursor(sourceRoot, cursor = null, options = {}) {
   }
 
   yield* visit(createFolderDescriptor(sourceRoot, '.'));
+
+  if (cursor && !cursorFound) {
+    logger.warn('Resume cursor was not found; scanning the full source tree.', {
+      sourcePath: path.resolve(sourceRoot),
+      cursorRelativePath: normalizeRelativePath(cursor.relativePath),
+      cursorFolderHash: cursor.folderHash || null
+    });
+    cursorFound = true;
+    yield* visit(createFolderDescriptor(sourceRoot, '.'));
+  }
 }
 
 async function buildFolderTraversalStack(sourcePath, ignoreMatcher = null, cursor = null) {

@@ -2265,7 +2265,7 @@ describe('metadata foundation', () => {
     expect(await fs.pathExists(path.join(tempRootPath, getSourceTargetRoot(source.machineId, source), 'node_modules'))).toBe(false);
   });
 
-  test('AT-SCAN02-2 skip-newer is reported and omitted from matching columns', async () => {
+  test('AT-SCAN02-2 size mismatch recopies even when the target file is newer', async () => {
     const sourceRoot = path.join(tempRootPath, 'scan02-skip-newer-source');
     writeFixture(path.join(sourceRoot, 'docs', 'f1.txt'), 's'.repeat(512));
 
@@ -2297,17 +2297,11 @@ describe('metadata foundation', () => {
       forceNewScan: true
     });
 
-    expect(summary.filesCopied).toBe(0);
-    expect(summary.scanResult.sourceFileCount).toBe(0);
-    expect(summary.scanResult.targetFileCount).toBe(0);
-    expect(summary.scanResult.skippedNewerFileCount).toBe(1);
-    expect(summary.scanResult.skippedNewerSourceSizeBytes).toBe(512);
-    expect(summary.scanResult.skippedNewer[0]).toMatchObject({
-      path: 'docs/f1.txt',
-      sourceBytes: 512,
-      targetBytes: 620
-    });
-    expect(await fs.readFile(copiedPath, 'utf8')).toBe('t'.repeat(620));
+    expect(summary.filesCopied).toBe(1);
+    expect(summary.scanResult.sourceFileCount).toBe(1);
+    expect(summary.scanResult.targetFileCount).toBe(1);
+    expect(summary.scanResult.skippedNewerFileCount).toBe(0);
+    expect(await fs.readFile(copiedPath, 'utf8')).toBe('s'.repeat(512));
   });
 
   test('AT-SCAN02-3 copy failure is listed under Failed and the run completes', async () => {
@@ -2675,13 +2669,13 @@ dist/**
     expect(await fs.pathExists(targetFilePath(tempRootPath, source, '.mybackup', 'tmp', 'stage.asar'))).toBe(false);
   });
 
-  test('full scan copy skips files when target file is newer than source', async () => {
-    const sourceRoot = path.join(tempRootPath, 'full-scan-newer-target-source');
+  test('full scan recopies when the target file size does not match the source', async () => {
+    const sourceRoot = path.join(tempRootPath, 'full-scan-size-mismatch-source');
     writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'source-original');
 
     const machine = await ensureMachine(tempRootPath, {
-      hostname: 'full-scan-newer-target-host',
-      seed: 'full-scan-newer-target-seed',
+      hostname: 'full-scan-size-mismatch-host',
+      seed: 'full-scan-size-mismatch-seed',
       now: new Date('2026-06-09T10:00:00Z')
     });
     const source = await registerSource(tempRootPath, {
@@ -2708,8 +2702,86 @@ dist/**
     });
 
     expect(summary.filesProcessed).toBe(1);
-    expect(summary.filesCopied).toBe(0);
-    expect(await fs.readFile(copiedPath, 'utf8')).toBe('target-newer-content');
+    expect(summary.filesCopied).toBe(1);
+    expect(await fs.readFile(copiedPath, 'utf8')).toBe('source-original');
+  });
+
+  test('full scan recopies a missing target file and skips an identical backup', async () => {
+    const sourceRoot = path.join(tempRootPath, 'full-scan-missing-target-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'kept.txt'), 'kept');
+    writeFixture(path.join(sourceRoot, 'docs', 'missing.txt'), 'missing');
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'full-scan-missing-target-host',
+      seed: 'full-scan-missing-target-seed',
+      now: new Date('2026-06-09T10:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-09T10:05:00Z'));
+
+    await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-09T10:10:00Z'),
+      forceNewScan: true
+    });
+
+    const keptPath = targetFilePath(tempRootPath, source, 'docs', 'kept.txt');
+    const missingPath = targetFilePath(tempRootPath, source, 'docs', 'missing.txt');
+    await fs.remove(missingPath);
+
+    const summary = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-09T10:20:00Z'),
+      forceNewScan: true
+    });
+
+    expect(summary.filesProcessed).toBe(2);
+    expect(summary.filesCopied).toBe(1);
+    expect(await fs.readFile(keptPath, 'utf8')).toBe('kept');
+    expect(await fs.readFile(missingPath, 'utf8')).toBe('missing');
+  });
+
+  test('full scan creates empty source folders on the target', async () => {
+    const sourceRoot = path.join(tempRootPath, 'full-scan-empty-folder-source');
+    writeFixture(path.join(sourceRoot, 'docs', 'a.txt'), 'alpha');
+    await fs.ensureDir(path.join(sourceRoot, 'empty'));
+    await fs.ensureDir(path.join(sourceRoot, 'empty', 'nested'));
+
+    const machine = await ensureMachine(tempRootPath, {
+      hostname: 'full-scan-empty-folder-host',
+      seed: 'full-scan-empty-folder-seed',
+      now: new Date('2026-06-09T10:00:00Z')
+    });
+    const source = await registerSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourcePath: sourceRoot,
+      mergeEnabled: false,
+      organizeMedia: false
+    }, new Date('2026-06-09T10:05:00Z'));
+
+    const summary = await backupSource(tempRootPath, machine.machineId, source.sourceId, {
+      now: new Date('2026-06-09T10:10:00Z'),
+      forceNewScan: true
+    });
+
+    expect(summary.filesCopied).toBe(1);
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'docs', 'a.txt'))).toBe(true);
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'empty'))).toBe(true);
+    expect(await fs.pathExists(targetFilePath(tempRootPath, source, 'empty', 'nested'))).toBe(true);
+    expect((await fs.stat(targetFilePath(tempRootPath, source, 'empty'))).isDirectory()).toBe(true);
+    expect((await fs.stat(targetFilePath(tempRootPath, source, 'empty', 'nested'))).isDirectory()).toBe(true);
+
+    const restoreRoot = path.join(tempRootPath, 'restored-empty-folder-output');
+    await restoreSource(tempRootPath, {
+      machineId: machine.machineId,
+      sourceId: source.sourceId,
+      destinationRoot: restoreRoot
+    });
+
+    expect(await fs.pathExists(path.join(restoreRoot, 'empty', 'nested'))).toBe(true);
+    expect((await fs.stat(path.join(restoreRoot, 'empty'))).isDirectory()).toBe(true);
   });
 
   test('backupSource skips files and folders matched by .mbignore', async () => {

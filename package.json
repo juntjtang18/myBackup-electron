@@ -5,7 +5,7 @@
     "jest": "^29.7.0"
   },
   "name": "myBackup",
-  "version": "1.0.13",
+  "version": "1.0.14",
   "main": "src/index.js",
   "scripts": {
     "start": "electron .",

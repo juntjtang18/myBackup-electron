@@ -51,7 +51,7 @@ async function findSourceRecord(appDataRoot, machineId, sourceId, options = {}) 
   };
 }
 
-async function walkFiles(rootPath, onFile, relativeRoot = '.') {
+async function walkFiles(rootPath, onFile, relativeRoot = '.', onDirectory = null) {
   if (!(await fs.pathExists(rootPath))) {
     return;
   }
@@ -75,7 +75,13 @@ async function walkFiles(rootPath, onFile, relativeRoot = '.') {
       ? entry.name
       : path.posix.join(relativeRoot, entry.name);
     if (entry.isDirectory()) {
-      await walkFiles(absolutePath, onFile, relativePath);
+      if (onDirectory) {
+        await onDirectory({
+          absolutePath,
+          relativePath: toPosixPath(relativePath)
+        });
+      }
+      await walkFiles(absolutePath, onFile, relativePath, onDirectory);
     } else if (entry.isFile()) {
       try {
         await onFile({
@@ -163,6 +169,7 @@ async function collectRestoreTasks(targetRoot, source) {
   const sourceRoot = getSourceTargetRoot(source.machineId, source);
   const sourceTargetRoot = path.join(targetRoot, sourceRoot);
   const tasks = [];
+  const directories = [];
 
   await walkFiles(sourceTargetRoot, async ({ absolutePath, relativePath }) => {
     if (isBackupCardRelativePath(relativePath)) {
@@ -174,12 +181,15 @@ async function collectRestoreTasks(targetRoot, source) {
       logicalPath: path.posix.join(sourceRoot, relativePath),
       totalBytes: Number(stat.size || 0)
     });
+  }, '.', async ({ relativePath }) => {
+    directories.push(relativePath);
   });
 
   return {
     sourceRoot,
     sourceTargetRoot,
-    tasks
+    tasks,
+    directories
   };
 }
 
@@ -253,16 +263,23 @@ async function restoreSource(targetRoot, input) {
 
   let sourceTargetRoot;
   let collectedTasks = [];
+  let collectedDirectories = [];
   try {
     const collected = await collectRestoreTasks(targetRoot, sourceRecord.source);
     sourceTargetRoot = collected.sourceTargetRoot;
     collectedTasks = collected.tasks;
+    collectedDirectories = collected.directories;
   } catch (error) {
     logger.warn('Failed to list restore files; continuing with empty task list.', {
       targetRoot,
       error: error && error.message ? error.message : String(error)
     });
     sourceTargetRoot = path.join(targetRoot, getSourceTargetRoot(sourceRecord.source.machineId, sourceRecord.source));
+  }
+
+  await fs.ensureDir(destinationRoot);
+  for (const relativePath of collectedDirectories) {
+    await fs.ensureDir(path.join(destinationRoot, ...relativePath.split('/')));
   }
 
   let tasks = collectedTasks;
@@ -597,6 +614,8 @@ async function restoreLogicalTree(targetRoot, input) {
     } else {
       summary.restoredFiles += 1;
     }
+  }, '.', async ({ relativePath }) => {
+    await fs.ensureDir(path.join(destinationRoot, ...relativePath.split('/')));
   });
 
   return summary;

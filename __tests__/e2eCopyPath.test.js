@@ -210,7 +210,7 @@ describe('E2E copy path', () => {
     expect(summary.filesCopied).toBe(0);
   });
 
-  test('E2E-06 keep-newer on backup: source newer writes, target newer and same age skip', async () => {
+  test('E2E-06 full scan recopies size mismatches and skips unchanged files', async () => {
     writeFile(sourceFile('keep', 'hello.txt'), 'hello-v3', new Date(at(3).getTime() + 120_000));
     await ctx.tracker.recordFileChanged(ctx.source, sourceFile('keep', 'hello.txt'), at(30));
     const sourceNewer = await runBackup({ forceNewScan: false, now: at(30) });
@@ -220,12 +220,12 @@ describe('E2E copy path', () => {
 
     writeFile(targetFile('keep', 'hello.txt'), 'target-wins', new Date(at(3).getTime() + 180_000));
     const targetNewer = await runBackup({ forceNewScan: true, now: at(35) });
-    expect(targetNewer.scanResult.skippedNewerFileCount).toBeGreaterThanOrEqual(1);
-    expect(await fs.readFile(targetFile('keep', 'hello.txt'), 'utf8')).toBe('target-wins');
+    expect(targetNewer.filesCopied).toBeGreaterThanOrEqual(1);
+    expect(await fs.readFile(targetFile('keep', 'hello.txt'), 'utf8')).toBe('hello-v3');
     expectNoNumberedCopy(path.join(ctx.backupSetRoot, 'keep'));
 
     const sameAge = at(40);
-    writeFile(sourceFile('keep', 'hello.txt'), 'source-same-age', sameAge);
+    writeFile(sourceFile('keep', 'hello.txt'), 'target-wins', sameAge);
     writeFile(targetFile('keep', 'hello.txt'), 'target-wins', sameAge);
     const sameAgeRun = await runBackup({ forceNewScan: true, now: at(40) });
     expect(await fs.readFile(targetFile('keep', 'hello.txt'), 'utf8')).toBe('target-wins');
